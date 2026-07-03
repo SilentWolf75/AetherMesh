@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AetherMesh Web Installer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0B0F19;
+            --surface-dark: #151B2C;
+            --border-color: #242F47;
+            --accent-purple: #8B5CF6;
+            --accent-cyan: #06B6D4;
+            --accent-mint: #10B981;
+            --text-light: #F3F4F6;
+            --text-muted: #9CA3AF;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Glassmorphic background glow circles */
+        .bg-glow-1 {
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0) 70%);
+            top: 10%;
+            left: 15%;
+            z-index: -1;
+        }
+
+        .bg-glow-2 {
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            background: radial-gradient(circle, rgba(6, 182, 212, 0.15) 0%, rgba(6, 182, 212, 0) 70%);
+            bottom: 10%;
+            right: 15%;
+            z-index: -1;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 540px;
+            background-color: var(--surface-dark);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            backdrop-filter: blur(12px);
+        }
+
+        h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin: 0 0 10px 0;
+            background: linear-gradient(135deg, var(--text-light) 30%, var(--accent-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1rem;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+
+        .installer-box {
+            background-color: rgba(11, 15, 25, 0.6);
+            border: 1px dashed var(--border-color);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .installer-box p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 15px;
+            margin-bottom: 0;
+        }
+
+        /* Customize esp-web-tools button style */
+        esp-web-install-button {
+            --esp-tools-button-color: var(--accent-purple);
+            --esp-tools-button-text-color: var(--text-light);
+            --esp-tools-button-border-radius: 12px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .features-list {
+            text-align: left;
+            margin-top: 20px;
+            border-top: 1px solid var(--border-color);
+            padding-top: 25px;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            color: var(--text-light);
+        }
+
+        .feature-icon {
+            color: var(--accent-mint);
+            margin-right: 10px;
+            font-weight: bold;
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .footer a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-glow-1"></div>
+    <div class="bg-glow-2"></div>
+
+    <div class="container">
+        <h1>AetherMesh</h1>
+        <p class="subtitle">Flash AetherMesh Firmware directly to your LoRa node from your web browser. Make sure your device is connected via USB.</p>
+        
+        <div class="installer-box">
+            <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+            <p>Supported boards: Heltec V4 (ESP32-S3)</p>
+        </div>
+
+        <div class="features-list">
+            <div class="feature-item">
+                <span class="feature-icon">✓</span>
+                <span>Plug-and-play browser serial flashing</span>
+            </div>
+            <div class="feature-item">
+                <span class="feature-icon">✓</span>
+                <span>US915 / EU868 region auto-configurations</span>
+            </div>
+            <div class="feature-item">
+                <span class="feature-icon">✓</span>
+                <span>Low-power Repeater and Client configurations support</span>
+            </div>
+        </div>
+
+        <div class="footer">
+            AetherMesh open-source protocol. View <a href="https://github.com/meshcore-dev/MeshCore" target="_blank">MeshCore</a> inspired project.
+        </div>
+    </div>
+
+    <!-- Load ESP Web Tools installer script -->
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</body>
+</html>

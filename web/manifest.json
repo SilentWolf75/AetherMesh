@@ -1,0 +1,14 @@
+{
+  "name": "AetherMesh Firmware",
+  "version": "1.0.0",
+  "home_assistant_domain": "aethermesh",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "../firmware/.pio/build/heltec_v4/firmware.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

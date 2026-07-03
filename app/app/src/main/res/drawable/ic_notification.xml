@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    
+    <!-- Outer peak stroke -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M7,18 L12,8 L17,18"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF" />
+        
+    <!-- Horizontal connector bar -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M9,14 L15,14"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF" />
+        
+    <!-- Center vertical connection -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M12,8 L12,14"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF" />
+        
+    <!-- Junction nodes (white circles) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,8m-1.2,0a1.2,1.2 0,1 1,2.4 0a1.2,1.2 0,1 1,-2.4 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,18m-1.2,0a1.2,1.2 0,1 1,2.4 0a1.2,1.2 0,1 1,-2.4 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M17,18m-1.2,0a1.2,1.2 0,1 1,2.4 0a1.2,1.2 0,1 1,-2.4 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,14m-1.0,0a1.0,1.0 0,1 1,2.0 0a1.0,1.0 0,1 1,-2.0 0" />
+
+</vector>

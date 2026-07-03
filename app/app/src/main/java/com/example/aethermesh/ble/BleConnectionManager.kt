@@ -1,0 +1,406 @@
+package com.example.aethermesh.ble
+
+import android.annotation.SuppressLint
+import android.bluetooth.*
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
+import android.util.Log
+import java.util.*
+
+@SuppressLint("MissingPermission")
+class BleConnectionManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "BleConnManager"
+        private const val PREF_PAIRED_MAC = "paired_mac"
+        
+        val SERVICE_UUID: UUID = UUID.fromString("a75e0001-8b01-4475-bf7d-9477b83e7953")
+        val TX_CHAR_UUID: UUID = UUID.fromString("a75e0002-8b01-4475-bf7d-9477b83e7953")
+        val RX_CHAR_UUID: UUID = UUID.fromString("a75e0003-8b01-4475-bf7d-9477b83e7953")
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
+
+    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    private val bluetoothAdapter = bluetoothManager.adapter
+    private var bluetoothGatt: BluetoothGatt? = null
+    
+    private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+    private var userWantsDisconnect = false
+    
+    private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private var txCharacteristic: BluetoothGattCharacteristic? = null
+    
+    var isConnected = false
+        private set
+        
+    var connectedDeviceName: String? = null
+        private set
+        
+    var connectedNodeId: Long = 0
+
+    private var scanCallback: ScanCallback? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var reconnectRunnable: Runnable? = null
+    private var mtuTimeoutRunnable: Runnable? = null
+
+    init {
+        // Auto-connect if we have a saved paired MAC address on startup
+        val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+        if (savedMac != null) {
+            Log.d(TAG, "Auto-connecting to saved MAC: $savedMac")
+            handler.postDelayed({
+                if (!isConnected) {
+                    connect(savedMac)
+                }
+            }, 1500) // 1.5s delay to make sure BT stack is active
+        }
+    }
+    
+    // Callbacks
+    var onConnectionStateChanged: ((Boolean) -> Unit)? = null
+    var onPacketReceived: ((ByteArray) -> Unit)? = null
+    var onDeviceDiscovered: ((String, String) -> Unit)? = null // Device Name, MAC Address
+
+    // Scan for AetherMesh devices.
+    // We scan WITHOUT a hardware ScanFilter (offloaded 128-bit-UUID filtering is unreliable
+    // on many phones) and instead identify our nodes in the callback by the advertised
+    // service UUID. This is also name-independent, so nodes with a custom name still appear.
+    fun startScan() {
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) return
+
+        val scanner = bluetoothAdapter.bluetoothLeScanner ?: return
+
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        scanCallback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+                val scanRecord = result.scanRecord
+                val deviceName = scanRecord?.deviceName ?: result.device.name
+                val advertisesOurService =
+                    scanRecord?.serviceUuids?.contains(ParcelUuid(SERVICE_UUID)) == true
+                val nameMatches = deviceName?.startsWith("AetherMesh-") == true
+
+                if (advertisesOurService || nameMatches) {
+                    // Fall back to a generic label if the advert has no readable name yet.
+                    val label = deviceName ?: "AetherMesh Node"
+                    onDeviceDiscovered?.invoke(label, result.device.address)
+                }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.e(TAG, "BLE scan failed with error code: $errorCode")
+            }
+        }
+
+        Log.d(TAG, "Starting BLE scanning (unfiltered, matching by service UUID)...")
+        // null filter list = report all advertisements; we filter in the callback.
+        scanner.startScan(null, settings, scanCallback)
+    }
+
+    fun stopScan() {
+        if (bluetoothAdapter == null || scanCallback == null) return
+        val scanner = bluetoothAdapter.bluetoothLeScanner ?: return
+        Log.d(TAG, "Stopping BLE scanning.")
+        scanner.stopScan(scanCallback)
+        scanCallback = null
+    }
+
+    // Connect to a node by MAC address
+    fun connect(macAddress: String) {
+        if (bluetoothAdapter == null) return
+        
+        // Cancel any pending reconnect attempts
+        reconnectRunnable?.let {
+            handler.removeCallbacks(it)
+            reconnectRunnable = null
+        }
+        
+        // Stop scanning to dedicate all radio bandwidth to the connection handshake
+        stopScan()
+        
+        val currentGatt = bluetoothGatt
+        if (currentGatt != null) {
+            val currentMac = currentGatt.device.address
+            if (currentMac == macAddress) {
+                Log.d(TAG, "Already connected/connecting to device: $macAddress. Skipping reconnect.")
+                return
+            }
+            Log.d(TAG, "Disconnecting and closing existing connection to $currentMac before connecting to $macAddress")
+            
+            // Set userWantsDisconnect temporarily to prevent disconnect callback of the old device 
+            // from triggering unexpected reconnect loops.
+            userWantsDisconnect = true
+            
+            try {
+                currentGatt.disconnect()
+                currentGatt.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing previous GATT: ${e.message}")
+            }
+            bluetoothGatt = null
+            isConnected = false
+            
+            // Allow stack to settle down before opening connection to new device
+            handler.postDelayed({
+                performConnect(macAddress)
+            }, 500)
+        } else {
+            performConnect(macAddress)
+        }
+    }
+
+    private fun performConnect(macAddress: String) {
+        userWantsDisconnect = false
+        prefs.edit().putString(PREF_PAIRED_MAC, macAddress).apply()
+        
+        val device = bluetoothAdapter.getRemoteDevice(macAddress)
+        Log.d(TAG, "Connecting to device: ${device.name ?: "Unknown"} (${device.address})")
+        
+        // Explicitly use TRANSPORT_LE to avoid fallback connection delays/drops on dual-mode devices
+        bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    fun disconnect() {
+        userWantsDisconnect = true
+        
+        // Cancel any pending reconnect attempts
+        reconnectRunnable?.let {
+            handler.removeCallbacks(it)
+            reconnectRunnable = null
+        }
+        
+        // Clear paired MAC when user explicitly disconnects so we don't auto-connect next time
+        prefs.edit().remove(PREF_PAIRED_MAC).apply()
+        
+        bluetoothGatt?.disconnect()
+        bluetoothGatt?.close()
+        bluetoothGatt = null
+        isConnected = false
+        connectedDeviceName = null
+        connectedNodeId = 0
+        onConnectionStateChanged?.invoke(false)
+    }
+
+    fun getPairedMac(): String? {
+        return prefs.getString(PREF_PAIRED_MAC, null)
+    }
+
+    fun parseNodeIdFromMac(mac: String): Long {
+        return try {
+            val parts = mac.split(":")
+            if (parts.size >= 4) {
+                val b0 = parts[0].toInt(16)
+                val b1 = parts[1].toInt(16)
+                val b2 = parts[2].toInt(16)
+                val b3 = parts[3].toInt(16)
+                
+                (b3.toLong() and 0xFFL shl 24) or
+                (b2.toLong() and 0xFFL shl 16) or
+                (b1.toLong() and 0xFFL shl 8) or
+                (b0.toLong() and 0xFFL)
+            } else {
+                0L
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing node ID from MAC $mac: ${e.message}")
+            0L
+        }
+    }
+
+    // Write packet to TX characteristic
+    fun sendPacket(packetBytes: ByteArray): Boolean {
+        val gatt = bluetoothGatt ?: return false
+        val char = txCharacteristic ?: return false
+        
+        char.value = packetBytes
+        char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        
+        return gatt.writeCharacteristic(char)
+    }
+
+    // GATT Callbacks
+    private val gattCallback = object : BluetoothGattCallback() {
+        
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt != bluetoothGatt) {
+                Log.d(TAG, "onConnectionStateChange: Stale GATT callback (device: ${gatt.device.address}). Ignoring.")
+                try {
+                    gatt.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing stale GATT: ${e.message}")
+                }
+                return
+            }
+            
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.d(TAG, "Connected to GATT server. Requesting MTU 256...")
+                val discoverRunnable = object : Runnable {
+                    override fun run() {
+                        if (mtuTimeoutRunnable != null) {
+                            mtuTimeoutRunnable = null
+                            Log.d(TAG, "MTU change timeout/unsupported. Discovering services now...")
+                            gatt.discoverServices()
+                        }
+                    }
+                }
+                mtuTimeoutRunnable = discoverRunnable
+                handler.postDelayed(discoverRunnable, 800)
+                gatt.requestMtu(256)
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d(TAG, "Disconnected from GATT server. Closing GATT to release system resources...")
+                mtuTimeoutRunnable?.let {
+                    handler.removeCallbacks(it)
+                    mtuTimeoutRunnable = null
+                }
+                isConnected = false
+                connectedDeviceName = null
+                connectedNodeId = 0
+                
+                try {
+                    gatt.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing GATT: ${e.message}")
+                }
+                if (gatt == bluetoothGatt) {
+                    bluetoothGatt = null
+                }
+                
+                handler.post { onConnectionStateChanged?.invoke(false) }
+
+                // Auto-reconnect if it's not a user-initiated disconnect
+                if (!userWantsDisconnect) {
+                    val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+                    if (savedMac != null) {
+                        Log.d(TAG, "Unexpected disconnect. Retrying connection in 5 seconds...")
+                        
+                        // Cancel any existing reconnect runnable
+                        reconnectRunnable?.let { handler.removeCallbacks(it) }
+                        
+                        reconnectRunnable = Runnable {
+                            if (!isConnected && !userWantsDisconnect) {
+                                val currentSavedMac = prefs.getString(PREF_PAIRED_MAC, null)
+                                if (currentSavedMac != null) {
+                                    connect(currentSavedMac)
+                                }
+                            }
+                        }
+                        handler.postDelayed(reconnectRunnable!!, 5000)
+                    }
+                }
+            }
+        }
+        
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (gatt != bluetoothGatt) {
+                Log.d(TAG, "onMtuChanged: Stale GATT callback. Ignoring.")
+                return
+            }
+            Log.d(TAG, "MTU changed to: $mtu, status: $status")
+            
+            mtuTimeoutRunnable?.let {
+                handler.removeCallbacks(it)
+                mtuTimeoutRunnable = null
+                Log.d(TAG, "MTU handshake completed. Discovering services...")
+                gatt.discoverServices()
+            }
+        }
+        
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt != bluetoothGatt) {
+                Log.d(TAG, "onServicesDiscovered: Stale GATT callback. Ignoring.")
+                return
+            }
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                val service = gatt.getService(SERVICE_UUID)
+                if (service != null) {
+                    txCharacteristic = service.getCharacteristic(TX_CHAR_UUID)
+                    rxCharacteristic = service.getCharacteristic(RX_CHAR_UUID)
+                    
+                    // Enable notifications on RX Characteristic immediately
+                    val rxChar = rxCharacteristic
+                    if (rxChar != null) {
+                        gatt.setCharacteristicNotification(rxChar, true)
+                        
+                        val descriptor = rxChar.getDescriptor(CCCD_UUID)
+                        if (descriptor != null) {
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            Log.d(TAG, "Writing CCCD descriptor to enable notifications...")
+                            gatt.writeDescriptor(descriptor)
+                        } else {
+                            finalizeConnection(gatt)
+                        }
+                    } else {
+                        finalizeConnection(gatt)
+                    }
+                } else {
+                    Log.e(TAG, "AetherMesh service NOT found on device.")
+                    disconnect()
+                }
+            } else {
+                Log.e(TAG, "Service discovery failed: $status")
+                disconnect()
+            }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt != bluetoothGatt) return
+            Log.d(TAG, "onDescriptorWrite callback received: status=$status")
+            finalizeConnection(gatt)
+        }
+
+        private fun finalizeConnection(gatt: BluetoothGatt) {
+            if (isConnected) return // Prevent double-triggering finalization
+            
+            isConnected = true
+            connectedDeviceName = gatt.device.name
+            
+            // Save MAC address to preferences for auto-reconnection
+            prefs.edit().putString(PREF_PAIRED_MAC, gatt.device.address).apply()
+            
+            // Extract Node ID from device name (AetherMesh-XXXX) or fallback/verify with MAC address
+            try {
+                val hexPart = connectedDeviceName?.substringAfter("AetherMesh-") ?: ""
+                if (hexPart.isNotEmpty() && hexPart != connectedDeviceName) {
+                    val name16Id = hexPart.toLong(16)
+                    val mac32Id = parseNodeIdFromMac(gatt.device.address)
+                    if ((mac32Id and 0xFFFFL) == name16Id) {
+                        connectedNodeId = mac32Id
+                    } else {
+                        connectedNodeId = name16Id
+                    }
+                } else {
+                    connectedNodeId = parseNodeIdFromMac(gatt.device.address)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing node ID: ${e.message}")
+                connectedNodeId = parseNodeIdFromMac(gatt.device.address)
+            }
+            
+            Log.d(TAG, "BLE services configured. Node ID: 0x${connectedNodeId.toString(16).uppercase()}")
+            handler.post { onConnectionStateChanged?.invoke(true) }
+            
+        }
+        
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (gatt != bluetoothGatt) {
+                Log.d(TAG, "onCharacteristicChanged: Stale GATT callback. Ignoring.")
+                return
+            }
+            if (characteristic.uuid == RX_CHAR_UUID) {
+                val data = characteristic.value
+                Log.d(TAG, "Packet received from BLE: ${data.size} bytes")
+                handler.post { onPacketReceived?.invoke(data) }
+            }
+        }
+    }
+
+    fun getConnectedDeviceAddress(): String? {
+        return bluetoothGatt?.device?.address
+    }
+}

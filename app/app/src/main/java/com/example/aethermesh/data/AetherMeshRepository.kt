@@ -1,0 +1,797 @@
+package com.example.aethermesh.data
+
+import android.content.Context
+import android.util.Base64
+import android.util.Log
+import com.example.aethermesh.ble.BleConnectionManager
+import com.example.aethermesh.proto.MeshPacket
+import com.example.aethermesh.proto.TextMessage
+import com.example.aethermesh.proto.Telemetry
+import com.example.aethermesh.proto.Ack
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+
+data class RouteHopInfo(
+    val targetId: Long,
+    val nextHopId: Long,
+    val hops: Int,
+    val lastSnr: Float = 0f,
+    val lastRssi: Float = 0f,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+class AetherMeshRepository(private val context: Context) {
+
+    companion object {
+        private const val TAG = "MeshRepository"
+        const val DEFAULT_CHANNEL = "General"
+        private const val MAX_TEXT_CONTENT_LENGTH = 127
+        private const val MAX_CHANNEL_LENGTH = 31
+    }
+
+    val dbHelper = DatabaseHelper(context)
+    val bleManager = BleConnectionManager(context)
+    private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+
+    // Flow for active node lists and messages
+    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _nodes = MutableStateFlow<List<MeshNode>>(emptyList())
+    val nodes: StateFlow<List<MeshNode>> = _nodes.asStateFlow()
+
+    private val _isBleConnected = MutableStateFlow(false)
+    val isBleConnected: StateFlow<Boolean> = _isBleConnected.asStateFlow()
+
+    // Group channels: the list of known channel names and the one currently being viewed.
+    private val _channels = MutableStateFlow(listOf(DEFAULT_CHANNEL))
+    val channels: StateFlow<List<String>> = _channels.asStateFlow()
+
+    private val _selectedChannel = MutableStateFlow(DEFAULT_CHANNEL)
+    val selectedChannel: StateFlow<String> = _selectedChannel.asStateFlow()
+
+    // activeChatId: null means showing the group channel, Long value means DM with that nodeId
+    private val _activeChatId = MutableStateFlow<Long?>(null)
+    val activeChatId: StateFlow<Long?> = _activeChatId.asStateFlow()
+
+    // Observed routes from packet headers
+    private val _observedRoutes = MutableStateFlow<Map<Long, RouteHopInfo>>(emptyMap())
+    val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = _observedRoutes.asStateFlow()
+
+    // Device Authentication flows
+    private val _isDeviceAuthenticated = MutableStateFlow(false)
+    val isDeviceAuthenticated: StateFlow<Boolean> = _isDeviceAuthenticated.asStateFlow()
+
+    // null = checking, true = prompt password, false = prompt set initial password
+    private val _authenticationRequired = MutableStateFlow<Boolean?>(null)
+    val authenticationRequired: StateFlow<Boolean?> = _authenticationRequired.asStateFlow()
+
+    private var pendingAuthPassword: String? = null
+
+    // Range Test Engine properties
+    private val _isRangeTestActive = MutableStateFlow(false)
+    val isRangeTestActive: StateFlow<Boolean> = _isRangeTestActive.asStateFlow()
+
+    private val _rangeTestLogs = MutableStateFlow<List<RangeTestLog>>(emptyList())
+    val rangeTestLogs: StateFlow<List<RangeTestLog>> = _rangeTestLogs.asStateFlow()
+
+    private var rangeTestTargetId: Long = 0L
+    private var lastSentRangePingId: Int = 0
+    private var lastSentRangePingTime: Long = 0L
+    private var rangeTestJob: Job? = null
+    private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
+
+    init {
+        // Purge old sign-extended negative node ID records and ghost node ID 0 records from previous version
+        try {
+            val db = dbHelper.writableDatabase
+            db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
+            db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
+            Log.d(TAG, "Successfully purged negative and zero ID records from database.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error purging invalid ID records: ${e.message}")
+        }
+
+        // Load initial data
+        refreshData()
+
+        // Configure BLE connection listener
+        bleManager.onConnectionStateChanged = { connected ->
+            Log.d(TAG, "BLE Connection changed: $connected")
+            _isBleConnected.value = connected
+            if (connected) {
+                _isDeviceAuthenticated.value = false
+                _authenticationRequired.value = null
+                val mac = bleManager.getConnectedDeviceAddress()
+                if (mac != null) {
+                    autoAuthenticate(mac)
+                }
+                refreshData()
+            } else {
+                _isDeviceAuthenticated.value = false
+                _authenticationRequired.value = null
+                refreshData()
+            }
+        }
+
+        // Configure BLE packet receiver
+        bleManager.onPacketReceived = { bytes ->
+            try {
+                // Parse protobuf packet
+                val packet = MeshPacket.parseFrom(bytes)
+                handleMeshPacket(packet)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error decoding mesh packet: ${e.message}")
+            }
+        }
+    }
+
+    private fun autoAuthenticate(macAddress: String) {
+        val savedPass = prefs.getString("node_pwd_$macAddress", null)
+        if (!savedPass.isNullOrEmpty()) {
+            Log.d(TAG, "Found saved password for $macAddress. Submitting auto-auth...")
+            sendAuthRequest(savedPass)
+        } else {
+            Log.d(TAG, "No saved password found for $macAddress. Sending status query...")
+            sendAuthRequest("") // Send empty password to query node auth status
+        }
+    }
+
+    fun sendAuthRequest(password: String): Boolean {
+        if (!bleManager.isConnected) return false
+        val localNodeId = bleManager.connectedNodeId
+        
+        val authBuilder = com.example.aethermesh.proto.AuthRequest.newBuilder()
+            .setPassword(password)
+            .setIsChangePassword(false)
+            
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(0) // Local auth
+            .setPacketId((1..100000).random())
+            .setHopLimit(1)
+            .setWantAck(false)
+            .setPrevHopId(localNodeId.toInt())
+            .setAuthRequest(authBuilder)
+            .build()
+            
+        pendingAuthPassword = password
+        return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    fun changeDevicePassword(currentPassword: String, newPassword: String): Boolean {
+        if (!bleManager.isConnected) return false
+        val localNodeId = bleManager.connectedNodeId
+        
+        val authBuilder = com.example.aethermesh.proto.AuthRequest.newBuilder()
+            .setPassword(currentPassword)
+            .setIsChangePassword(true)
+            .setNewPassword(newPassword)
+            
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(0)
+            .setPacketId((1..100000).random())
+            .setHopLimit(1)
+            .setWantAck(false)
+            .setPrevHopId(localNodeId.toInt())
+            .setAuthRequest(authBuilder)
+            .build()
+            
+        pendingAuthPassword = newPassword
+        return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    private fun handleMeshPacket(packet: MeshPacket) {
+        val senderId = packet.senderId.toLong() and 0xFFFFFFFFL
+        val recipientId = packet.recipientId.toLong() and 0xFFFFFFFFL
+        val localNodeId = bleManager.connectedNodeId
+        
+        // Handle AuthResponse packet first
+        if (packet.payloadCase == MeshPacket.PayloadCase.AUTH_RESPONSE) {
+            val authResp = packet.authResponse
+            Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}")
+            if (authResp.success) {
+                val oldNodeId = bleManager.connectedNodeId
+                // Correct the connectedNodeId in bleManager with the actual hardware node ID from the node
+                bleManager.connectedNodeId = senderId
+                
+                // Clean up duplicate old MAC-based node ID from the database if they differ
+                if (oldNodeId != 0L && oldNodeId != senderId) {
+                    dbHelper.deleteNode(oldNodeId)
+                    Log.d(TAG, "Deleted old duplicate MAC-based node ID: 0x${oldNodeId.toString(16).uppercase()}")
+                }
+                
+                _isDeviceAuthenticated.value = true
+                _authenticationRequired.value = null
+                
+                // Save password to preferences for auto-auth
+                val mac = bleManager.getConnectedDeviceAddress()
+                if (mac != null && !pendingAuthPassword.isNullOrEmpty()) {
+                    prefs.edit().putString("node_pwd_$mac", pendingAuthPassword).apply()
+                }
+                pendingAuthPassword = null
+                
+                // Update local node in SQLite database
+                val nodePrefs = context.getSharedPreferences("node_settings_$senderId", Context.MODE_PRIVATE)
+                val localName = nodePrefs.getString("node_name", "")?.takeIf { it.isNotEmpty() } ?: bleManager.connectedDeviceName ?: "Wolf Base"
+                val localShortName = nodePrefs.getString("node_short_name", "")?.takeIf { it.isNotEmpty() } ?: 
+                    localName.replace("AetherMesh-", "").replace("Node ", "").replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase().ifEmpty { String.format("%04X", (senderId and 0xFFFFL).toInt()) }
+                dbHelper.updateNodeNameAndShortName(senderId, localName, localShortName)
+
+                refreshData()
+            } else {
+                _isDeviceAuthenticated.value = false
+                if (authResp.passwordNotSet) {
+                    _authenticationRequired.value = false // Needs to set initial password
+                } else {
+                    _authenticationRequired.value = true // Incorrect password / prompt user
+                    
+                    // Clear invalid saved password
+                    val mac = bleManager.getConnectedDeviceAddress()
+                    if (mac != null) {
+                        prefs.edit().remove("node_pwd_$mac").apply()
+                    }
+                }
+                pendingAuthPassword = null
+            }
+            return
+        }
+
+        if (senderId == 0L || recipientId == 0L) {
+            Log.w(TAG, "Ignoring packet with invalid sender/recipient: sender=0x${senderId.toString(16)}, recipient=0x${recipientId.toString(16)}")
+            return
+        }
+        
+        Log.d(TAG, "Received mesh packet from 0x${senderId.toString(16).uppercase()}")
+
+        // Update routing diagnostics map
+        val prevHopId = packet.prevHopId.toLong() and 0xFFFFFFFFL
+        if (prevHopId != 0L) {
+            val hopsCount = if (senderId == prevHopId) 1 else 2
+            val currentMap = _observedRoutes.value.toMutableMap()
+            currentMap[senderId] = RouteHopInfo(
+                targetId = senderId,
+                nextHopId = prevHopId,
+                hops = hopsCount,
+                lastRssi = packet.rxRssi,
+                lastSnr = packet.rxSnr,
+                timestamp = System.currentTimeMillis()
+            )
+            _observedRoutes.value = currentMap
+        }
+
+        when (packet.payloadCase) {
+            MeshPacket.PayloadCase.TEXT -> {
+                val textMsg = packet.text
+                val isEncrypted = textMsg.isEncrypted
+                val contentReceived = textMsg.content
+                val targetChan = textMsg.channel
+                
+                val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$targetChan" else "DM_$senderId"
+                
+                val finalContent = if (isEncrypted) {
+                    val passcode = dbHelper.getChatKey(chatIdentifier)
+                    if (!passcode.isNullOrEmpty()) {
+                        decryptAES(contentReceived, passcode)
+                    } else {
+                        "[Encrypted Message - No Key Configured]"
+                    }
+                } else {
+                    contentReceived
+                }
+
+                dbHelper.insertMessage(
+                    senderId = senderId,
+                    recipientId = recipientId,
+                    content = finalContent,
+                    channel = targetChan,
+                    packetId = packet.packetId,
+                    status = "SENT",
+                    isEncrypted = isEncrypted
+                )
+                refreshData()
+            }
+            MeshPacket.PayloadCase.TELEMETRY -> {
+                val telemetry = packet.telemetry
+                var lat = telemetry.latitude
+                var lon = telemetry.longitude
+                
+                // Retrieve the primary channel to check for location fuzzer privacy settings
+                val primaryChan = dbHelper.getChannelsList().firstOrNull { it.isPrimary }
+                if (primaryChan != null && !primaryChan.preciseLocation && primaryChan.precisionMiles > 0f) {
+                    val milesToDegreesLat = primaryChan.precisionMiles / 69.0f
+                    val cosLat = Math.cos(Math.toRadians(lat.toDouble()))
+                    val milesToDegreesLon = primaryChan.precisionMiles / (69.0f * (if (cosLat > 0.0) cosLat else 1.0).toFloat())
+                    
+                    val stableOffsetLat = (((senderId.hashCode() and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
+                    val stableOffsetLon = ((((senderId.hashCode() ushr 16) and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
+
+                    lat += (stableOffsetLat * milesToDegreesLat).toFloat()
+                    lon += (stableOffsetLon * milesToDegreesLon).toFloat()
+                    Log.d(TAG, "Location fuzzer applied for primary channel: stable offset by ±${primaryChan.precisionMiles} miles")
+                }
+
+                dbHelper.updateNode(
+                    nodeId = senderId,
+                    battery = telemetry.batteryLevel,
+                    lat = lat,
+                    lon = lon,
+                    model = telemetry.nodeModel,
+                    uptimeSeconds = telemetry.uptimeSeconds.toLong() and 0xFFFFFFFFL,
+                    firmwareVersion = telemetry.firmwareVersion
+                )
+                refreshData()
+            }
+            MeshPacket.PayloadCase.ACK -> {
+                val ackedId = packet.ack.ackedPacketId
+                Log.d(TAG, "ACK received for packet: $ackedId")
+                dbHelper.updateMessageStatus(ackedId, "DELIVERED")
+                
+                // If a Range Test is active and this ACK corresponds to the last ping packet, log a success
+                if (_isRangeTestActive.value && ackedId == lastSentRangePingId) {
+                    logRangeTestResult(success = true, rssi = packet.rxRssi, snr = packet.rxSnr)
+                }
+                
+                refreshData()
+            }
+            else -> {
+                Log.d(TAG, "Unknown payload type received.")
+            }
+        }
+    }
+
+    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): Boolean {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+        val boundedContent = content.take(MAX_TEXT_CONTENT_LENGTH)
+        val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
+        val generatedPacketId = (1..100000).random()
+
+        val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
+        val passcode = dbHelper.getChatKey(chatIdentifier)
+        val isEncrypted = !passcode.isNullOrEmpty()
+
+        // 1. Insert into local DB immediately as sent by local user (store plaintext locally)
+        val localNodeId = bleManager.connectedNodeId
+        dbHelper.insertMessage(
+            senderId = localNodeId,
+            recipientId = recipientId,
+            content = boundedContent,
+            channel = if (recipientId == 0xFFFFFFFFL) boundedChannel else "",
+            packetId = generatedPacketId,
+            status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
+            isEncrypted = isEncrypted
+        )
+        refreshData()
+
+        val contentToSend = if (isEncrypted) {
+            encryptAES(boundedContent, passcode)
+        } else {
+            boundedContent
+        }
+
+        // 2. Build protobuf packet
+        val textBuilder = TextMessage.newBuilder()
+            .setContent(contentToSend)
+            .setChannel(if (recipientId == 0xFFFFFFFFL) boundedChannel else "")
+            .setIsEncrypted(isEncrypted)
+
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(recipientId.toInt())
+            .setPacketId(generatedPacketId)
+            .setHopLimit(4)
+            .setWantAck(recipientId != 0xFFFFFFFFL)
+            .setPrevHopId(localNodeId.toInt())
+            .setText(textBuilder)
+            .build()
+
+        // 3. Write over BLE
+        return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false): Boolean {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+
+        val localNodeId = bleManager.connectedNodeId
+
+        // Build NodeConfig message
+        val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
+            .setNodeName(name)
+            .setLoraSf(sf)
+            .setLoraBw(bw)
+            .setLoraTxPower(txPower)
+            .setRegion(region)
+            .setNodeRole(role)
+            .setTelemetryInterval(telemetryInterval)
+            .setScreenTimeoutSecs(screenTimeout)
+            .setPowerSaveMode(powerSaveMode)
+
+        // Build MeshPacket wrapper
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(localNodeId.toInt())
+            .setPacketId((1..100000).random())
+            .setHopLimit(1)
+            .setWantAck(false)
+            .setPrevHopId(localNodeId.toInt())
+            .setConfig(configBuilder)
+            .build()
+
+        // Write over BLE
+        val success = bleManager.sendPacket(packet.toByteArray())
+        if (success) {
+            // Update node name and short name locally in our DB so it matches right away
+            dbHelper.updateNodeNameAndShortName(localNodeId, name, shortName)
+            refreshData()
+        }
+        return success
+    }
+
+    fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
+        dbHelper.updateNodeNameAndShortName(nodeId, name, shortName)
+        refreshData()
+    }
+
+    fun sendRemoteConfig(
+        nodeId: Long,
+        name: String,
+        passwordSuffix: String,
+        sf: Int,
+        bw: Float,
+        txPower: Int,
+        region: Int,
+        role: Int,
+        telemetryInterval: Int = 60,
+        screenTimeout: Int = 30,
+        powerSaveMode: Boolean = false
+    ): Boolean {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+
+        val localNodeId = bleManager.connectedNodeId
+        val formattedName = if (passwordSuffix.isNotEmpty()) "$name:$passwordSuffix" else name
+
+        val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
+            .setNodeName(formattedName)
+            .setLoraSf(sf)
+            .setLoraBw(bw)
+            .setLoraTxPower(txPower)
+            .setRegion(region)
+            .setNodeRole(role)
+            .setTelemetryInterval(telemetryInterval)
+            .setScreenTimeoutSecs(screenTimeout)
+            .setPowerSaveMode(powerSaveMode)
+
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(nodeId.toInt())
+            .setPacketId((1..100000).random())
+            .setHopLimit(4)
+            .setWantAck(true)
+            .setPrevHopId(localNodeId.toInt())
+            .setConfig(configBuilder)
+            .build()
+
+        return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    fun refreshData() {
+        // Suppress displaying messages if the device is connected but not authenticated
+        if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
+            _messages.value = emptyList()
+            _nodes.value = emptyList()
+            return
+        }
+
+        val chatNodeId = _activeChatId.value
+        val list = if (chatNodeId == null) {
+            dbHelper.getMessages(0L, isChannel = true, channel = _selectedChannel.value)
+        } else {
+            dbHelper.getMessages(chatNodeId, isChannel = false, channel = "")
+        }
+        _messages.value = list
+
+        _nodes.value = dbHelper.getNodes()
+        
+        // Keep the channel list in sync
+        val merged = (listOf(DEFAULT_CHANNEL) + dbHelper.getChannels() + _channels.value + _selectedChannel.value)
+            .distinct()
+        _channels.value = merged
+    }
+
+    // Switch the channel shown in the Chats view.
+    fun selectChannel(channel: String) {
+        if (channel.isBlank()) return
+        _selectedChannel.value = channel
+        _activeChatId.value = null
+        if (!_channels.value.contains(channel)) {
+            _channels.value = (_channels.value + channel).distinct()
+        }
+        refreshData()
+    }
+
+    // Switch to a private Direct Message chat
+    fun selectDirectMessage(nodeId: Long) {
+        _activeChatId.value = nodeId
+        refreshData()
+    }
+
+    // Create (and switch to) a new empty channel. Returns false if it already exists.
+    fun createChannel(channel: String): Boolean {
+        val name = channel.trim()
+        if (name.isEmpty()) return false
+        val exists = _channels.value.any { it.equals(name, ignoreCase = true) }
+        selectChannel(name)
+        return !exists
+    }
+
+    // Retrieve specific direct chat messages
+    fun getDirectMessages(peerNodeId: Long): List<ChatMessage> {
+        return dbHelper.getMessages(peerNodeId, isChannel = false)
+    }
+
+    fun clearAllMessages() {
+        dbHelper.clearAllMessages()
+        refreshData()
+    }
+
+    fun clearAllNodes() {
+        dbHelper.clearAllNodes()
+        if (_isRangeTestActive.value) {
+            stopRangeTest()
+        }
+        _rangeTestLogs.value = emptyList()
+        refreshData()
+    }
+
+    // AES-256 E2EE Cryptography Helper
+    private fun deriveKey(passcode: String): SecretKeySpec {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val bytes = digest.digest(passcode.toByteArray(Charsets.UTF_8))
+        return SecretKeySpec(bytes, "AES")
+    }
+
+    fun encryptAES(plainText: String, passcode: String): String {
+        return try {
+            val keySpec = deriveKey(passcode)
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec)
+            val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+            Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.e(TAG, "Encryption failed: ${e.message}")
+            plainText
+        }
+    }
+
+    fun decryptAES(cipherText: String, passcode: String): String {
+        return try {
+            val keySpec = deriveKey(passcode)
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, keySpec)
+            val decodedBytes = Base64.decode(cipherText, Base64.NO_WRAP)
+            val decryptedBytes = cipher.doFinal(decodedBytes)
+            String(decryptedBytes, Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.e(TAG, "Decryption failed: ${e.message}")
+            "[Decryption Error - Bad Key]"
+        }
+    }
+
+    // Range Test Engine Methods
+    fun startRangeTest(targetId: Long, intervalSeconds: Int) {
+        if (rangeTestJob != null) stopRangeTest()
+        rangeTestTargetId = targetId
+        _isRangeTestActive.value = true
+        _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
+        
+        lastSentRangePingId = 0
+        lastSentRangePingTime = 0L
+        
+        rangeTestJob = repositoryScope.launch {
+            while (_isRangeTestActive.value) {
+                sendRangePing(targetId)
+                delay(intervalSeconds * 1000L)
+            }
+        }
+        Log.d(TAG, "Range Test started targeting node 0x${targetId.toString(16).uppercase()} every $intervalSeconds seconds.")
+    }
+
+    fun loadRangeTestLogs(targetId: Long) {
+        rangeTestTargetId = targetId
+        _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
+    }
+
+    fun stopRangeTest() {
+        rangeTestJob?.cancel()
+        rangeTestJob = null
+        _isRangeTestActive.value = false
+        lastSentRangePingId = 0
+        lastSentRangePingTime = 0L
+        Log.d(TAG, "Range Test stopped.")
+    }
+
+    private fun sendRangePing(targetId: Long) {
+        // 1. If there was a previous pending ping, record it as a timeout/failure
+        if (lastSentRangePingId != 0 && lastSentRangePingTime != 0L) {
+            logRangeTestResult(success = false, rssi = -140f, snr = -20f)
+        }
+        
+        if (!bleManager.isConnected) {
+            stopRangeTest()
+            return
+        }
+        
+        val localNodeId = bleManager.connectedNodeId
+        val generatedPacketId = (1..100000).random()
+        lastSentRangePingId = generatedPacketId
+        lastSentRangePingTime = System.currentTimeMillis()
+        
+        // Build a text packet with "PING_[Seq]" content
+        val textBuilder = TextMessage.newBuilder()
+            .setContent("PING_${generatedPacketId}")
+            .setChannel("")
+            .setIsEncrypted(false)
+            
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(targetId.toInt())
+            .setPacketId(generatedPacketId)
+            .setHopLimit(4)
+            .setWantAck(true)
+            .setPrevHopId(localNodeId.toInt())
+            .setText(textBuilder)
+            .build()
+            
+        bleManager.sendPacket(packet.toByteArray())
+    }
+
+    fun logRangeTestResult(success: Boolean, rssi: Float, snr: Float) {
+        val targetId = rangeTestTargetId
+        if (targetId == 0L) return
+        
+        val localNodeId = bleManager.connectedNodeId
+        var lat = 0.0
+        var lon = 0.0
+        val localNode = dbHelper.getNodes().firstOrNull { it.nodeId == localNodeId }
+        if (localNode != null) {
+            lat = localNode.latitude.toDouble()
+            lon = localNode.longitude.toDouble()
+        }
+        
+        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success)
+        
+        // Update live flows
+        _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
+        
+        // Clear last tracking
+        lastSentRangePingId = 0
+        lastSentRangePingTime = 0L
+    }
+
+    fun clearRangeTestLogs(targetId: Long) {
+        dbHelper.clearRangeTestLogs(targetId)
+        _rangeTestLogs.value = emptyList()
+    }
+
+    fun getChannelsList(): List<ChannelConfig> {
+        return dbHelper.getChannelsList()
+    }
+
+    fun insertChannel(channel: ChannelConfig): Long {
+        val id = dbHelper.insertChannel(channel)
+        refreshChannelsList()
+        return id
+    }
+
+    fun updateChannel(channel: ChannelConfig) {
+        dbHelper.updateChannel(channel)
+        refreshChannelsList()
+    }
+
+    fun deleteChannel(id: Long) {
+        dbHelper.deleteChannel(id)
+        refreshChannelsList()
+    }
+
+    fun generateRandomPsk(): String {
+        val bytes = ByteArray(16)
+        java.security.SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
+    private fun refreshChannelsList() {
+        val list = dbHelper.getChannelsList().map { it.name }
+        _channels.value = if (list.isEmpty()) listOf(DEFAULT_CHANNEL) else list
+    }
+
+    fun getOrCreateEcdhKeys(): Pair<String, String> {
+        val pubKey = prefs.getString("ecdh_public_key", null)
+        val privKey = prefs.getString("ecdh_private_key", null)
+        if (pubKey != null && privKey != null) {
+            return Pair(pubKey, privKey)
+        }
+        return regenerateEcdhKeys()
+    }
+
+    fun regenerateEcdhKeys(): Pair<String, String> {
+        return try {
+            val keyGen = java.security.KeyPairGenerator.getInstance("EC")
+            keyGen.initialize(256)
+            val pair = keyGen.generateKeyPair()
+            val pub = Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP)
+            val priv = Base64.encodeToString(pair.private.encoded, Base64.NO_WRAP)
+            prefs.edit().putString("ecdh_public_key", pub).putString("ecdh_private_key", priv).apply()
+            Pair(pub, priv)
+        } catch (e: Exception) {
+            Log.e(TAG, "ECDH generation error: ${e.message}")
+            Pair("ErrorGeneratingPublicKey", "ErrorGeneratingPrivateKey")
+        }
+    }
+
+    fun sendPhoneLocation(lat: Double, lon: Double): Boolean {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+
+        val localNodeId = bleManager.connectedNodeId
+        
+        var fuzzedLat = lat
+        var fuzzedLon = lon
+
+        // Retrieve the primary channel to check for location fuzzer privacy settings
+        val primaryChan = dbHelper.getChannelsList().firstOrNull { it.isPrimary }
+        if (primaryChan != null) {
+            // If position sharing is disabled on the channel, do not send GPS coordinates
+            if (!primaryChan.positionEnabled) {
+                Log.d(TAG, "Position sharing is disabled on primary channel. Skipping GPS upload.")
+                return false
+            }
+            
+            // If precise location is disabled, fuzz the transmitted GPS coordinates
+            if (!primaryChan.preciseLocation && primaryChan.precisionMiles > 0f) {
+                val milesToDegreesLat = primaryChan.precisionMiles / 69.0f
+                val cosLat = Math.cos(Math.toRadians(lat))
+                val milesToDegreesLon = primaryChan.precisionMiles / (69.0f * (if (cosLat > 0.0) cosLat else 1.0))
+                
+                val stableOffsetLat = (((localNodeId.hashCode() and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
+                val stableOffsetLon = ((((localNodeId.hashCode() ushr 16) and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
+
+                fuzzedLat += stableOffsetLat * milesToDegreesLat
+                fuzzedLon += stableOffsetLon * milesToDegreesLon
+                Log.d(TAG, "Location fuzzer applied for transmitted GPS: stable offset by ±${primaryChan.precisionMiles} miles")
+            }
+        }
+
+        // Build Telemetry message containing phone's position
+        val telemetryBuilder = com.example.aethermesh.proto.Telemetry.newBuilder()
+            .setLatitude(fuzzedLat.toFloat())
+            .setLongitude(fuzzedLon.toFloat())
+            .setBatteryLevel(100) // Dummy battery level
+            .setNodeModel("Phone Inherited")
+            .setUptimeSeconds(0)
+            .setFirmwareVersion("")
+
+        // Build MeshPacket wrapper
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(localNodeId.toInt()) // Set recipient to local node so it intercepts it
+            .setPacketId((1..100000).random())
+            .setHopLimit(1)
+            .setWantAck(false)
+            .setPrevHopId(localNodeId.toInt())
+            .setTelemetry(telemetryBuilder)
+            .build()
+
+        // Write over BLE
+        return bleManager.sendPacket(packet.toByteArray())
+    }
+}
