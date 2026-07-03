@@ -317,10 +317,15 @@ void updateDisplay() {
     
     unsigned long now = millis();
     bool shouldBeOn = true;
-    uint32_t activeTimeout = powerSaveMode ? 10 : screenTimeoutSecs;
+    // Power save caps the screen-on window at 10s, but never overrides "Always Off"
+    // (0) and downgrades "Always On" (0xFFFFFFFF) to the 10s window.
+    uint32_t activeTimeout = screenTimeoutSecs;
+    if (powerSaveMode && activeTimeout > 10) {
+        activeTimeout = 10;
+    }
     if (activeTimeout == 0) {
         shouldBeOn = false;
-    } else if (activeTimeout == 0xFFFFFFFF && !powerSaveMode) {
+    } else if (activeTimeout == 0xFFFFFFFF) {
         shouldBeOn = true;
     } else {
         shouldBeOn = (now - lastDisplayActivityTime < activeTimeout * 1000UL);
@@ -491,14 +496,16 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
     
     // 2. Feed into router for routing processing (unicast/broadcast relays, ACKs, etc)
     router.processIncomingPacket(data, len, rssi, snr);
-    
-    lastDisplayActivityTime = millis();
+
+    // Refresh the display content, but do NOT count radio traffic as display
+    // activity — the mesh beacons every few seconds, which would keep resetting
+    // the screen timeout and the screen would never sleep. Only the user button
+    // and the new-message popup wake the display.
     updateDisplay();
 }
 
 void onLoRaPacketTransmitted() {
     txPacketCount++;
-    lastDisplayActivityTime = millis();
     updateDisplay();
 }
 
@@ -827,6 +834,8 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
+    // Start the screen-timeout window from boot so the display shows initially
+    lastDisplayActivityTime = millis();
     updateDisplay();
     Serial.println("Setup completed successfully. Ready.");
 }
