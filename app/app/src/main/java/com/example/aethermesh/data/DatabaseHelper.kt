@@ -405,6 +405,32 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
+    // Retrieve Range Test logs for every target (for CSV export/analysis)
+    fun getAllRangeTestLogs(): List<RangeTestLog> {
+        val db = this.readableDatabase
+        val list = mutableListOf<RangeTestLog>()
+        val cursor = db.rawQuery(
+            "SELECT * FROM $TABLE_RANGE_TEST_LOGS ORDER BY $COL_LOG_TIMESTAMP ASC",
+            null
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                list.add(RangeTestLog(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
+                    targetId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TARGET_ID)),
+                    latitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LATITUDE)),
+                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LONGITUDE)),
+                    rssi = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_RSSI)).toFloat(),
+                    snr = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_SNR)).toFloat(),
+                    success = cursor.getInt(cursor.getColumnIndexOrThrow(COL_LOG_SUCCESS)) != 0
+                ))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
+    }
+
     // Clear Range Test diagnostic logs for a node
     fun clearRangeTestLogs(targetId: Long) {
         val db = this.writableDatabase

@@ -684,6 +684,10 @@ class AetherMeshRepository(private val context: Context) {
         _rangeTestLogs.value = emptyList()
     }
 
+    fun getAllRangeTestLogs(): List<RangeTestLog> {
+        return dbHelper.getAllRangeTestLogs()
+    }
+
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList()
     }

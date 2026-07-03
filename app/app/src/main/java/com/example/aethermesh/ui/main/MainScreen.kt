@@ -3802,8 +3802,7 @@ fun SettingsView(
                 // CSV Exports
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
-                        val rangeLogs = viewModel.rangeTestLogs.value
-                        exportRangeTestLogsToCsv(context, viewModel.connectedNodeId, rangeLogs)
+                        exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs())
                     }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -5094,16 +5093,28 @@ fun ConnectionView(
                                 onClick = { viewModel.stopRangeTest() },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
                                 Text("Stop Test", color = TextLight, fontSize = 12.sp)
                             }
-                            
+
+                            Button(
+                                onClick = { exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs()) },
+                                modifier = Modifier.weight(1f).height(38.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF164E63)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) {
+                                Text("Export CSV", color = AccentCyan, fontSize = 12.sp)
+                            }
+
                             Button(
                                 onClick = { selectedRangeTargetNode?.let { viewModel.clearRangeTestLogs(it.nodeId) } },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF451a1a)),
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
                                 Text("Clear Logs", color = Color(0xFFFCA5A5), fontSize = 12.sp)
                             }
@@ -6064,15 +6075,42 @@ fun SubPortalView(
         }
     }
 }
-fun exportRangeTestLogsToCsv(context: Context, targetId: Long, logs: List<com.example.aethermesh.data.RangeTestLog>) {
-    val csv = StringBuilder("Timestamp,TargetId,Latitude,Longitude,RSSI,SNR,Success\n")
-    logs.forEach {
-        val date = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.timestamp))
-        csv.append("\"$date\",0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},${it.rssi},${it.snr},${it.success}\n")
+fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh.data.RangeTestLog>) {
+    if (logs.isEmpty()) {
+        android.widget.Toast.makeText(context, "No range test data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        return
     }
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Range Test Logs", csv.toString()))
-    android.widget.Toast.makeText(context, "Range test logs exported to CSV and copied to clipboard!", android.widget.Toast.LENGTH_LONG).show()
+
+    // Machine-friendly CSV: epoch ms for tooling, ISO local time for humans,
+    // raw lat/lon/RSSI/SNR for mapping and signal analysis.
+    val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,rssi_dbm,snr_db,success\n")
+    logs.forEach {
+        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},${it.rssi},${it.snr},${it.success}\n")
+    }
+
+    try {
+        val exportDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        val file = java.io.File(exportDir, "aethermesh_rangetest_$stamp.csv")
+        file.writeText(csv.toString())
+
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Range Test Export")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "Export Range Test CSV"))
+    } catch (e: Exception) {
+        // Fall back to the clipboard if no app can take the file
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Range Test Logs", csv.toString()))
+        android.widget.Toast.makeText(context, "Share failed (${e.message}); CSV copied to clipboard instead.", android.widget.Toast.LENGTH_LONG).show()
+    }
 }
 
 fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>) {

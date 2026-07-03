@@ -142,6 +142,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.sendRemoteConfig(nodeId, name, password, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode)
     }
 
+    fun getAllRangeTestLogs() = repository.getAllRangeTestLogs()
+
     fun sendAuthRequest(password: String): Boolean {
         return repository.sendAuthRequest(password)
     }
