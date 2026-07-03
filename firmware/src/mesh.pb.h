@@ -48,7 +48,7 @@ typedef struct _aethermesh_Ack {
 
 /* Configuration settings sync */
 typedef struct _aethermesh_NodeConfig {
-    char node_name[16]; /* Custom name (max size 16 characters) */
+    char node_name[17]; /* Custom name (max size 16 characters) */
     uint32_t lora_sf; /* 7 to 12 */
     float lora_bw; /* 125.0, 250.0, 500.0 */
     int32_t lora_tx_power; /* 10 to 22 (up to 30 for 1W) */
@@ -291,7 +291,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_MeshPacket_size               210
-#define aethermesh_NodeConfig_size               99
+#define aethermesh_NodeConfig_size               100
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                79
 #define aethermesh_TextMessage_size              165

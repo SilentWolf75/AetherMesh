@@ -2398,13 +2398,22 @@ fun SettingsView(
         }
     }
 
-    LaunchedEffect(viewModel.connectedNodeId, nodes) {
+    // Only reset transient auth state when the connected node actually changes
+    LaunchedEffect(viewModel.connectedNodeId) {
         authPasswordInput = ""
         authPasswordError = false
+    }
+
+    // Populate the config form ONCE per connected node. Keying this on `nodes`
+    // used to clobber in-progress edits (name, sliders) every time a telemetry
+    // packet refreshed the node list.
+    var configLoadedForNode by remember { mutableStateOf(0L) }
+    LaunchedEffect(viewModel.connectedNodeId, nodes) {
         channelsList = viewModel.getChannelsList()
         ecdhKeys = viewModel.getOrCreateEcdhKeys()
         val nodeKey = viewModel.connectedNodeId
-        if (nodeKey != 0L) {
+        if (nodeKey != 0L && nodeKey != configLoadedForNode) {
+            configLoadedForNode = nodeKey
             val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
             val matchedNode = nodes.find { it.nodeId == nodeKey }
             nodeName = matchedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: nodePrefs.getString("node_name", "") ?: ""
