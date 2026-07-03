@@ -57,6 +57,7 @@ typedef struct _aethermesh_NodeConfig {
     uint32_t telemetry_interval; /* In seconds */
     uint32_t screen_timeout_secs; /* Screen timeout in seconds (0 = display always off, 0xFFFFFFFF = display always on, default/standard is 30s) */
     bool power_save_mode; /* Auto sleep, lower telemetry, reduce BLE advertising when low battery */
+    char config_password[33]; /* Node admin password authorizing a remote (over-LoRa) config change. */
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -121,7 +122,7 @@ extern "C" {
 #define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, ""}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0}
@@ -129,7 +130,7 @@ extern "C" {
 #define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, ""}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -157,6 +158,7 @@ extern "C" {
 #define aethermesh_NodeConfig_telemetry_interval_tag 7
 #define aethermesh_NodeConfig_screen_timeout_secs_tag 8
 #define aethermesh_NodeConfig_power_save_mode_tag 9
+#define aethermesh_NodeConfig_config_password_tag 10
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -245,7 +247,8 @@ X(a, STATIC,   SINGULAR, UINT32,   region,            5) \
 X(a, STATIC,   SINGULAR, UINT32,   node_role,         6) \
 X(a, STATIC,   SINGULAR, UINT32,   telemetry_interval,   7) \
 X(a, STATIC,   SINGULAR, UINT32,   screen_timeout_secs,   8) \
-X(a, STATIC,   SINGULAR, BOOL,     power_save_mode,   9)
+X(a, STATIC,   SINGULAR, BOOL,     power_save_mode,   9) \
+X(a, STATIC,   SINGULAR, STRING,   config_password,  10)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -288,7 +291,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_MeshPacket_size               210
-#define aethermesh_NodeConfig_size               65
+#define aethermesh_NodeConfig_size               99
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                79
 #define aethermesh_TextMessage_size              165

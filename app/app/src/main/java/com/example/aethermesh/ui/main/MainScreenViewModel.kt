@@ -129,7 +129,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun sendRemoteConfig(
         nodeId: Long,
         name: String,
-        passwordSuffix: String,
+        password: String,
         sf: Int,
         bw: Float,
         txPower: Int,
@@ -139,7 +139,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         screenTimeout: Int = 30,
         powerSaveMode: Boolean = false
     ): Boolean {
-        return repository.sendRemoteConfig(nodeId, name, passwordSuffix, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode)
+        return repository.sendRemoteConfig(nodeId, name, password, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode)
     }
 
     fun sendAuthRequest(password: String): Boolean {

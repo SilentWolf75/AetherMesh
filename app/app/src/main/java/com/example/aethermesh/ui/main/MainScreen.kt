@@ -2011,7 +2011,7 @@ fun MapViewCompose(
                         val success = viewModel.sendRemoteConfig(
                             nodeId = node.nodeId,
                             name = remoteName.trim(),
-                            passwordSuffix = remotePassword.trim(),
+                            password = remotePassword.trim(),
                             sf = remoteSF,
                             bw = remoteBW,
                             txPower = remoteTxPower,

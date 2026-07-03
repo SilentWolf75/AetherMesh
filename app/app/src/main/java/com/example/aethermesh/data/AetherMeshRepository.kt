@@ -446,7 +446,7 @@ class AetherMeshRepository(private val context: Context) {
     fun sendRemoteConfig(
         nodeId: Long,
         name: String,
-        passwordSuffix: String,
+        password: String,
         sf: Int,
         bw: Float,
         txPower: Int,
@@ -459,10 +459,10 @@ class AetherMeshRepository(private val context: Context) {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
-        val formattedName = if (passwordSuffix.isNotEmpty()) "$name:$passwordSuffix" else name
 
         val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
-            .setNodeName(formattedName)
+            .setNodeName(name)
+            .setConfigPassword(password)
             .setLoraSf(sf)
             .setLoraBw(bw)
             .setLoraTxPower(txPower)

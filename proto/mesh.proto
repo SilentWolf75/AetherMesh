@@ -72,6 +72,8 @@ message NodeConfig {
   uint32 telemetry_interval = 7; // In seconds
   uint32 screen_timeout_secs = 8; // Screen timeout in seconds (0 = display always off, 0xFFFFFFFF = display always on, default/standard is 30s)
   bool power_save_mode = 9;       // Auto sleep, lower telemetry, reduce BLE advertising when low battery
+  string config_password = 10;    // Node admin password authorizing a remote (over-LoRa) config change.
+                                  // Empty for local BLE config (the BLE session is already authenticated).
 }
 
 // Authentication request sent by companion app to LoRa node
