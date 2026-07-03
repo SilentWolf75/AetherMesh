@@ -182,11 +182,12 @@ void RadioManager::loop() {
                       radio->getRSSI(false));
     }
 
-    // RX watchdog: with mesh beacons every ~7-10s from any nearby node, a full
-    // minute with no RX activity of any kind (packet, CRC error, header error)
-    // most likely means the SX1262 silently dropped out of RX mode. Re-arm it.
-    if (!isTransmitting && (millis() - lastRxActivityTime > 60000)) {
-        Serial.printf("RX watchdog: no receive activity for 60s (IRQ=0x%04X). Re-arming receiver.\n",
+    // RX watchdog: with telemetry from each nearby node every ~60s, two minutes
+    // with no RX activity of any kind (packet, CRC error, header error) most
+    // likely means the SX1262 silently dropped out of RX mode. Re-arm it.
+    // (Harmless no-op if the mesh is genuinely quiet, e.g. a lone node.)
+    if (!isTransmitting && (millis() - lastRxActivityTime > 120000)) {
+        Serial.printf("RX watchdog: no receive activity for 120s (IRQ=0x%04X). Re-arming receiver.\n",
                       radio->getIrqStatus());
         radio->standby();
 #if defined(HELTEC_V4)

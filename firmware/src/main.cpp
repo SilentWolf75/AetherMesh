@@ -302,6 +302,40 @@ uint8_t readBatteryLevel() {
     haveSample = true;
     lastSampleTime = millis();
     return cachedLevel;
+#elif defined(RAK4631) || defined(RAK3401_1W)
+    static uint32_t lastSampleTime = 0;
+    static uint8_t cachedLevel = 0;
+    static bool haveSample = false;
+
+    if (haveSample && (millis() - lastSampleTime < 30000)) {
+        return cachedLevel;
+    }
+
+    // WisBlock battery sense: VBAT through a 1.5M/1M divider on WB_A0.
+    // 12-bit ADC with the 3.0V internal reference -> 0.7324 mV/LSB, x1.73 divider.
+    analogReference(AR_INTERNAL_3_0);
+    analogReadResolution(12);
+    delay(2); // let the reference settle
+    int rawValue = analogRead(WB_A0);
+    float voltage = (float)rawValue * 0.73242188f * 1.73f / 1000.0f;
+
+    Serial.print("Battery ADC: ");
+    Serial.print(rawValue);
+    Serial.print(" | Calc Voltage: ");
+    Serial.print(voltage);
+    Serial.println(" V");
+
+    // Standard LiPo discharge range: 3.3V (0%) to 4.2V (100%)
+    if (voltage >= 4.2f) {
+        cachedLevel = 100;
+    } else if (voltage <= 3.3f) {
+        cachedLevel = 0;
+    } else {
+        cachedLevel = (uint8_t)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
+    }
+    haveSample = true;
+    lastSampleTime = millis();
+    return cachedLevel;
 #else
     return 98; // Fallback for other boards
 #endif
@@ -942,6 +976,9 @@ void loop() {
 
     // Raw radio heartbeat for link diagnostics. This bypasses BLE, protobuf, and
     // the mesh router so RX count proves the LoRa layer itself is working.
+    // Disabled by default (costs battery + airtime on every node forever);
+    // enable with -D ENABLE_RAW_BEACON in platformio.ini for bench debugging.
+#ifdef ENABLE_RAW_BEACON
     static uint32_t lastRawBeacon = 0;
     uint32_t beaconInterval = 7000 + (localNodeId % 3000);
     if (millis() - lastRawBeacon > beaconInterval) {
@@ -960,7 +997,9 @@ void loop() {
         rawBeaconCount++;
         radioMgr.sendPacket(beacon, sizeof(beacon));
     }
-    
+#endif // ENABLE_RAW_BEACON
+
+
     // Periodic status logging
     static uint32_t lastPrint = 0;
     if (millis() - lastPrint > 10000) {
