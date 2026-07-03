@@ -53,7 +53,10 @@ RadioManager::RadioManager() {
     pinDio1 = 47; // PIN_LORA_DIO_1
     txPower = 20; // Default
 #if defined(RAK3401_1W)
-    txPower = 27; // High power default (up to 30)
+    // The SX1262 die itself accepts at most 22 dBm — RadioLib rejects anything
+    // higher and begin() fails, halting the node. The RAK3401's "1W" comes from
+    // its external PA stage, which amplifies whatever the SX1262 outputs.
+    txPower = 22;
 #endif
 #else
     // Fallback defaults
@@ -171,8 +174,9 @@ void RadioManager::loop() {
     // when no packets are arriving (diagnosing "node stopped receiving" reports).
     if (millis() - lastHealthLogTime > 30000) {
         lastHealthLogTime = millis();
-        Serial.printf("Radio health: mode=%s | IRQ=0x%04X | last RX activity %lus ago | ambient RSSI %.1f dBm\n",
+        Serial.printf("Radio health: mode=%s | cfg %.3fMHz SF%u BW%d %ddBm | IRQ=0x%04X | last RX activity %lus ago | ambient RSSI %.1f dBm\n",
                       isTransmitting ? "TX" : "RX",
+                      frequency, (unsigned)spreadingFactor, (int)bandwidth, (int)txPower,
                       radio->getIrqStatus(),
                       (unsigned long)((millis() - lastRxActivityTime) / 1000),
                       radio->getRSSI(false));
@@ -409,43 +413,66 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
     if (!radio) {
         return false;
     }
-    
+
+    // Sanitize before touching the chip: this runs at every boot with values
+    // from NVS/app config, and a single rejected setter must never leave the
+    // node with its receiver off.
+    if (sf < 7 || sf > 12) {
+        Serial.printf("Invalid SF %u from settings; clamping to 9.\n", sf);
+        sf = 9;
+    }
+    if (bw != 125.0f && bw != 250.0f && bw != 500.0f) {
+        Serial.printf("Invalid bandwidth %.1f from settings; clamping to 125.0.\n", bw);
+        bw = 125.0f;
+    }
+    if (power > 22) {
+        // SX1262 die limit; RadioLib rejects anything above 22 dBm.
+        Serial.printf("TX power %d exceeds SX1262 limit; clamping to 22.\n", power);
+        power = 22;
+    } else if (power < -9) {
+        Serial.printf("TX power %d below SX1262 limit; clamping to -9.\n", power);
+        power = -9;
+    }
+
     // Put radio in standby to apply configuration changes
     radio->standby();
-    
+
     frequency = freq;
     bandwidth = bw;
     spreadingFactor = sf;
     txPower = power;
-    
+
+    // Apply everything and keep going on individual failures — the radio MUST
+    // end up back in receive mode no matter what.
+    bool allApplied = true;
     int state = radio->setFrequency(frequency);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set frequency, code: ");
         Serial.println(state);
-        return false;
+        allApplied = false;
     }
-    
+
     state = radio->setBandwidth(bandwidth);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set bandwidth, code: ");
         Serial.println(state);
-        return false;
+        allApplied = false;
     }
-    
+
     state = radio->setSpreadingFactor(spreadingFactor);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set spreading factor, code: ");
         Serial.println(state);
-        return false;
+        allApplied = false;
     }
-    
+
     state = radio->setOutputPower(txPower);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set output power, code: ");
         Serial.println(state);
-        return false;
+        allApplied = false;
     }
-    
+
 #if defined(HELTEC_V4)
     setHeltecV4TransmitEnable(false);
     uint8_t patchVal = 0x01;
@@ -457,7 +484,11 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
         Serial.println(state);
         return false;
     }
-    
-    Serial.println("Radio settings reinitialized successfully.");
-    return true;
+
+    if (allApplied) {
+        Serial.println("Radio settings reinitialized successfully.");
+    } else {
+        Serial.println("Radio reinit finished with errors (see above); receiver re-armed with partial config.");
+    }
+    return allApplied;
 }
