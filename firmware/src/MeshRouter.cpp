@@ -262,7 +262,11 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             ackPacket.prev_hop_id = localNodeId;
             ackPacket.which_payload = aethermesh_MeshPacket_ack_tag;
             ackPacket.payload.ack.acked_packet_id = packet.packet_id;
-            
+            // Report how we heard the packet, so the sender learns the
+            // outbound link quality (not just the ACK's return signal)
+            ackPacket.payload.ack.acked_rx_rssi = rssi;
+            ackPacket.payload.ack.acked_rx_snr = snr;
+
             serializeAndSend(&ackPacket);
         }
     } else if (packet.recipient_id == 0xFFFFFFFF) {

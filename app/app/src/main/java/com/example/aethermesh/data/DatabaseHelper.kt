@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 6
+        private const val DATABASE_VERSION = 7
 
         // Messages Table
         const val TABLE_MESSAGES = "messages"
@@ -51,6 +51,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_LOG_RSSI = "rssi"
         const val COL_LOG_SNR = "snr"
         const val COL_LOG_SUCCESS = "success"
+        // Signal quality of the ping AS HEARD BY THE TARGET (reported back in the ACK).
+        // NULL when the target didn't report it (old firmware) or the ping timed out.
+        const val COL_LOG_REMOTE_RSSI = "remote_rssi"
+        const val COL_LOG_REMOTE_SNR = "remote_snr"
 
         // Channels Table
         const val TABLE_CHANNELS = "channels"
@@ -111,7 +115,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_LOG_LONGITUDE REAL,
                 $COL_LOG_RSSI REAL,
                 $COL_LOG_SNR REAL,
-                $COL_LOG_SUCCESS INTEGER
+                $COL_LOG_SUCCESS INTEGER,
+                $COL_LOG_REMOTE_RSSI REAL,
+                $COL_LOG_REMOTE_SNR REAL
             )
         """.trimIndent()
 
@@ -209,6 +215,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_SHORT_NAME TEXT DEFAULT ''")
             } catch (e: Exception) {
                 android.util.Log.e("DatabaseHelper", "Failed to add short_name column: ${e.message}")
+            }
+        }
+        if (oldVersion < 7) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_REMOTE_RSSI REAL")
+                db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_REMOTE_SNR REAL")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add remote signal columns: ${e.message}")
             }
         }
     }
@@ -364,7 +378,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         longitude: Double,
         rssi: Float,
         snr: Float,
-        success: Boolean
+        success: Boolean,
+        remoteRssi: Float? = null,
+        remoteSnr: Float? = null
     ): Long {
         val db = this.writableDatabase
         val values = ContentValues().apply {
@@ -375,8 +391,27 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_LOG_RSSI, rssi.toDouble())
             put(COL_LOG_SNR, snr.toDouble())
             put(COL_LOG_SUCCESS, if (success) 1 else 0)
+            if (remoteRssi != null) put(COL_LOG_REMOTE_RSSI, remoteRssi.toDouble()) else putNull(COL_LOG_REMOTE_RSSI)
+            if (remoteSnr != null) put(COL_LOG_REMOTE_SNR, remoteSnr.toDouble()) else putNull(COL_LOG_REMOTE_SNR)
         }
         return db.insert(TABLE_RANGE_TEST_LOGS, null, values)
+    }
+
+    private fun rangeTestLogFromCursor(cursor: android.database.Cursor): RangeTestLog {
+        val remoteRssiIdx = cursor.getColumnIndexOrThrow(COL_LOG_REMOTE_RSSI)
+        val remoteSnrIdx = cursor.getColumnIndexOrThrow(COL_LOG_REMOTE_SNR)
+        return RangeTestLog(
+            id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
+            timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
+            targetId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TARGET_ID)),
+            latitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LATITUDE)),
+            longitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LONGITUDE)),
+            rssi = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_RSSI)).toFloat(),
+            snr = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_SNR)).toFloat(),
+            success = cursor.getInt(cursor.getColumnIndexOrThrow(COL_LOG_SUCCESS)) != 0,
+            remoteRssi = if (cursor.isNull(remoteRssiIdx)) null else cursor.getDouble(remoteRssiIdx).toFloat(),
+            remoteSnr = if (cursor.isNull(remoteSnrIdx)) null else cursor.getDouble(remoteSnrIdx).toFloat()
+        )
     }
 
     // Retrieve Range Test diagnostic logs
@@ -389,16 +424,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         )
         if (cursor.moveToFirst()) {
             do {
-                list.add(RangeTestLog(
-                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
-                    targetId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TARGET_ID)),
-                    latitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LATITUDE)),
-                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LONGITUDE)),
-                    rssi = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_RSSI)).toFloat(),
-                    snr = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_SNR)).toFloat(),
-                    success = cursor.getInt(cursor.getColumnIndexOrThrow(COL_LOG_SUCCESS)) != 0
-                ))
+                list.add(rangeTestLogFromCursor(cursor))
             } while (cursor.moveToNext())
         }
         cursor.close()
@@ -415,16 +441,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         )
         if (cursor.moveToFirst()) {
             do {
-                list.add(RangeTestLog(
-                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
-                    targetId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TARGET_ID)),
-                    latitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LATITUDE)),
-                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_LONGITUDE)),
-                    rssi = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_RSSI)).toFloat(),
-                    snr = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_SNR)).toFloat(),
-                    success = cursor.getInt(cursor.getColumnIndexOrThrow(COL_LOG_SUCCESS)) != 0
-                ))
+                list.add(rangeTestLogFromCursor(cursor))
             } while (cursor.moveToNext())
         }
         cursor.close()
@@ -752,5 +769,9 @@ data class RangeTestLog(
     val longitude: Double,
     val rssi: Float,
     val snr: Float,
-    val success: Boolean
+    val success: Boolean,
+    // Ping signal quality as measured AT THE TARGET, reported back in the ACK.
+    // Null on timeouts or when the target runs firmware that doesn't report it.
+    val remoteRssi: Float? = null,
+    val remoteSnr: Float? = null
 )

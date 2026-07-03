@@ -338,9 +338,17 @@ class AetherMeshRepository(private val context: Context) {
                 Log.d(TAG, "ACK received for packet: $ackedId")
                 dbHelper.updateMessageStatus(ackedId, "DELIVERED")
                 
-                // If a Range Test is active and this ACK corresponds to the last ping packet, log a success
+                // If a Range Test is active and this ACK corresponds to the last ping packet, log a success.
+                // ack.ackedRxRssi/Snr = how the TARGET heard our ping (0 = not reported by old firmware);
+                // packet.rxRssi/Snr = how our node heard the returning ACK.
                 if (_isRangeTestActive.value && ackedId == lastSentRangePingId) {
-                    logRangeTestResult(success = true, rssi = packet.rxRssi, snr = packet.rxSnr)
+                    logRangeTestResult(
+                        success = true,
+                        rssi = packet.rxRssi,
+                        snr = packet.rxSnr,
+                        remoteRssi = packet.ack.ackedRxRssi.takeIf { it != 0f },
+                        remoteSnr = packet.ack.ackedRxSnr.takeIf { it != 0f }
+                    )
                 }
                 
                 refreshData()
@@ -656,10 +664,10 @@ class AetherMeshRepository(private val context: Context) {
         bleManager.sendPacket(packet.toByteArray())
     }
 
-    fun logRangeTestResult(success: Boolean, rssi: Float, snr: Float) {
+    fun logRangeTestResult(success: Boolean, rssi: Float, snr: Float, remoteRssi: Float? = null, remoteSnr: Float? = null) {
         val targetId = rangeTestTargetId
         if (targetId == 0L) return
-        
+
         val localNodeId = bleManager.connectedNodeId
         var lat = 0.0
         var lon = 0.0
@@ -668,8 +676,8 @@ class AetherMeshRepository(private val context: Context) {
             lat = localNode.latitude.toDouble()
             lon = localNode.longitude.toDouble()
         }
-        
-        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success)
+
+        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success, remoteRssi, remoteSnr)
         
         // Update live flows
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)

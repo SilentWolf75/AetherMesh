@@ -59,6 +59,9 @@ message RouteDiscovery {
 // Acknowledgment for reliable packet delivery
 message Ack {
   uint32 acked_packet_id = 1;
+  float acked_rx_rssi = 2;   // RSSI (dBm) at which the ACKing node heard the acked packet.
+                             // Gives the sender the outbound link quality; 0 = not reported.
+  float acked_rx_snr = 3;    // SNR (dB) at which the ACKing node heard the acked packet
 }
 
 // Configuration settings sync

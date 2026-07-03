@@ -44,6 +44,9 @@ typedef struct _aethermesh_RouteDiscovery {
 /* Acknowledgment for reliable packet delivery */
 typedef struct _aethermesh_Ack {
     uint32_t acked_packet_id;
+    float acked_rx_rssi; /* RSSI (dBm) at which the ACKing node heard the acked packet. */
+    /* Gives the sender the outbound link quality; 0 = not reported. */
+    float acked_rx_snr; /* SNR (dB) at which the ACKing node heard the acked packet */
 } aethermesh_Ack;
 
 /* Configuration settings sync */
@@ -121,7 +124,7 @@ extern "C" {
 #define aethermesh_TextMessage_init_default      {"", "", 0}
 #define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, ""}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
-#define aethermesh_Ack_init_default              {0}
+#define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
@@ -129,7 +132,7 @@ extern "C" {
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
 #define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, ""}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
-#define aethermesh_Ack_init_zero                 {0}
+#define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
@@ -149,6 +152,8 @@ extern "C" {
 #define aethermesh_RouteDiscovery_target_id_tag  2
 #define aethermesh_RouteDiscovery_metric_tag     3
 #define aethermesh_Ack_acked_packet_id_tag       1
+#define aethermesh_Ack_acked_rx_rssi_tag         2
+#define aethermesh_Ack_acked_rx_snr_tag          3
 #define aethermesh_NodeConfig_node_name_tag      1
 #define aethermesh_NodeConfig_lora_sf_tag        2
 #define aethermesh_NodeConfig_lora_bw_tag        3
@@ -234,7 +239,9 @@ X(a, STATIC,   SINGULAR, UINT32,   metric,            3)
 #define aethermesh_RouteDiscovery_DEFAULT NULL
 
 #define aethermesh_Ack_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   acked_packet_id,   1)
+X(a, STATIC,   SINGULAR, UINT32,   acked_packet_id,   1) \
+X(a, STATIC,   SINGULAR, FLOAT,    acked_rx_rssi,     2) \
+X(a, STATIC,   SINGULAR, FLOAT,    acked_rx_snr,      3)
 #define aethermesh_Ack_CALLBACK NULL
 #define aethermesh_Ack_DEFAULT NULL
 
@@ -287,7 +294,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 
 /* Maximum encoded size of messages (where known) */
 #define AETHERMESH_MESH_PB_H_MAX_SIZE            aethermesh_MeshPacket_size
-#define aethermesh_Ack_size                      6
+#define aethermesh_Ack_size                      16
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_MeshPacket_size               210

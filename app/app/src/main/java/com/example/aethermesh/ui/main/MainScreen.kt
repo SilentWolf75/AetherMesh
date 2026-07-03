@@ -6091,11 +6091,18 @@ fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh
     }
 
     // Machine-friendly CSV: epoch ms for tooling, ISO local time for humans,
-    // raw lat/lon/RSSI/SNR for mapping and signal analysis.
+    // raw lat/lon plus BOTH link directions for signal analysis:
+    //   ping_* = signal of our ping as heard by the target (from the ACK payload)
+    //   ack_*  = signal of the target's ACK as heard by our node
+    // Signal columns are blank (not placeholder values) on timeouts/unreported.
     val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,rssi_dbm,snr_db,success\n")
+    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
     logs.forEach {
-        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},${it.rssi},${it.snr},${it.success}\n")
+        val ackRssi = if (it.success) "${it.rssi}" else ""
+        val ackSnr = if (it.success) "${it.snr}" else ""
+        val pingRssi = it.remoteRssi?.toString() ?: ""
+        val pingSnr = it.remoteSnr?.toString() ?: ""
+        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
     }
 
     try {
