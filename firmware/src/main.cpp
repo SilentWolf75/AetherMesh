@@ -60,6 +60,10 @@ char nodeCustomName[17] = ""; // Max 16 chars + null terminator
 char nodePassword[33] = "";   // Max 32 chars + null terminator
 bool isBleClientAuthenticated = false;
 
+// Brute-force protection: 5 wrong passwords -> 30s lockout
+uint8_t failedAuthAttempts = 0;
+uint32_t authLockoutUntil = 0;
+
 uint32_t loraSF = 9;
 float loraBW = 125.0f;
 int32_t loraTxPower = 22; // default for Heltec V4
@@ -577,7 +581,14 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag) {
                 bool hasPassword = (strlen(nodePassword) > 0);
                 bool isRequestPasswordEmpty = (strlen(packet.payload.auth_request.password) == 0);
-                
+
+                // Brute-force lockout window (status queries still allowed)
+                if (!isRequestPasswordEmpty && (int32_t)(millis() - authLockoutUntil) < 0) {
+                    Serial.println("Auth attempt rejected: lockout active.");
+                    sendAuthResponse(false, "Too many attempts; wait 30s", false);
+                    return;
+                }
+
                 if (isRequestPasswordEmpty) {
                     // It's a query for password status
                     Serial.println("Received empty password query. Replying status.");
@@ -594,11 +605,20 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     // Verify the password
                     if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
                         isBleClientAuthenticated = true;
+                        failedAuthAttempts = 0;
                         Serial.println("BLE client authenticated successfully.");
                         sendAuthResponse(true, "Authenticated successfully", false);
                     } else {
-                        Serial.println("BLE client authentication failed.");
-                        sendAuthResponse(false, "Incorrect password", false);
+                        failedAuthAttempts++;
+                        Serial.printf("BLE client authentication failed (attempt %u).\n", failedAuthAttempts);
+                        if (failedAuthAttempts >= 5) {
+                            failedAuthAttempts = 0;
+                            authLockoutUntil = millis() + 30000;
+                            Serial.println("Too many failed auth attempts. Locking out for 30s.");
+                            sendAuthResponse(false, "Too many attempts; wait 30s", false);
+                        } else {
+                            sendAuthResponse(false, "Incorrect password", false);
+                        }
                     }
                 }
             } else {
