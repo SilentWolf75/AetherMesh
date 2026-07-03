@@ -47,6 +47,8 @@ private:
     float lastSnr;
     bool isTransmitting;
     uint32_t txStartTime;
+    uint32_t lastRxActivityTime;
+    uint32_t lastHealthLogTime;
     
     // Config
     float frequency;

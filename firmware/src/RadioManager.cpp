@@ -30,6 +30,8 @@ RadioManager::RadioManager() {
     lastRssi = 0.0f;
     lastSnr = 0.0f;
     isTransmitting = false;
+    lastRxActivityTime = 0;
+    lastHealthLogTime = 0;
     
     // Default US915 configuration
     frequency = 906.875f;
@@ -154,7 +156,8 @@ bool RadioManager::init() {
         Serial.println(state);
         return false;
     }
-    
+
+    lastRxActivityTime = millis();
     Serial.println("Radio successfully initialized and listening.");
     return true;
 }
@@ -163,7 +166,32 @@ void RadioManager::loop() {
     if (!radio) {
         return;
     }
-    
+
+    // Periodic RX health log: proves whether the receive chain is alive even
+    // when no packets are arriving (diagnosing "node stopped receiving" reports).
+    if (millis() - lastHealthLogTime > 30000) {
+        lastHealthLogTime = millis();
+        Serial.printf("Radio health: mode=%s | IRQ=0x%04X | last RX activity %lus ago | ambient RSSI %.1f dBm\n",
+                      isTransmitting ? "TX" : "RX",
+                      radio->getIrqStatus(),
+                      (unsigned long)((millis() - lastRxActivityTime) / 1000),
+                      radio->getRSSI(false));
+    }
+
+    // RX watchdog: with mesh beacons every ~7-10s from any nearby node, a full
+    // minute with no RX activity of any kind (packet, CRC error, header error)
+    // most likely means the SX1262 silently dropped out of RX mode. Re-arm it.
+    if (!isTransmitting && (millis() - lastRxActivityTime > 60000)) {
+        Serial.printf("RX watchdog: no receive activity for 60s (IRQ=0x%04X). Re-arming receiver.\n",
+                      radio->getIrqStatus());
+        radio->standby();
+#if defined(HELTEC_V4)
+        setHeltecV4TransmitEnable(false);
+#endif
+        radio->startReceive();
+        lastRxActivityTime = millis();
+    }
+
     bool processed = false;
     
     // Check if the hardware interrupt occurred
@@ -225,6 +253,7 @@ void RadioManager::loop() {
     } else {
         // We are in RX mode
         if (irq & RADIOLIB_SX126X_IRQ_RX_DONE) {
+            lastRxActivityTime = millis();
             size_t len = radio->getPacketLength();
             uint8_t* buffer = new uint8_t[len];
             
@@ -261,6 +290,7 @@ void RadioManager::loop() {
                 radio->startReceive();
             }
         } else if (irq & (RADIOLIB_SX126X_IRQ_CRC_ERR | RADIOLIB_SX126X_IRQ_HEADER_ERR)) {
+            lastRxActivityTime = millis();
             float rssi = radio->getRSSI();
             float snr = radio->getSNR();
             Serial.printf("LoRa RX Error interrupt! IRQ: 0x%04X | RSSI: %.1f dBm | SNR: %.1f dB\n", irq, rssi, snr);
