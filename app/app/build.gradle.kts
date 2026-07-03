@@ -11,7 +11,9 @@ android {
     namespace = "com.example.aethermesh"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.aethermesh"
+        // Distinct from the original project's com.example.aethermesh so both
+        // apps can be installed side by side for comparison.
+        applicationId = "com.example.aethermesh.c"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
