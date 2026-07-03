@@ -1,4 +1,4 @@
-aethermesh.TextMessage.content max_size:128
+aethermesh.TextMessage.content max_size:168
 aethermesh.TextMessage.channel max_size:32
 aethermesh.Telemetry.node_model max_size:32
 aethermesh.Telemetry.firmware_version max_size:12

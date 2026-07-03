@@ -18,7 +18,7 @@ typedef enum _aethermesh_RouteDiscovery_Type {
 /* Struct definitions */
 /* Standard chat text message */
 typedef struct _aethermesh_TextMessage {
-    char content[128];
+    char content[168];
     char channel[32]; /* Target channel name (default: "General") */
     bool is_encrypted; /* True if content is encrypted */
 } aethermesh_TextMessage;
@@ -297,11 +297,11 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_Ack_size                      16
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
-#define aethermesh_MeshPacket_size               210
+#define aethermesh_MeshPacket_size               250
 #define aethermesh_NodeConfig_size               100
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                79
-#define aethermesh_TextMessage_size              165
+#define aethermesh_TextMessage_size              205
 
 #ifdef __cplusplus
 } /* extern "C" */

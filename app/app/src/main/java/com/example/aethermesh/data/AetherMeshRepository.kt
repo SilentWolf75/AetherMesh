@@ -36,6 +36,9 @@ class AetherMeshRepository(private val context: Context) {
         private const val TAG = "MeshRepository"
         const val DEFAULT_CHANNEL = "General"
         private const val MAX_TEXT_CONTENT_LENGTH = 127
+        // Encrypted payloads grow: base64(12B IV + plaintext + 16B GCM tag) must
+        // fit the proto's 168-byte content field -> plaintext capped lower.
+        private const val MAX_ENCRYPTED_CONTENT_LENGTH = 96
         private const val MAX_CHANNEL_LENGTH = 31
     }
 
@@ -404,15 +407,26 @@ class AetherMeshRepository(private val context: Context) {
 
     fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
-        val boundedContent = content.take(MAX_TEXT_CONTENT_LENGTH)
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
         val generatedPacketId = (1..100000).random()
 
         val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
         val passcode = dbHelper.getChatKey(chatIdentifier)
         val isEncrypted = !passcode.isNullOrEmpty()
+        val boundedContent = content.take(if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH)
 
-        // 1. Insert into local DB immediately as sent by local user (store plaintext locally)
+        // Encrypt FIRST and refuse to send on failure — never fall back to
+        // transmitting plaintext on a chat the user believes is encrypted.
+        val contentToSend = if (isEncrypted) {
+            encryptAES(boundedContent, passcode!!) ?: run {
+                Log.e(TAG, "Encryption failed; message NOT sent.")
+                return false
+            }
+        } else {
+            boundedContent
+        }
+
+        // Insert into local DB as sent by local user (store plaintext locally)
         val localNodeId = bleManager.connectedNodeId
         dbHelper.insertMessage(
             senderId = localNodeId,
@@ -424,12 +438,6 @@ class AetherMeshRepository(private val context: Context) {
             isEncrypted = isEncrypted
         )
         refreshData()
-
-        val contentToSend = if (isEncrypted) {
-            encryptAES(boundedContent, passcode)
-        } else {
-            boundedContent
-        }
 
         // 2. Build protobuf packet
         val textBuilder = TextMessage.newBuilder()
@@ -612,27 +620,42 @@ class AetherMeshRepository(private val context: Context) {
         return SecretKeySpec(bytes, "AES")
     }
 
-    fun encryptAES(plainText: String, passcode: String): String {
+    // AES-256-GCM with a random 12-byte IV prepended to the ciphertext.
+    // Returns null on failure — callers must refuse to send, never fall back
+    // to plaintext.
+    fun encryptAES(plainText: String, passcode: String): String? {
         return try {
             val keySpec = deriveKey(passcode)
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            val iv = ByteArray(12)
+            java.security.SecureRandom().nextBytes(iv)
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, iv))
             val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+            Base64.encodeToString(iv + encryptedBytes, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e(TAG, "Encryption failed: ${e.message}")
-            plainText
+            null
         }
     }
 
     fun decryptAES(cipherText: String, passcode: String): String {
+        val keySpec = deriveKey(passcode)
+        // Current format: base64(IV[12] + ciphertext + GCM tag[16])
+        try {
+            val decoded = Base64.decode(cipherText, Base64.NO_WRAP)
+            if (decoded.size > 28) {
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, decoded, 0, 12))
+                return String(cipher.doFinal(decoded, 12, decoded.size - 12), Charsets.UTF_8)
+            }
+        } catch (e: Exception) {
+            // fall through to the legacy format
+        }
+        // Legacy format from older builds: AES/ECB (no IV, no integrity)
         return try {
-            val keySpec = deriveKey(passcode)
             val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, keySpec)
-            val decodedBytes = Base64.decode(cipherText, Base64.NO_WRAP)
-            val decryptedBytes = cipher.doFinal(decodedBytes)
-            String(decryptedBytes, Charsets.UTF_8)
+            String(cipher.doFinal(Base64.decode(cipherText, Base64.NO_WRAP)), Charsets.UTF_8)
         } catch (e: Exception) {
             Log.e(TAG, "Decryption failed: ${e.message}")
             "[Decryption Error - Bad Key]"
