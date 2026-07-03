@@ -11,6 +11,9 @@
 #define DEFAULT_HOP_LIMIT 4
 #define ROUTE_TIMEOUT_MS 600000 // 10 minutes
 #define MAX_PENDING_REBROADCASTS 3
+#define MAX_PENDING_ACKS 4
+#define ACK_RETRY_INTERVAL_MS 3000
+#define ACK_MAX_RETRIES 3
 
 struct RouteEntry {
     uint32_t targetId;
@@ -29,6 +32,15 @@ struct SeenPacket {
 struct PendingRebroadcast {
     aethermesh_MeshPacket packet;
     uint32_t transmitTime;
+    bool active;
+};
+
+// A locally-originated want_ack packet awaiting acknowledgment.
+// Retransmitted up to ACK_MAX_RETRIES times, then dropped.
+struct PendingAck {
+    aethermesh_MeshPacket packet;
+    uint32_t nextRetryTime;
+    uint8_t retriesLeft;
     bool active;
 };
 
@@ -71,6 +83,7 @@ private:
     SeenPacket seenPackets[MAX_SEEN_PACKETS_CACHE];
     uint8_t seenPacketsIndex;
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
+    PendingAck pendingAcks[MAX_PENDING_ACKS];
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);
@@ -93,6 +106,11 @@ private:
     // Rebroadcast Queue helpers
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
     void cancelRebroadcast(uint32_t senderId, uint32_t packetId);
+
+    // ACK/retransmit helpers
+    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
+    void trackForAck(const aethermesh_MeshPacket& packet);
+    void clearPendingAck(uint32_t ackedPacketId);
     
     // Buffer serialization helpers
     bool serializeAndSend(aethermesh_MeshPacket* packet);
