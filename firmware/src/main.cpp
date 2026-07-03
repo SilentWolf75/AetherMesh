@@ -336,7 +336,7 @@ void updateDisplay() {
         // Sender Info
         u8g2.setFont(u8g2_font_6x10_tf);
         char senderStr[32];
-        sprintf(senderStr, "From: 0x%08X", lastMsgSender);
+        snprintf(senderStr, sizeof(senderStr), "From: 0x%08X", lastMsgSender);
         u8g2.drawStr(10, 35, senderStr);
         
         // Message Content (first 20 chars on line 1, next 20 on line 2)
@@ -370,7 +370,7 @@ void updateDisplay() {
     u8g2.setFont(u8g2_font_6x10_tf);
     if (strlen(nodeCustomName) > 0) {
         char nameHeader[30];
-        sprintf(nameHeader, "Aether: %.12s", nodeCustomName);
+        snprintf(nameHeader, sizeof(nameHeader), "Aether: %.12s", nodeCustomName);
         u8g2.drawStr(0, 10, nameHeader);
     } else {
         u8g2.drawStr(0, 10, "AetherMesh Node");
@@ -379,17 +379,17 @@ void updateDisplay() {
     // Draw battery level right-aligned
     uint8_t batt = readBatteryLevel();
     char battStr[12];
-    sprintf(battStr, "BAT:%d%%", batt);
+    snprintf(battStr, sizeof(battStr), "BAT:%d%%", batt);
     u8g2.drawStr(82, 10, battStr);
 
     u8g2.drawHLine(0, 12, 128);
     
     // Node Info
-    char nodeStr[30];
+    char nodeStr[40];
     if (strlen(nodeCustomName) > 0) {
-        sprintf(nodeStr, "Name: %s (0x%04X)", nodeCustomName, (unsigned int)(localNodeId & 0xFFFF));
+        snprintf(nodeStr, sizeof(nodeStr), "Name: %s (0x%04X)", nodeCustomName, (unsigned int)(localNodeId & 0xFFFF));
     } else {
-        sprintf(nodeStr, "Node ID: 0x%08X", localNodeId);
+        snprintf(nodeStr, sizeof(nodeStr), "Node ID: 0x%08X", localNodeId);
     }
     u8g2.drawStr(0, 23, nodeStr);
     
@@ -401,25 +401,25 @@ void updateDisplay() {
     }
     
     // Radio stats
-    char statsStr[30];
-    sprintf(statsStr, "RX: %d | TX: %d", rxPacketCount, txPacketCount);
+    char statsStr[32];
+    snprintf(statsStr, sizeof(statsStr), "RX: %u | TX: %u", rxPacketCount, txPacketCount);
     u8g2.drawStr(0, 45, statsStr);
     
     // Live radio config (compare across nodes: frequency / SF / bandwidth)
-    char cfgStr[30];
-    sprintf(cfgStr, "F%.1f S%u B%d R%.0f", radioMgr.getFrequency(),
+    char cfgStr[32];
+    snprintf(cfgStr, sizeof(cfgStr), "F%.1f S%u B%d R%.0f", radioMgr.getFrequency(),
             (unsigned)radioMgr.getSpreadingFactor(), (int)radioMgr.getBandwidth(),
             radioMgr.getLastRssi());
     u8g2.drawStr(0, 56, cfgStr);
     
     // GPS Status line
-    char gpsStr[30];
+    char gpsStr[32];
     if (gps.location.isValid()) {
-        sprintf(gpsStr, "GPS: %.4f, %.4f", gps.location.lat(), gps.location.lng());
+        snprintf(gpsStr, sizeof(gpsStr), "GPS: %.4f, %.4f", gps.location.lat(), gps.location.lng());
     } else if (hasInheritedLocation && (millis() - lastInheritedTime < 300000)) {
-        sprintf(gpsStr, "PH_GPS: %.4f, %.4f", inheritedLat, inheritedLon);
+        snprintf(gpsStr, sizeof(gpsStr), "PH_GPS: %.4f, %.4f", inheritedLat, inheritedLon);
     } else {
-        sprintf(gpsStr, "GPS: No Lock (%d S)", gps.satellites.value());
+        snprintf(gpsStr, sizeof(gpsStr), "GPS: No Lock (%lu S)", (unsigned long)gps.satellites.value());
     }
     u8g2.drawStr(0, 64, gpsStr);
     
@@ -450,12 +450,17 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
         }
     }
 
-    // 1. Forward to connected phone via BLE if authenticated
-    if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
+    // 1. Forward to connected phone via BLE if authenticated.
+    // Skip mesh rebroadcast duplicates and reflections of our own packets, otherwise
+    // the app stores the same chat message once per relay that repeats it.
+    bool isDuplicate = decodeSuccess &&
+                       (packet.sender_id == localNodeId ||
+                        router.hasSeen(packet.sender_id, packet.packet_id));
+    if (bleMgr.isDeviceConnected() && isBleClientAuthenticated && !isDuplicate) {
         if (decodeSuccess) {
             packet.rx_rssi = rssi;
             packet.rx_snr = snr;
-            
+
             uint8_t buffer[256];
             pb_ostream_t outStream = pb_ostream_from_buffer(buffer, sizeof(buffer));
             if (pb_encode(&outStream, aethermesh_MeshPacket_fields, &packet)) {
@@ -523,7 +528,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     // First connect: set the password
                     strncpy(nodePassword, packet.payload.auth_request.password, sizeof(nodePassword) - 1);
                     nodePassword[sizeof(nodePassword) - 1] = '\0';
-                    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs);
+                    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
                     isBleClientAuthenticated = true;
                     Serial.println("Initial device password set successfully.");
                     sendAuthResponse(true, "Password set successfully", false);
@@ -620,38 +625,32 @@ void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
     Serial.print("Received RemoteConfig packet over LoRa from 0x");
     Serial.println(senderId, HEX);
 
-    const char* colonPtr = strrchr(config.node_name, ':');
-    if (colonPtr != nullptr) {
-        String namePart = String(config.node_name).substring(0, colonPtr - config.node_name);
-        String passPart = String(colonPtr + 1);
+    if (nodePassword[0] != '\0' && config.config_password[0] != '\0' &&
+        strcmp(config.config_password, nodePassword) == 0) {
+        Serial.println("Remote password verified successfully. Applying configuration...");
 
-        if (passPart == String(nodePassword) && nodePassword[0] != '\0') {
-            Serial.println("Remote password verified successfully. Applying configuration...");
-            
-            saveSettings(
-                namePart.c_str(),
-                config.lora_sf,
-                config.lora_bw,
-                config.lora_tx_power,
-                config.region,
-                nodePassword,
-                config.node_role,
-                config.telemetry_interval,
-                config.screen_timeout_secs
-            );
-            
-            Serial.println("Remote settings applied. Restarting MCU in 1.5 seconds...");
-            delay(1500);
+        saveSettings(
+            config.node_name,
+            config.lora_sf,
+            config.lora_bw,
+            config.lora_tx_power,
+            config.region,
+            nodePassword,
+            config.node_role,
+            config.telemetry_interval,
+            config.screen_timeout_secs,
+            config.power_save_mode
+        );
+
+        Serial.println("Remote settings applied. Restarting MCU in 1.5 seconds...");
+        delay(1500);
 #ifdef ESP32
-            ESP.restart();
+        ESP.restart();
 #else
-            sd_nvic_SystemReset();
+        sd_nvic_SystemReset();
 #endif
-        } else {
-            Serial.println("Remote config rejected: Incorrect password.");
-        }
     } else {
-        Serial.println("Remote config rejected: No password separator found.");
+        Serial.println("Remote config rejected: Incorrect or missing password.");
     }
 }
 

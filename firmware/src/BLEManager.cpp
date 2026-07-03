@@ -101,7 +101,7 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
         localName[sizeof(localName) - 1] = '\0';
     } else {
         // Construct local name: "AetherMesh-XXXX" where XXXX is hex of lower 16-bits of node ID
-        sprintf(localName, "AetherMesh-%04X", (uint16_t)(nodeId & 0xFFFF));
+        snprintf(localName, sizeof(localName), "AetherMesh-%04X", (uint16_t)(nodeId & 0xFFFF));
     }
     
     Serial.print("Initializing BLE Advertising name: ");

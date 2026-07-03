@@ -53,7 +53,11 @@ public:
     // Routing Table Diagnostics
     uint32_t getLocalId() { return localNodeId; }
     void printRoutingTable();
-    
+
+    // True if this (sender, packet) pair is already in the dedup cache.
+    // Lets callers (e.g. the BLE forward path) skip mesh rebroadcast duplicates.
+    bool hasSeen(uint32_t senderId, uint32_t packetId) { return isDuplicatePacket(senderId, packetId); }
+
     // Raw packet transmit helper
     bool sendRawPacket(aethermesh_MeshPacket* packet);
 
