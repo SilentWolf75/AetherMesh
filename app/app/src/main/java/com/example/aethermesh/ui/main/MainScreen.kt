@@ -1239,6 +1239,15 @@ fun NodeItem(
         }
         Column(horizontalAlignment = Alignment.End) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (node.isCharging) {
+                    Icon(
+                        imageVector = Icons.Default.WbSunny,
+                        contentDescription = "Solar charging",
+                        tint = Color(0xFFFACC15),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
                 Icon(
                     imageVector = Icons.Default.Favorite,
                     contentDescription = "Battery",

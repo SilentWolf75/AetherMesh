@@ -254,7 +254,14 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         // Packet addressed to US
         Serial.print("Unicast packet received for local node from 0x");
         Serial.println(packet.sender_id, HEX);
-        
+
+        // ACK on receipt, BEFORE processing. A config packet reboots the node
+        // inside its callback, so a post-processing ACK would never be sent and
+        // the sender would retransmit (rebooting us again on each retry).
+        if (packet.want_ack && packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+            sendAck(packet.sender_id, packet.packet_id, rssi, snr);
+        }
+
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
                 if (textCallback) {
@@ -287,11 +294,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 }
                 break;
         }
-        
-        // Send ACK back if requested
-        if (packet.want_ack && packet.which_payload != aethermesh_MeshPacket_ack_tag) {
-            sendAck(packet.sender_id, packet.packet_id, rssi, snr);
-        }
+        // (ACK already sent above, before processing)
     } else if (packet.recipient_id == 0xFFFFFFFF) {
         // Broadcast packet
         Serial.print("Broadcast packet received from 0x");
@@ -399,7 +402,7 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     return serializeAndSend(&packet);
 }
 
-bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon) {
+bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
@@ -408,11 +411,12 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_telemetry_tag;
-    
+
     packet.payload.telemetry.battery_level = battery;
     packet.payload.telemetry.latitude = lat;
     packet.payload.telemetry.longitude = lon;
     packet.payload.telemetry.altitude = 0;
+    packet.payload.telemetry.is_charging = charging;
     packet.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
     strncpy(packet.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
             sizeof(packet.payload.telemetry.firmware_version) - 1);

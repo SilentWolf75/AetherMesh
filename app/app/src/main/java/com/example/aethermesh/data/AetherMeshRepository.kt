@@ -428,7 +428,8 @@ class AetherMeshRepository(private val context: Context) {
                     lon = lon,
                     model = telemetry.nodeModel,
                     uptimeSeconds = telemetry.uptimeSeconds.toLong() and 0xFFFFFFFFL,
-                    firmwareVersion = telemetry.firmwareVersion
+                    firmwareVersion = telemetry.firmwareVersion,
+                    isCharging = telemetry.isCharging
                 )
                 refreshData()
             }

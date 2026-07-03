@@ -52,7 +52,7 @@ public:
     
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
-    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon);
+    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
     void processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr);

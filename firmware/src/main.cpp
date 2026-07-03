@@ -54,6 +54,28 @@ uint32_t localNodeId = 0;
 uint32_t rxPacketCount = 0;
 uint32_t txPacketCount = 0;
 uint32_t rawBeaconCount = 0;
+bool batteryCharging = false;
+
+// Voltage-based charge detection (no dedicated charger pin required): a LiPo
+// under load rarely holds above ~4.15V and won't rise on its own, so a rising
+// or high pack voltage means charge current is flowing (solar/USB). Held for a
+// few minutes after the last rise so it doesn't flicker between 30s samples.
+void updateChargingState(float voltage) {
+    static float prevVoltage = 0.0f;
+    static bool initialized = false;
+    static uint32_t chargingHoldUntil = 0;
+    if (!initialized) {
+        prevVoltage = voltage;
+        initialized = true;
+    }
+    if (voltage > prevVoltage + 0.02f || voltage >= 4.15f) {
+        batteryCharging = true;
+        chargingHoldUntil = millis() + 180000; // hold 3 min
+    } else if ((int32_t)(millis() - chargingHoldUntil) >= 0) {
+        batteryCharging = false;
+    }
+    prevVoltage = voltage;
+}
 
 // Node Settings and NVS Configuration
 char nodeCustomName[17] = ""; // Max 16 chars + null terminator
@@ -288,6 +310,7 @@ uint8_t readBatteryLevel() {
     // Calculate battery voltage
     // 3.3V ADC full range, 12-bit (4096 steps). Voltage divider multiplier is ~4.9 * 1.045 on V4
     float voltage = (float)rawValue * (3.3f / 4096.0f) * 4.9f * 1.045f;
+    updateChargingState(voltage);
 
     Serial.print("Battery ADC: ");
     Serial.print(rawValue);
@@ -322,6 +345,7 @@ uint8_t readBatteryLevel() {
     delay(2); // let the reference settle
     int rawValue = analogRead(WB_A0);
     float voltage = (float)rawValue * 0.73242188f * 1.73f / 1000.0f;
+    updateChargingState(voltage);
 
     Serial.print("Battery ADC: ");
     Serial.print(rawValue);
@@ -436,10 +460,10 @@ void updateDisplay() {
         u8g2.drawStr(0, 10, "AetherMesh Node");
     }
 
-    // Draw battery level right-aligned
+    // Draw battery level right-aligned (with a charge marker when charging)
     uint8_t batt = readBatteryLevel();
-    char battStr[12];
-    snprintf(battStr, sizeof(battStr), "BAT:%d%%", batt);
+    char battStr[16];
+    snprintf(battStr, sizeof(battStr), "%s%d%%", batteryCharging ? "+" : "BAT:", batt);
     u8g2.drawStr(82, 10, battStr);
 
     u8g2.drawHLine(0, 12, 128);
@@ -1074,7 +1098,7 @@ void loop() {
             uint8_t battery = readBatteryLevel();
             
             // 1. Broadcast telemetry over LoRa Mesh
-            router.sendTelemetry(0xFFFFFFFF, battery, lat, lon);
+            router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, batteryCharging);
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
             if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
@@ -1091,6 +1115,7 @@ void loop() {
                 localTelemetryPacket.payload.telemetry.latitude = lat;
                 localTelemetryPacket.payload.telemetry.longitude = lon;
                 localTelemetryPacket.payload.telemetry.altitude = alt;
+                localTelemetryPacket.payload.telemetry.is_charging = batteryCharging;
                 localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
                 strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
                         sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);
