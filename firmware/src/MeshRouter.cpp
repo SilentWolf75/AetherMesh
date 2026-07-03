@@ -317,15 +317,25 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
-                
+
                 // If the payload is a RouteReply, we must increment the metric by the incoming link's hopCost
                 if (packet.which_payload == aethermesh_MeshPacket_route_discovery_tag &&
                     packet.payload.route_discovery.type == aethermesh_RouteDiscovery_Type_REPLY) {
                     packet.payload.route_discovery.metric += hopCost;
                 }
-                
-                // Unicast over the air goes to the next hop
-                serializeAndSend(&packet);
+
+                // If this ACK is passing through us, its target has already answered —
+                // drop any still-queued relay of the packet it acknowledges.
+                if (packet.which_payload == aethermesh_MeshPacket_ack_tag) {
+                    cancelRebroadcast(packet.recipient_id, packet.payload.ack.acked_packet_id);
+                }
+
+                // Never relay immediately: the recipient's ACK transmits the moment
+                // the original packet lands, so an instant relay from a third node
+                // collides with that ACK at the sender every time (all responders
+                // are triggered by the same packet). Wait out the ACK airtime with
+                // jitter; if a duplicate arrives meanwhile, the relay is cancelled.
+                queueRebroadcast(packet, millis() + random(300, 700));
             } else {
                 Serial.print("No route to 0x");
                 Serial.print(packet.recipient_id, HEX);
@@ -454,8 +464,10 @@ void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t
     packet.payload.route_discovery.type = aethermesh_RouteDiscovery_Type_REPLY;
     packet.payload.route_discovery.target_id = targetId;
     packet.payload.route_discovery.metric = metric;
-    
-    serializeAndSend(&packet);
+
+    // A broadcast RREQ triggers the target AND every proxy that knows a route
+    // to reply at the same instant — jitter the RREP so they don't collide.
+    queueRebroadcast(packet, millis() + random(100, 400));
 }
 
 bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet) {
