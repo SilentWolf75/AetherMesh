@@ -643,10 +643,14 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             return;
         }
 
-        // Intercept NodeConfig settings packet
-        if (packet.which_payload == aethermesh_MeshPacket_config_tag) {
-            Serial.println("Received NodeConfig packet from phone via BLE.");
-            
+        // Intercept NodeConfig settings ONLY when addressed to this node. A config
+        // aimed at a different node (remote config) must fall through to the LoRa
+        // send path below, not reconfigure/reboot the phone's own connected node.
+        bool configForLocal = (packet.recipient_id == localNodeId ||
+                               packet.recipient_id == 0);
+        if (packet.which_payload == aethermesh_MeshPacket_config_tag && configForLocal) {
+            Serial.println("Received local NodeConfig packet from phone via BLE.");
+
             // Save to NVS
             saveSettings(
                 packet.payload.config.node_name,

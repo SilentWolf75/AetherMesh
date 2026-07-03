@@ -30,6 +30,7 @@ RadioManager::RadioManager() {
     lastRssi = 0.0f;
     lastSnr = 0.0f;
     isTransmitting = false;
+    txTimeoutMs = 2500;
     lastRxActivityTime = 0;
     lastHealthLogTime = 0;
     
@@ -205,8 +206,9 @@ void RadioManager::loop() {
         processed = true;
     }
     
-    // Polling fallback: check for missed TX_DONE or timeout
-    if (isTransmitting && (millis() - txStartTime > 1500)) {
+    // Polling fallback: check for missed TX_DONE once the expected airtime has
+    // elapsed (SF12 packets take >2s, so this can't be a fixed value).
+    if (isTransmitting && (millis() - txStartTime > txTimeoutMs)) {
         processed = true;
     }
     
@@ -241,7 +243,7 @@ void RadioManager::loop() {
             
             // Go back to listening
             radio->startReceive();
-        } else if (millis() - txStartTime > 2000) {
+        } else if (millis() - txStartTime > txTimeoutMs + 1000) {
             // Hard timeout fallback: clear transmit lock if stuck
             Serial.println("Radio: Transmit timed out. Forcing state reset.");
             isTransmitting = false;
@@ -321,7 +323,7 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len) {
 #if defined(HELTEC_V4)
             setHeltecV4TransmitEnable(false);
 #endif
-        } else if (millis() - txStartTime > 2000) {
+        } else if (millis() - txStartTime > txTimeoutMs + 1000) {
             Serial.println("Radio busy status cleared via timeout check during send request.");
             isTransmitting = false;
             radio->finishTransmit();
@@ -355,6 +357,10 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len) {
     
     isTransmitting = true;
     txStartTime = millis();
+    // Expected time-on-air for this packet at the current SF/BW, +50% margin.
+    // At SF12/125kHz a ~50B packet is ~2.3s, so a fixed timeout would abort it.
+    uint32_t airtimeMs = radio->getTimeOnAir(len) / 1000;
+    txTimeoutMs = airtimeMs + (airtimeMs / 2) + 300;
 #if defined(HELTEC_V4)
     setHeltecV4TransmitEnable(true);
 #endif
