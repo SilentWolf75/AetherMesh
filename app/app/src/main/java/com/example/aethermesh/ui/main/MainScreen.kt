@@ -6096,13 +6096,15 @@ fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh
     //   ack_*  = signal of the target's ACK as heard by our node
     // Signal columns are blank (not placeholder values) on timeouts/unreported.
     val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
+    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,speed_mps,gps_accuracy_m,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
     logs.forEach {
         val ackRssi = if (it.success) "${it.rssi}" else ""
         val ackSnr = if (it.success) "${it.snr}" else ""
         val pingRssi = it.remoteRssi?.toString() ?: ""
         val pingSnr = it.remoteSnr?.toString() ?: ""
-        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
+        val speed = it.speedMps?.toString() ?: ""
+        val accuracy = it.gpsAccuracyM?.toString() ?: ""
+        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$speed,$accuracy,$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
     }
 
     try {

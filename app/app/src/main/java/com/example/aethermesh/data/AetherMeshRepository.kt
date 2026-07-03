@@ -91,6 +91,49 @@ class AetherMeshRepository(private val context: Context) {
     private var rangeTestJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
 
+    // Fresh phone GPS for range test rows (position, speed, accuracy). The map
+    // tab's overlay only updates location while that tab is visible, so the
+    // range test runs its own listener for the duration of the test.
+    @Volatile
+    private var lastPhoneLocation: android.location.Location? = null
+    private var rangeTestLocationListener: android.location.LocationListener? = null
+
+    private fun startRangeTestLocationUpdates() {
+        if (rangeTestLocationListener != null) return
+        try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            val listener = object : android.location.LocationListener {
+                override fun onLocationChanged(location: android.location.Location) {
+                    lastPhoneLocation = location
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+            }
+            lm.requestLocationUpdates(
+                android.location.LocationManager.GPS_PROVIDER,
+                1000L, 0f, listener, android.os.Looper.getMainLooper()
+            )
+            rangeTestLocationListener = listener
+            Log.d(TAG, "Range test GPS updates started.")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "No location permission for range test GPS: ${e.message}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start range test GPS updates: ${e.message}")
+        }
+    }
+
+    private fun stopRangeTestLocationUpdates() {
+        try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            rangeTestLocationListener?.let { lm.removeUpdates(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop range test GPS updates: ${e.message}")
+        }
+        rangeTestLocationListener = null
+    }
+
     init {
         // Purge old sign-extended negative node ID records and ghost node ID 0 records from previous version
         try {
@@ -602,10 +645,11 @@ class AetherMeshRepository(private val context: Context) {
         rangeTestTargetId = targetId
         _isRangeTestActive.value = true
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
-        
+        startRangeTestLocationUpdates()
+
         lastSentRangePingId = 0
         lastSentRangePingTime = 0L
-        
+
         rangeTestJob = repositoryScope.launch {
             while (_isRangeTestActive.value) {
                 sendRangePing(targetId)
@@ -626,6 +670,7 @@ class AetherMeshRepository(private val context: Context) {
         _isRangeTestActive.value = false
         lastSentRangePingId = 0
         lastSentRangePingTime = 0L
+        stopRangeTestLocationUpdates()
         Log.d(TAG, "Range Test stopped.")
     }
 
@@ -668,16 +713,30 @@ class AetherMeshRepository(private val context: Context) {
         val targetId = rangeTestTargetId
         if (targetId == 0L) return
 
-        val localNodeId = bleManager.connectedNodeId
         var lat = 0.0
         var lon = 0.0
-        val localNode = dbHelper.getNodes().firstOrNull { it.nodeId == localNodeId }
-        if (localNode != null) {
-            lat = localNode.latitude.toDouble()
-            lon = localNode.longitude.toDouble()
+        var speedMps: Float? = null
+        var gpsAccuracyM: Float? = null
+
+        // Prefer the phone's own fresh GPS fix: precise, unfuzzed (local log only),
+        // and carries speed/accuracy. The node-DB position is a fallback — it lags
+        // and may have the privacy fuzzer applied.
+        val phoneLoc = lastPhoneLocation
+        if (phoneLoc != null && System.currentTimeMillis() - phoneLoc.time < 30000) {
+            lat = phoneLoc.latitude
+            lon = phoneLoc.longitude
+            if (phoneLoc.hasSpeed()) speedMps = phoneLoc.speed
+            if (phoneLoc.hasAccuracy()) gpsAccuracyM = phoneLoc.accuracy
+        } else {
+            val localNodeId = bleManager.connectedNodeId
+            val localNode = dbHelper.getNodes().firstOrNull { it.nodeId == localNodeId }
+            if (localNode != null) {
+                lat = localNode.latitude.toDouble()
+                lon = localNode.longitude.toDouble()
+            }
         }
 
-        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success, remoteRssi, remoteSnr)
+        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success, remoteRssi, remoteSnr, speedMps, gpsAccuracyM)
         
         // Update live flows
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)

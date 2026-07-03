@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 7
+        private const val DATABASE_VERSION = 8
 
         // Messages Table
         const val TABLE_MESSAGES = "messages"
@@ -55,6 +55,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         // NULL when the target didn't report it (old firmware) or the ping timed out.
         const val COL_LOG_REMOTE_RSSI = "remote_rssi"
         const val COL_LOG_REMOTE_SNR = "remote_snr"
+        // Phone GPS metadata at ping time (NULL when no fresh fix): speed in m/s,
+        // horizontal accuracy in meters. Lets drive tests correlate loss with speed
+        // and filter rows with poor fixes.
+        const val COL_LOG_SPEED_MPS = "speed_mps"
+        const val COL_LOG_GPS_ACCURACY_M = "gps_accuracy_m"
 
         // Channels Table
         const val TABLE_CHANNELS = "channels"
@@ -117,7 +122,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_LOG_SNR REAL,
                 $COL_LOG_SUCCESS INTEGER,
                 $COL_LOG_REMOTE_RSSI REAL,
-                $COL_LOG_REMOTE_SNR REAL
+                $COL_LOG_REMOTE_SNR REAL,
+                $COL_LOG_SPEED_MPS REAL,
+                $COL_LOG_GPS_ACCURACY_M REAL
             )
         """.trimIndent()
 
@@ -223,6 +230,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_REMOTE_SNR REAL")
             } catch (e: Exception) {
                 android.util.Log.e("DatabaseHelper", "Failed to add remote signal columns: ${e.message}")
+            }
+        }
+        if (oldVersion < 8) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_SPEED_MPS REAL")
+                db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_GPS_ACCURACY_M REAL")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add GPS metadata columns: ${e.message}")
             }
         }
     }
@@ -380,7 +395,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         snr: Float,
         success: Boolean,
         remoteRssi: Float? = null,
-        remoteSnr: Float? = null
+        remoteSnr: Float? = null,
+        speedMps: Float? = null,
+        gpsAccuracyM: Float? = null
     ): Long {
         val db = this.writableDatabase
         val values = ContentValues().apply {
@@ -393,6 +410,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_LOG_SUCCESS, if (success) 1 else 0)
             if (remoteRssi != null) put(COL_LOG_REMOTE_RSSI, remoteRssi.toDouble()) else putNull(COL_LOG_REMOTE_RSSI)
             if (remoteSnr != null) put(COL_LOG_REMOTE_SNR, remoteSnr.toDouble()) else putNull(COL_LOG_REMOTE_SNR)
+            if (speedMps != null) put(COL_LOG_SPEED_MPS, speedMps.toDouble()) else putNull(COL_LOG_SPEED_MPS)
+            if (gpsAccuracyM != null) put(COL_LOG_GPS_ACCURACY_M, gpsAccuracyM.toDouble()) else putNull(COL_LOG_GPS_ACCURACY_M)
         }
         return db.insert(TABLE_RANGE_TEST_LOGS, null, values)
     }
@@ -400,6 +419,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     private fun rangeTestLogFromCursor(cursor: android.database.Cursor): RangeTestLog {
         val remoteRssiIdx = cursor.getColumnIndexOrThrow(COL_LOG_REMOTE_RSSI)
         val remoteSnrIdx = cursor.getColumnIndexOrThrow(COL_LOG_REMOTE_SNR)
+        val speedIdx = cursor.getColumnIndexOrThrow(COL_LOG_SPEED_MPS)
+        val accuracyIdx = cursor.getColumnIndexOrThrow(COL_LOG_GPS_ACCURACY_M)
         return RangeTestLog(
             id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
             timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
@@ -410,7 +431,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             snr = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LOG_SNR)).toFloat(),
             success = cursor.getInt(cursor.getColumnIndexOrThrow(COL_LOG_SUCCESS)) != 0,
             remoteRssi = if (cursor.isNull(remoteRssiIdx)) null else cursor.getDouble(remoteRssiIdx).toFloat(),
-            remoteSnr = if (cursor.isNull(remoteSnrIdx)) null else cursor.getDouble(remoteSnrIdx).toFloat()
+            remoteSnr = if (cursor.isNull(remoteSnrIdx)) null else cursor.getDouble(remoteSnrIdx).toFloat(),
+            speedMps = if (cursor.isNull(speedIdx)) null else cursor.getDouble(speedIdx).toFloat(),
+            gpsAccuracyM = if (cursor.isNull(accuracyIdx)) null else cursor.getDouble(accuracyIdx).toFloat()
         )
     }
 
@@ -773,5 +796,8 @@ data class RangeTestLog(
     // Ping signal quality as measured AT THE TARGET, reported back in the ACK.
     // Null on timeouts or when the target runs firmware that doesn't report it.
     val remoteRssi: Float? = null,
-    val remoteSnr: Float? = null
+    val remoteSnr: Float? = null,
+    // Phone GPS metadata at ping time; null when no fresh fix was available
+    val speedMps: Float? = null,
+    val gpsAccuracyM: Float? = null
 )
