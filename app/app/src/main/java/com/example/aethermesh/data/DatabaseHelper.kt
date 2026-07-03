@@ -242,6 +242,20 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         }
     }
 
+    override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // The same applicationId gets installed from two source trees (the original
+        // project and this copy), so an older build can meet a newer schema. The
+        // default behavior is a startup crash; recreate the schema instead. Local
+        // history is lost, but the app opens.
+        android.util.Log.w("DatabaseHelper", "DB downgrade v$oldVersion -> v$newVersion: recreating schema (local data reset).")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_MESSAGES")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_NODES")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_KEYS")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_RANGE_TEST_LOGS")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_CHANNELS")
+        onCreate(db)
+    }
+
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         try {
