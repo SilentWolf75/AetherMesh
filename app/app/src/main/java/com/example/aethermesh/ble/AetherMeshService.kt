@@ -32,7 +32,19 @@ class AetherMeshService : Service() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Initializing AetherMesh..."))
+        // Declare the location type (when permitted) so GPS keeps updating while
+        // the app is backgrounded, e.g. range tests during a drive with the
+        // screen off. Without it Android throttles location for background apps.
+        var types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        androidx.core.app.ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, buildNotification("Initializing AetherMesh..."), types
+        )
 
         // Listen to BLE Connection changes from repository
         val app = application as AetherMeshApplication

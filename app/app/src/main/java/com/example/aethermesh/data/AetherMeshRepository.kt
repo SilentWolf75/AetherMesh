@@ -94,6 +94,11 @@ class AetherMeshRepository(private val context: Context) {
     private var rangeTestJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
 
+    // Single thread for the heavy DB reads in refreshData: keeps queries off the
+    // main thread (jank/ANR with a large history) while preserving their order.
+    private val dbDispatcher =
+        java.util.concurrent.Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+
     // Fresh phone GPS for range test rows (position, speed, accuracy). The map
     // tab's overlay only updates location while that tab is visible, so the
     // range test runs its own listener for the duration of the test.
@@ -138,14 +143,18 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     init {
-        // Purge old sign-extended negative node ID records and ghost node ID 0 records from previous version
-        try {
-            val db = dbHelper.writableDatabase
-            db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
-            db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
-            Log.d(TAG, "Successfully purged negative and zero ID records from database.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error purging invalid ID records: ${e.message}")
+        // Purge old sign-extended negative node ID records and ghost node ID 0
+        // records from previous versions. Off the main thread: this runs during
+        // Application.onCreate and can also trigger DB migrations.
+        repositoryScope.launch(dbDispatcher) {
+            try {
+                val db = dbHelper.writableDatabase
+                db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
+                db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
+                Log.d(TAG, "Successfully purged negative and zero ID records from database.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error purging invalid ID records: ${e.message}")
+            }
         }
 
         // Load initial data
@@ -552,20 +561,22 @@ class AetherMeshRepository(private val context: Context) {
             return
         }
 
-        val chatNodeId = _activeChatId.value
-        val list = if (chatNodeId == null) {
-            dbHelper.getMessages(0L, isChannel = true, channel = _selectedChannel.value)
-        } else {
-            dbHelper.getMessages(chatNodeId, isChannel = false, channel = "")
-        }
-        _messages.value = list
+        repositoryScope.launch(dbDispatcher) {
+            val chatNodeId = _activeChatId.value
+            val list = if (chatNodeId == null) {
+                dbHelper.getMessages(0L, isChannel = true, channel = _selectedChannel.value)
+            } else {
+                dbHelper.getMessages(chatNodeId, isChannel = false, channel = "")
+            }
+            _messages.value = list
 
-        _nodes.value = dbHelper.getNodes()
-        
-        // Keep the channel list in sync
-        val merged = (listOf(DEFAULT_CHANNEL) + dbHelper.getChannels() + _channels.value + _selectedChannel.value)
-            .distinct()
-        _channels.value = merged
+            _nodes.value = dbHelper.getNodes()
+
+            // Keep the channel list in sync
+            val merged = (listOf(DEFAULT_CHANNEL) + dbHelper.getChannels() + _channels.value + _selectedChannel.value)
+                .distinct()
+            _channels.value = merged
+        }
     }
 
     // Switch the channel shown in the Chats view.
