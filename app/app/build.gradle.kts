@@ -113,6 +113,7 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
   // AetherMesh Dependencies
+  implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(libs.protobuf.javalite)
   implementation(libs.protobuf.kotlin.lite)
   implementation(libs.osmdroid.android)

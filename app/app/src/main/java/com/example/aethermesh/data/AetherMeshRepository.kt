@@ -47,6 +47,47 @@ class AetherMeshRepository(private val context: Context) {
     val bleManager = BleConnectionManager(context)
     private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
 
+    // Keystore-encrypted storage for secrets (node passwords, ECDH private key).
+    // Falls back to a plain file only if the Keystore is unavailable on-device.
+    private val securePrefs: android.content.SharedPreferences = try {
+        val masterKey = androidx.security.crypto.MasterKey.Builder(context)
+            .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        androidx.security.crypto.EncryptedSharedPreferences.create(
+            context,
+            "aethermesh_secure_prefs",
+            masterKey,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (e: Exception) {
+        Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plain storage: ${e.message}")
+        context.getSharedPreferences("aethermesh_secure_prefs_fallback", Context.MODE_PRIVATE)
+    }
+
+    // One-time migration of secrets that older builds stored in plain prefs
+    private fun migrateSecretsToSecureStorage() {
+        try {
+            val editorSecure = securePrefs.edit()
+            val editorPlain = prefs.edit()
+            var moved = 0
+            for ((key, value) in prefs.all) {
+                if ((key.startsWith("node_pwd_") || key == "ecdh_private_key") && value is String) {
+                    editorSecure.putString(key, value)
+                    editorPlain.remove(key)
+                    moved++
+                }
+            }
+            if (moved > 0) {
+                editorSecure.apply()
+                editorPlain.apply()
+                Log.d(TAG, "Migrated $moved secret(s) from plain prefs to encrypted storage.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Secret migration failed: ${e.message}")
+        }
+    }
+
     // Flow for active node lists and messages
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
@@ -158,6 +199,8 @@ class AetherMeshRepository(private val context: Context) {
             }
         }
 
+        migrateSecretsToSecureStorage()
+
         // Load initial data
         refreshData()
 
@@ -193,7 +236,7 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     private fun autoAuthenticate(macAddress: String) {
-        val savedPass = prefs.getString("node_pwd_$macAddress", null)
+        val savedPass = securePrefs.getString("node_pwd_$macAddress", null)
         if (!savedPass.isNullOrEmpty()) {
             Log.d(TAG, "Found saved password for $macAddress. Submitting auto-auth...")
             sendAuthRequest(savedPass)
@@ -271,10 +314,10 @@ class AetherMeshRepository(private val context: Context) {
                 _isDeviceAuthenticated.value = true
                 _authenticationRequired.value = null
                 
-                // Save password to preferences for auto-auth
+                // Save password to encrypted storage for auto-auth
                 val mac = bleManager.getConnectedDeviceAddress()
                 if (mac != null && !pendingAuthPassword.isNullOrEmpty()) {
-                    prefs.edit().putString("node_pwd_$mac", pendingAuthPassword).apply()
+                    securePrefs.edit().putString("node_pwd_$mac", pendingAuthPassword).apply()
                 }
                 pendingAuthPassword = null
                 
@@ -296,7 +339,7 @@ class AetherMeshRepository(private val context: Context) {
                     // Clear invalid saved password
                     val mac = bleManager.getConnectedDeviceAddress()
                     if (mac != null) {
-                        prefs.edit().remove("node_pwd_$mac").apply()
+                        securePrefs.edit().remove("node_pwd_$mac").apply()
                     }
                 }
                 pendingAuthPassword = null
@@ -823,7 +866,7 @@ class AetherMeshRepository(private val context: Context) {
 
     fun getOrCreateEcdhKeys(): Pair<String, String> {
         val pubKey = prefs.getString("ecdh_public_key", null)
-        val privKey = prefs.getString("ecdh_private_key", null)
+        val privKey = securePrefs.getString("ecdh_private_key", null)
         if (pubKey != null && privKey != null) {
             return Pair(pubKey, privKey)
         }
@@ -837,7 +880,8 @@ class AetherMeshRepository(private val context: Context) {
             val pair = keyGen.generateKeyPair()
             val pub = Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP)
             val priv = Base64.encodeToString(pair.private.encoded, Base64.NO_WRAP)
-            prefs.edit().putString("ecdh_public_key", pub).putString("ecdh_private_key", priv).apply()
+            prefs.edit().putString("ecdh_public_key", pub).apply()
+            securePrefs.edit().putString("ecdh_private_key", priv).apply()
             Pair(pub, priv)
         } catch (e: Exception) {
             Log.e(TAG, "ECDH generation error: ${e.message}")
