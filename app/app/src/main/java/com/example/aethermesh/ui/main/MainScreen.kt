@@ -1898,14 +1898,19 @@ fun MapViewCompose(
 
     if (showRemoteConfigDialog != null) {
         val node = showRemoteConfigDialog!!
-        var remoteName by remember { mutableStateOf(node.name) }
-        var remotePassword by remember { mutableStateOf("") }
-        var remoteSF by remember { mutableIntStateOf(9) }
-        var remoteBW by remember { mutableFloatStateOf(125f) }
-        var remoteTxPower by remember { mutableIntStateOf(22) }
-        var remoteRegion by remember { mutableIntStateOf(0) }
-        var remoteRole by remember { mutableIntStateOf(0) }
-        var remoteTelemetryInterval by remember { mutableIntStateOf(60) }
+        // Prefill from the last settings this phone pushed to that node (if any),
+        // so re-opening the dialog doesn't silently revert the node to defaults.
+        val remotePrefs = remember(node.nodeId) {
+            context.getSharedPreferences("node_settings_${node.nodeId}", Context.MODE_PRIVATE)
+        }
+        var remoteName by remember(node.nodeId) { mutableStateOf(node.name) }
+        var remotePassword by remember(node.nodeId) { mutableStateOf("") }
+        var remoteSF by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_sf", 9)) }
+        var remoteBW by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("lora_bw", 125f)) }
+        var remoteTxPower by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_tx_power", 22)) }
+        var remoteRegion by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("region", 0)) }
+        var remoteRole by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("node_role", 0)) }
+        var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
 
         AlertDialog(
             onDismissRequest = { showRemoteConfigDialog = null },
@@ -1955,6 +1960,15 @@ fun MapViewCompose(
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text("Radio Profile", color = TextMuted, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    RadioProfileChips(remoteSF, remoteBW) { profile ->
+                        remoteSF = profile.sf
+                        remoteBW = profile.bw
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -2940,6 +2954,21 @@ fun SettingsView(
                         fontSize = 10.sp,
                         modifier = Modifier.align(Alignment.End).padding(top = 2.dp)
                     )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Radio Profile presets (set SF+BW together, mesh-wide consistency)
+                    Text(
+                        text = t("Radio Profile", appLanguage),
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    RadioProfileChips(sf, bw) { profile ->
+                        sf = profile.sf
+                        bw = profile.bw
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -6084,6 +6113,53 @@ fun SubPortalView(
         }
     }
 }
+// Radio profiles: matched SF/BW presets so every node in the mesh can be flipped
+// to the same configuration without slider mismatches. Link budget is relative
+// to Fast (SF9); each SF step roughly doubles airtime.
+data class RadioProfile(val label: String, val sf: Int, val bw: Float, val hint: String)
+
+val radioProfiles = listOf(
+    RadioProfile("Fast", 9, 125f, "Baseline. Quick messages, shortest range."),
+    RadioProfile("Balanced", 10, 125f, "+2.5 dB range vs Fast, 2x airtime."),
+    RadioProfile("Long range", 11, 125f, "+5 dB range vs Fast, 4x airtime."),
+    RadioProfile("Max range", 12, 125f, "+7.5 dB range vs Fast, 8x airtime. Use 10s+ ping intervals.")
+)
+
+@Composable
+fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile) -> Unit) {
+    val selectedProfile = radioProfiles.firstOrNull { it.sf == currentSf && it.bw == currentBw }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        radioProfiles.forEach { p ->
+            val isSel = selectedProfile == p
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isSel) AccentCyan else DarkBackground)
+                    .clickable { onSelect(p) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    p.label,
+                    color = if (isSel) SurfaceDark else TextLight,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        selectedProfile?.hint ?: "Custom SF/BW (not a preset)",
+        color = TextMuted,
+        fontSize = 10.sp
+    )
+    Text(
+        "Every node must run the same profile - mismatched nodes can't hear each other.",
+        color = Color(0xFFFACC15),
+        fontSize = 10.sp
+    )
+}
+
 fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh.data.RangeTestLog>) {
     if (logs.isEmpty()) {
         android.widget.Toast.makeText(context, "No range test data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
