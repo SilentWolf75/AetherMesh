@@ -340,6 +340,10 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len) {
         Serial.println("Channel busy! Backing off...");
         delay(random(50, 200)); // Random backoff
     }
+    // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag that
+    // loop() would misreport as a "TX glitch" on every send. Discard it here;
+    // the radio is in standby now, so no genuine RX/TX event can be pending.
+    operationDone = false;
     
     Serial.print("Sending LoRa Packet. Length: ");
     Serial.println(len);

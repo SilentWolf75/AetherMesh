@@ -44,10 +44,17 @@ void MeshRouter::loop() {
     uint32_t now = millis();
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (pendingRebroadcasts[i].active && now >= pendingRebroadcasts[i].transmitTime) {
-            pendingRebroadcasts[i].active = false;
-            Serial.printf("Transmitting queued rebroadcast for packet %u from sender 0x%08X\n", 
-                          pendingRebroadcasts[i].packet.packet_id, pendingRebroadcasts[i].packet.sender_id);
-            serializeAndSend(&pendingRebroadcasts[i].packet);
+            if (serializeAndSend(&pendingRebroadcasts[i].packet)) {
+                pendingRebroadcasts[i].active = false;
+                Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
+                              pendingRebroadcasts[i].packet.packet_id, pendingRebroadcasts[i].packet.sender_id);
+            } else if (now - pendingRebroadcasts[i].transmitTime > 5000) {
+                // Radio stayed busy for 5s past the scheduled time; give up.
+                pendingRebroadcasts[i].active = false;
+                Serial.printf("Dropping queued rebroadcast for packet %u (radio busy too long)\n",
+                              pendingRebroadcasts[i].packet.packet_id);
+            }
+            // else: radio busy (e.g. mid-transmit) — slot stays active, retry next loop
         }
     }
 }

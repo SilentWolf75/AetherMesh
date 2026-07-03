@@ -261,30 +261,47 @@ uint32_t getHardwareNodeId() {
 #endif
 }
 
-// Battery measurement helper for Heltec V4
+// Battery measurement helper for Heltec V4. The raw read toggles the divider
+// GPIO and blocks 10ms, and callers (display refresh) run every second, so the
+// result is cached for 30s.
 uint8_t readBatteryLevel() {
 #if defined(HELTEC_V4)
+    static uint32_t lastSampleTime = 0;
+    static uint8_t cachedLevel = 0;
+    static bool haveSample = false;
+
+    if (haveSample && (millis() - lastSampleTime < 30000)) {
+        return cachedLevel;
+    }
+
     // GPIO 37 controls the voltage divider (pull HIGH to enable)
     pinMode(37, OUTPUT);
-    digitalWrite(37, HIGH); 
+    digitalWrite(37, HIGH);
     delay(10); // Wait for stabilizer
     int rawValue = analogRead(1); // GPIO 1 is battery voltage input
     digitalWrite(37, LOW); // Disable divider to save power
-    
+
     // Calculate battery voltage
     // 3.3V ADC full range, 12-bit (4096 steps). Voltage divider multiplier is ~4.9 * 1.045 on V4
     float voltage = (float)rawValue * (3.3f / 4096.0f) * 4.9f * 1.045f;
-    
+
     Serial.print("Battery ADC: ");
     Serial.print(rawValue);
     Serial.print(" | Calc Voltage: ");
     Serial.print(voltage);
     Serial.println(" V");
-    
+
     // Standard LiPo discharge range: 3.3V (0%) to 4.2V (100%)
-    if (voltage >= 4.2f) return 100;
-    if (voltage <= 3.3f) return 0;
-    return (uint8_t)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
+    if (voltage >= 4.2f) {
+        cachedLevel = 100;
+    } else if (voltage <= 3.3f) {
+        cachedLevel = 0;
+    } else {
+        cachedLevel = (uint8_t)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
+    }
+    haveSample = true;
+    lastSampleTime = millis();
+    return cachedLevel;
 #else
     return 98; // Fallback for other boards
 #endif
