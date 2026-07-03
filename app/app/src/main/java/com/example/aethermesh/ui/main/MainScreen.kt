@@ -1479,7 +1479,13 @@ fun MapViewCompose(
                 val marker = Marker(mapView).apply {
                     position = GeoPoint(log.latitude, log.longitude)
                     title = if (appLanguage == "Spanish") "Prueba #${index + 1}" else "Ping #${index + 1}"
-                    subDescription = if (log.success) "RSSI: ${log.rssi} dBm | SNR: ${log.snr} dB" else "TIMEOUT"
+                    subDescription = if (log.success) {
+                        val pingSide = log.remoteRssi?.let { "Ping@target: $it dBm | " } ?: ""
+                        val speedPart = log.speedMps?.let {
+                            " | ${String.format(java.util.Locale.US, "%.0f", it * 2.237)} mph"
+                        } ?: ""
+                        "${pingSide}ACK: ${log.rssi} dBm / ${log.snr} dB$speedPart"
+                    } else "TIMEOUT"
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     icon = if (log.success) {
                         createBadgeMarkerDrawable(
