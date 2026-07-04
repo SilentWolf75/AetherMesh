@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 9
+        private const val DATABASE_VERSION = 10
 
         // Messages Table
         const val TABLE_MESSAGES = "messages"
@@ -36,6 +36,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_UPTIME = "uptime_seconds"
         const val COL_NODE_FW_VERSION = "firmware_version"
         const val COL_NODE_IS_CHARGING = "is_charging"
+        // Last-heard signal of this node's traffic (persisted so it survives an app
+        // restart instead of waiting for the node's next telemetry). 0 = unknown /
+        // local node (its own loopback carries no rx signal).
+        const val COL_NODE_RSSI = "last_rssi"
+        const val COL_NODE_SNR = "last_snr"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -102,7 +107,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_MODEL TEXT,
                 $COL_NODE_UPTIME INTEGER,
                 $COL_NODE_FW_VERSION TEXT,
-                $COL_NODE_IS_CHARGING INTEGER DEFAULT 0
+                $COL_NODE_IS_CHARGING INTEGER DEFAULT 0,
+                $COL_NODE_RSSI REAL DEFAULT 0,
+                $COL_NODE_SNR REAL DEFAULT 0
             )
         """.trimIndent()
 
@@ -247,6 +254,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_IS_CHARGING INTEGER DEFAULT 0")
             } catch (e: Exception) {
                 android.util.Log.e("DatabaseHelper", "Failed to add is_charging column: ${e.message}")
+            }
+        }
+        if (oldVersion < 10) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_RSSI REAL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_SNR REAL DEFAULT 0")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add signal columns: ${e.message}")
             }
         }
     }
@@ -593,7 +608,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         model: String,
         uptimeSeconds: Long = 0,
         firmwareVersion: String = "",
-        isCharging: Boolean = false
+        isCharging: Boolean = false,
+        rssi: Float = 0f,
+        snr: Float = 0f
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -628,6 +645,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_NODE_UPTIME, uptimeSeconds)
             put(COL_NODE_FW_VERSION, firmwareVersion)
             put(COL_NODE_IS_CHARGING, if (isCharging) 1 else 0)
+            // Only store signal from real over-the-air reception. rssi == 0 means
+            // the local/connected node's own loopback, which carries no rx signal;
+            // leave the previous value untouched.
+            if (rssi != 0f) {
+                put(COL_NODE_RSSI, rssi.toDouble())
+                put(COL_NODE_SNR, snr.toDouble())
+            }
         }
         
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
@@ -655,7 +679,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     model = cursor.getString(cursor.getColumnIndexOrThrow(COL_NODE_MODEL)),
                     uptimeSeconds = cursor.getLong(cursor.getColumnIndexOrThrow(COL_NODE_UPTIME)),
                     firmwareVersion = cursor.getString(cursor.getColumnIndexOrThrow(COL_NODE_FW_VERSION)) ?: "",
-                    isCharging = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_IS_CHARGING)) != 0
+                    isCharging = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_IS_CHARGING)) != 0,
+                    rssi = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_RSSI)),
+                    snr = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_SNR))
                 ))
             } while (cursor.moveToNext())
         }
@@ -808,7 +834,9 @@ data class MeshNode(
     val model: String,
     val uptimeSeconds: Long = 0,
     val firmwareVersion: String = "",
-    val isCharging: Boolean = false
+    val isCharging: Boolean = false,
+    val rssi: Float = 0f,
+    val snr: Float = 0f
 )
 
 data class RangeTestLog(

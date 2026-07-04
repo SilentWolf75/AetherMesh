@@ -1223,14 +1223,19 @@ fun NodeItem(
                 Text(parts.joinToString("  •  "), color = TextMuted, fontSize = 10.sp)
             }
             
+            // Prefer the live observed route; fall back to the last-heard signal
+            // persisted on the node record (survives app restarts). rssi 0 = the
+            // local/connected node, which has no over-the-air signal to show.
             val route = observedRoutes[node.nodeId]
-            if (route != null) {
+            val sigRssi = route?.lastRssi ?: node.rssi
+            val sigSnr = route?.lastSnr ?: node.snr
+            if (sigRssi != 0f) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    SignalBars(rssi = route.lastRssi)
+                    SignalBars(rssi = sigRssi)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "RSSI: ${route.lastRssi.toInt()} dBm  •  SNR: ${"%.1f".format(route.lastSnr)} dB",
+                        text = "RSSI: ${sigRssi.toInt()} dBm  •  SNR: ${"%.1f".format(sigSnr)} dB",
                         color = TextMuted,
                         fontSize = 10.sp
                     )
