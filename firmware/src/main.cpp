@@ -56,25 +56,40 @@ uint32_t txPacketCount = 0;
 uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
 
-// Voltage-based charge detection (no dedicated charger pin required): a LiPo
-// under load rarely holds above ~4.15V and won't rise on its own, so a rising
-// or high pack voltage means charge current is flowing (solar/USB). Held for a
-// few minutes after the last rise so it doesn't flicker between 30s samples.
+// Voltage-based charge detection (no dedicated charger pin required). A LiPo
+// only rises while charge current flows; under load it stays flat or falls. So
+// we compare the latest (noise-averaged) reading against the minimum of the last
+// few minutes: a meaningful rise means charging. Solar charging near mid-SoC is
+// slow (~0.005V per 30s sample), far below a single-sample delta, so a window is
+// required. Detection lags a few minutes and is approximate; a dedicated charger
+// status GPIO could replace this heuristic for instant/precise results.
 void updateChargingState(float voltage) {
-    static float prevVoltage = 0.0f;
-    static bool initialized = false;
+    static const int WIN = 8;          // 8 samples x ~30s = ~4 min window
+    static float samples[WIN];
+    static int count = 0;
+    static int idx = 0;
     static uint32_t chargingHoldUntil = 0;
-    if (!initialized) {
-        prevVoltage = voltage;
-        initialized = true;
+
+    samples[idx] = voltage;
+    idx = (idx + 1) % WIN;
+    if (count < WIN) count++;
+
+    float minV = voltage;
+    for (int i = 0; i < count; i++) {
+        if (samples[i] < minV) minV = samples[i];
     }
-    if (voltage > prevVoltage + 0.02f || voltage >= 4.15f) {
+
+    // Rising above the recent floor => charge current present. The absolute
+    // 4.15V catch handles the near-full charging plateau where the rise stalls.
+    bool rising = (voltage - minV) > 0.015f;
+    bool high = voltage >= 4.15f;
+
+    if (rising || high) {
         batteryCharging = true;
-        chargingHoldUntil = millis() + 180000; // hold 3 min
+        chargingHoldUntil = millis() + 180000; // hold 3 min after last trigger
     } else if ((int32_t)(millis() - chargingHoldUntil) >= 0) {
         batteryCharging = false;
     }
-    prevVoltage = voltage;
 }
 
 // Node Settings and NVS Configuration
@@ -304,7 +319,10 @@ uint8_t readBatteryLevel() {
     pinMode(37, OUTPUT);
     digitalWrite(37, HIGH);
     delay(10); // Wait for stabilizer
-    int rawValue = analogRead(1); // GPIO 1 is battery voltage input
+    // Average many reads so ADC noise stays below the charge-detection threshold
+    uint32_t adcSum = 0;
+    for (int i = 0; i < 32; i++) adcSum += analogRead(1); // GPIO 1 is battery voltage input
+    int rawValue = adcSum / 32;
     digitalWrite(37, LOW); // Disable divider to save power
 
     // Calculate battery voltage
@@ -343,7 +361,10 @@ uint8_t readBatteryLevel() {
     analogReference(AR_INTERNAL_3_0);
     analogReadResolution(12);
     delay(2); // let the reference settle
-    int rawValue = analogRead(WB_A0);
+    // Average many reads so ADC noise stays below the charge-detection threshold
+    uint32_t adcSum = 0;
+    for (int i = 0; i < 32; i++) adcSum += analogRead(WB_A0);
+    int rawValue = adcSum / 32;
     float voltage = (float)rawValue * 0.73242188f * 1.73f / 1000.0f;
     updateChargingState(voltage);
 
