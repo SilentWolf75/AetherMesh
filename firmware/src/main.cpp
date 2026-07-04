@@ -56,33 +56,79 @@ uint32_t txPacketCount = 0;
 uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
 
+// Hardware external-power detection where the platform provides it.
+// On nRF52840 (RAK), VBUSDETECT reads the 5V input rail, which the WisBlock
+// base feeds from both USB and the solar connector - instant and definite.
+// The ESP32-S3 (Heltec) has no equivalent without extra wiring, so it relies
+// on the voltage heuristic below.
+bool externalPowerPresent() {
+#if defined(RAK4631) || defined(RAK3401_1W)
+    uint8_t sd_enabled = 0;
+    if (sd_softdevice_is_enabled(&sd_enabled) == 0 && sd_enabled) {
+        uint32_t usb_reg = 0;
+        sd_power_usbregstatus_get(&usb_reg);
+        return (usb_reg & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+    } else {
+        return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+    }
+#else
+    return false;
+#endif
+}
+
 // Voltage-based charge detection (no dedicated charger pin required). A LiPo
 // only rises while charge current flows; under load it stays flat or falls. So
 // we compare the latest (noise-averaged) reading against the minimum of the last
-// few minutes: a meaningful rise means charging. Solar charging near mid-SoC is
-// slow (~0.005V per 30s sample), far below a single-sample delta, so a window is
-// required. Detection lags a few minutes and is approximate; a dedicated charger
-// status GPIO could replace this heuristic for instant/precise results.
+// few minutes: a meaningful rise means charging. Limits: it catches the ONSET of
+// charging, not steady-state - a node rebooting mid-charge sees a flat (already
+// elevated) voltage and won't trigger until the next visible rise. Where the
+// hardware can report external power directly (see externalPowerPresent), that
+// signal wins.
 void updateChargingState(float voltage) {
+    if (voltage < 2.5f) {
+        return; // Ignore invalid/stabilizing readings on boot
+    }
+
+    if (externalPowerPresent()) {
+        batteryCharging = true;
+        return;
+    }
+
+    // Apply an Exponential Moving Average (EMA) filter to smooth out ADC noise and load transients
+    static float filteredVoltage = -1.0f;
     static const int WIN = 8;          // 8 samples x ~30s = ~4 min window
     static float samples[WIN];
-    static int count = 0;
     static int idx = 0;
     static uint32_t chargingHoldUntil = 0;
 
-    samples[idx] = voltage;
-    idx = (idx + 1) % WIN;
-    if (count < WIN) count++;
+    if (filteredVoltage < 0.0f) {
+        filteredVoltage = voltage;
+        // Pre-fill the history array with the boot voltage to prevent false rise detection
+        for (int i = 0; i < WIN; i++) {
+            samples[i] = voltage;
+        }
+    } else {
+        filteredVoltage = filteredVoltage * 0.85f + voltage * 0.15f;
+    }
 
-    float minV = voltage;
-    for (int i = 0; i < count; i++) {
+    samples[idx] = filteredVoltage;
+    idx = (idx + 1) % WIN;
+
+    float minV = filteredVoltage;
+    for (int i = 0; i < WIN; i++) {
         if (samples[i] < minV) minV = samples[i];
     }
 
     // Rising above the recent floor => charge current present. The absolute
     // 4.15V catch handles the near-full charging plateau where the rise stalls.
-    bool rising = (voltage - minV) > 0.015f;
-    bool high = voltage >= 4.15f;
+#if defined(RAK4631) || defined(RAK3401_1W)
+    const float riseThreshold = 0.008f; // More sensitive due to cleaner ADC on nRF52
+#else
+    const float riseThreshold = 0.080f; // High threshold (80mV) to completely block noise/load transient triggers
+#endif
+
+    bool rising = (filteredVoltage - minV) > riseThreshold;
+    bool high = filteredVoltage >= 4.15f;
 
     if (rising || high) {
         batteryCharging = true;
@@ -90,6 +136,9 @@ void updateChargingState(float voltage) {
     } else if ((int32_t)(millis() - chargingHoldUntil) >= 0) {
         batteryCharging = false;
     }
+
+    Serial.printf("Charge detect: V=%.3f floor=%.3f rise=%d high=%d vbus=%d -> charging=%d\n",
+                  filteredVoltage, minV, rising, high, externalPowerPresent(), batteryCharging);
 }
 
 // Node Settings and NVS Configuration
