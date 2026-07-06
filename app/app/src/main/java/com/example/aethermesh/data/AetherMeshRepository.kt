@@ -43,6 +43,7 @@ class AetherMeshRepository(private val context: Context) {
         private const val MAX_ENCRYPTED_CONTENT_LENGTH = 96
         private const val MAX_CHANNEL_LENGTH = 31
         private const val MESSAGE_ACK_TIMEOUT_MS = 15_000L
+        private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
     }
 
     val dbHelper = DatabaseHelper(context)
@@ -197,7 +198,10 @@ class AetherMeshRepository(private val context: Context) {
                 val db = dbHelper.writableDatabase
                 db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
                 db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
-                Log.d(TAG, "Successfully purged negative and zero ID records from database.")
+                // Range-test control rows stored as chat messages by older builds:
+                // once marked FAILED they were auto-resent as DMs forever.
+                db.execSQL("DELETE FROM messages WHERE content LIKE 'PING@_%' ESCAPE '@' OR content LIKE 'PONG@_%' ESCAPE '@'")
+                Log.d(TAG, "Successfully purged invalid ID and legacy range-test records from database.")
             } catch (e: Exception) {
                 Log.e(TAG, "Error purging invalid ID records: ${e.message}")
             }
@@ -564,14 +568,30 @@ class AetherMeshRepository(private val context: Context) {
         return sent
     }
 
+    // Per-message cooldown so store-and-forward doesn't re-send the same failed
+    // DM on every telemetry from the target (that loop burned airtime forever).
+    // Accessed only on dbDispatcher (single thread).
+    private val dmRetryLastAttempt = mutableMapOf<Long, Long>()
+
     private fun retryQueuedDirectMessages(recipientId: Long) {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return
+        // Never compete with an active range test for the radio: DM retransmits
+        // through the connected node were observed jamming ping/PONG exchanges.
+        if (_isRangeTestActive.value) return
         repositoryScope.launch(dbDispatcher) {
+            val now = System.currentTimeMillis()
             val retryable = dbHelper.getRetryableDirectMessages(recipientId)
+                // Legacy range-test control rows must never be resent as DMs
+                .filter { !it.content.startsWith("PING_") && !it.content.startsWith("PONG_") }
+                .filter { (dmRetryLastAttempt[it.id] ?: 0L) + DM_RETRY_COOLDOWN_MS < now }
             for (message in retryable) {
+                dmRetryLastAttempt[message.id] = now
                 dbHelper.updateMessageStatusById(message.id, "QUEUED")
                 val sent = sendMessage(message.recipientId, message.content, "")
                 dbHelper.updateMessageStatusById(message.id, if (sent) "RETRIED" else "FAILED")
+                // Space resends out; a burst of tracked DMs each retrying 3x
+                // saturates the node's half-duplex radio.
+                delay(2_000L)
             }
             if (retryable.isNotEmpty()) {
                 refreshData()
