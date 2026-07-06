@@ -945,6 +945,9 @@ class AetherMeshRepository(private val context: Context) {
         return dbHelper.getAllRangeTestLogs()
     }
 
+    /** Latest phone GPS fix (fresh only while a range test is running). */
+    fun lastPhoneFix(): android.location.Location? = lastPhoneLocation
+
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList()
     }

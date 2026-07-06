@@ -3922,7 +3922,7 @@ fun SettingsView(
                 // CSV Exports
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
-                        exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs())
+                        exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) })
                     }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -5150,9 +5150,42 @@ fun ConnectionView(
                                 Text("$successRate%", color = if (successRate > 75) AccentMint else if (successRate > 40) Color(0xFFFBBF24) else Color(0xFFF87171), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        
+
+                        // Live distance to the target (phone GPS -> target's reported position),
+                        // so field tests show how far the link is stretching right now.
+                        run {
+                            val target = selectedRangeTargetNode
+                            val fix = viewModel.lastPhoneFix()
+                            if (target != null && fix != null &&
+                                target.latitude != 0.0f && target.longitude != 0.0f
+                            ) {
+                                val km = calculateDistance(
+                                    fix.latitude, fix.longitude,
+                                    target.latitude.toDouble(), target.longitude.toDouble()
+                                )
+                                val useImperial = context
+                                    .getSharedPreferences("aethermesh_prefs", android.content.Context.MODE_PRIVATE)
+                                    .getBoolean("use_imperial_units", true)
+                                val distStr = if (useImperial) {
+                                    val miles = km * 0.621371
+                                    if (miles < 0.2) "${(miles * 5280).toInt()} ft" else "%.2f mi".format(miles)
+                                } else {
+                                    if (km < 1.0) "${(km * 1000).toInt()} m" else "%.2f km".format(km)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "Distance to target: $distStr",
+                                    color = AccentCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
-                        
+
                         // Draw Mini Signal Chart using Canvas
                         Text("RSSI Signal Level History (dBm)", color = TextMuted, fontSize = 11.sp)
                         Spacer(modifier = Modifier.height(4.dp))
@@ -5246,7 +5279,7 @@ fun ConnectionView(
                             }
 
                             Button(
-                                onClick = { exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs()) },
+                                onClick = { exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) }) },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF164E63)),
                                 shape = RoundedCornerShape(8.dp),
@@ -6277,7 +6310,11 @@ fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile)
     )
 }
 
-fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh.data.RangeTestLog>) {
+fun exportRangeTestLogsToCsv(
+    context: Context,
+    logs: List<com.example.aethermesh.data.RangeTestLog>,
+    nodePositions: Map<Long, Pair<Double, Double>> = emptyMap()
+) {
     if (logs.isEmpty()) {
         android.widget.Toast.makeText(context, "No range test data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
         return
@@ -6287,9 +6324,10 @@ fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh
     // raw lat/lon plus BOTH link directions for signal analysis:
     //   ping_* = signal of our ping as heard by the target (from the ACK payload)
     //   ack_*  = signal of the target's ACK as heard by our node
+    //   distance_m = row GPS -> target node's last reported position
     // Signal columns are blank (not placeholder values) on timeouts/unreported.
     val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,speed_mps,gps_accuracy_m,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
+    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,distance_m,speed_mps,gps_accuracy_m,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
     logs.forEach {
         val ackRssi = if (it.success) "${it.rssi}" else ""
         val ackSnr = if (it.success) "${it.snr}" else ""
@@ -6297,7 +6335,13 @@ fun exportRangeTestLogsToCsv(context: Context, logs: List<com.example.aethermesh
         val pingSnr = it.remoteSnr?.toString() ?: ""
         val speed = it.speedMps?.toString() ?: ""
         val accuracy = it.gpsAccuracyM?.toString() ?: ""
-        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$speed,$accuracy,$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
+        val targetPos = nodePositions[it.targetId]
+        val distance = if (targetPos != null && it.latitude != 0.0 && it.longitude != 0.0 &&
+            targetPos.first != 0.0 && targetPos.second != 0.0
+        ) {
+            (calculateDistance(it.latitude, it.longitude, targetPos.first, targetPos.second) * 1000).toInt().toString()
+        } else ""
+        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$distance,$speed,$accuracy,$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
     }
 
     try {

@@ -148,6 +148,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     fun getAllRangeTestLogs() = repository.getAllRangeTestLogs()
 
+    fun lastPhoneFix() = repository.lastPhoneFix()
+
     fun sendAuthRequest(password: String): Boolean {
         return repository.sendAuthRequest(password)
     }
