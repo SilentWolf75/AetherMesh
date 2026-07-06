@@ -741,11 +741,18 @@ void MeshRouter::drainPendingPongReplies() {
             pendingPongs[i].active = false;
             continue;
         }
-        if (sendTextNoAck(pendingPongs[i].recipientId, pendingPongs[i].content, true)) {
+        // Only the FIRST send skips CAD (reply latency matters). Retries are
+        // blind repeats of a possibly-already-delivered PONG: transmitting them
+        // without listening deafened the node to the pinger's NEXT ping and
+        // caused back-to-back failures in field tests. Retries also back off
+        // (1.5s, 3s, 4.5s...) instead of hammering a flat 1.5s cadence.
+        bool firstAttempt = (pendingPongs[i].sendCount == 0);
+        if (sendTextNoAck(pendingPongs[i].recipientId, pendingPongs[i].content, firstAttempt)) {
             pendingPongs[i].sendCount++;
             Serial.printf("Sent range-test %s (attempt %u)\n",
                           pendingPongs[i].content, pendingPongs[i].sendCount);
-            pendingPongs[i].sendAtMs = now + PONG_RESEND_INTERVAL_MS + random(0, 300);
+            pendingPongs[i].sendAtMs = now +
+                PONG_RESEND_INTERVAL_MS * pendingPongs[i].sendCount + random(0, 400);
         }
         // Radio busy: leave slot active and retry next loop pass until window expires.
     }
