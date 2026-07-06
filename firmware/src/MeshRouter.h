@@ -13,8 +13,12 @@
 #define MAX_PENDING_REBROADCASTS 3
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
-#define PONG_RETRY_WINDOW_MS 12000
-#define PONG_RESEND_INTERVAL_MS 1500
+// Field data: PONGs travel the strong link direction and always delivered on
+// the FIRST attempt (~30 successes, zero via retry), while retries of already
+// delivered pongs collided with the pinger's next ping. Keep exactly one
+// insurance retry, timed to land between 5s-interval pings.
+#define PONG_RETRY_WINDOW_MS 4000
+#define PONG_RESEND_INTERVAL_MS 2500
 #define ACK_RETRY_INTERVAL_MS 3000
 #define ACK_MAX_RETRIES 3
 
