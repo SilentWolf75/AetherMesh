@@ -1,14 +1,18 @@
 package com.example.aethermesh.ble
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.core.content.ContextCompat
 import java.util.*
 
 @SuppressLint("MissingPermission")
@@ -46,17 +50,71 @@ class BleConnectionManager(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
     private var mtuTimeoutRunnable: Runnable? = null
+    private var pendingAutoConnectMac: String? = null
 
     init {
-        // Auto-connect if we have a saved paired MAC address on startup
+        // Auto-connect is deferred until BLUETOOTH_CONNECT is granted (Android 12+).
         val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
         if (savedMac != null) {
-            Log.d(TAG, "Auto-connecting to saved MAC: $savedMac")
-            handler.postDelayed({
-                if (!isConnected) {
-                    connect(savedMac)
-                }
-            }, 1500) // 1.5s delay to make sure BT stack is active
+            pendingAutoConnectMac = savedMac
+            if (hasBleConnectPermission()) {
+                scheduleAutoConnect(savedMac)
+            } else {
+                Log.d(TAG, "Auto-connect to $savedMac deferred until BLUETOOTH_CONNECT is granted.")
+            }
+        }
+    }
+
+    /** Call after runtime BLE permissions are granted (e.g. from MainActivity). */
+    fun onPermissionsGranted() {
+        val mac = pendingAutoConnectMac ?: prefs.getString(PREF_PAIRED_MAC, null) ?: return
+        pendingAutoConnectMac = null
+        if (!isConnected) {
+            scheduleAutoConnect(mac)
+        }
+    }
+
+    private fun scheduleAutoConnect(macAddress: String) {
+        Log.d(TAG, "Scheduling auto-connect to saved MAC: $macAddress")
+        handler.postDelayed({
+            if (!isConnected) {
+                connect(macAddress)
+            }
+        }, 1500)
+    }
+
+    private fun hasBleConnectPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    private fun hasBleScanPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun safeDeviceName(device: BluetoothDevice): String? {
+        if (!hasBleConnectPermission()) return null
+        return try {
+            device.name
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Unable to read device name: ${e.message}")
+            null
         }
     }
     
@@ -71,6 +129,10 @@ class BleConnectionManager(private val context: Context) {
     // service UUID. This is also name-independent, so nodes with a custom name still appear.
     fun startScan() {
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) return
+        if (!hasBleScanPermission()) {
+            Log.w(TAG, "BLE scan skipped: BLUETOOTH_SCAN (or location) permission not granted.")
+            return
+        }
 
         val scanner = bluetoothAdapter.bluetoothLeScanner ?: return
 
@@ -81,7 +143,7 @@ class BleConnectionManager(private val context: Context) {
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
                 val scanRecord = result.scanRecord
-                val deviceName = scanRecord?.deviceName ?: result.device.name
+                val deviceName = scanRecord?.deviceName ?: safeDeviceName(result.device)
                 val advertisesOurService =
                     scanRecord?.serviceUuids?.contains(ParcelUuid(SERVICE_UUID)) == true
                 val nameMatches = deviceName?.startsWith("AetherMesh-") == true
@@ -114,7 +176,12 @@ class BleConnectionManager(private val context: Context) {
     // Connect to a node by MAC address
     fun connect(macAddress: String) {
         if (bluetoothAdapter == null) return
-        
+        if (!hasBleConnectPermission()) {
+            Log.w(TAG, "BLUETOOTH_CONNECT not granted; deferring connect to $macAddress")
+            pendingAutoConnectMac = macAddress
+            return
+        }
+
         // Cancel any pending reconnect attempts
         reconnectRunnable?.let {
             handler.removeCallbacks(it)
@@ -156,12 +223,19 @@ class BleConnectionManager(private val context: Context) {
     }
 
     private fun performConnect(macAddress: String) {
+        if (!hasBleConnectPermission()) {
+            Log.w(TAG, "BLUETOOTH_CONNECT not granted; deferring performConnect to $macAddress")
+            pendingAutoConnectMac = macAddress
+            return
+        }
+
         userWantsDisconnect = false
         prefs.edit().putString(PREF_PAIRED_MAC, macAddress).apply()
-        
+
         val device = bluetoothAdapter.getRemoteDevice(macAddress)
-        Log.d(TAG, "Connecting to device: ${device.name ?: "Unknown"} (${device.address})")
-        
+        val label = safeDeviceName(device) ?: "Unknown"
+        Log.d(TAG, "Connecting to device: $label (${device.address})")
+
         // Explicitly use TRANSPORT_LE to avoid fallback connection delays/drops on dual-mode devices
         bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
@@ -358,7 +432,7 @@ class BleConnectionManager(private val context: Context) {
             if (isConnected) return // Prevent double-triggering finalization
             
             isConnected = true
-            connectedDeviceName = gatt.device.name
+            connectedDeviceName = safeDeviceName(gatt.device)
             
             // Save MAC address to preferences for auto-reconnection
             prefs.edit().putString(PREF_PAIRED_MAC, gatt.device.address).apply()

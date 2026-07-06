@@ -36,8 +36,7 @@ class MainActivity : ComponentActivity() {
         // Request BLE and Location permissions at startup
         checkAndRequestPermissions()
 
-        // Start background service to maintain connection (will start if permission already granted)
-        startBackgroundService()
+        // Service start is deferred until BLUETOOTH_CONNECT is granted (see onBlePermissionsReady)
 
         enableEdgeToEdge()
         setContent {
@@ -111,7 +110,13 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.requestPermissions(this, listToRequest.toTypedArray(), PERMISSION_REQUEST_CODE)
         } else {
             Log.d(TAG, "All permissions already granted.")
+            onBlePermissionsReady()
         }
+    }
+
+    private fun onBlePermissionsReady() {
+        startBackgroundService()
+        (application as AetherMeshApplication).repository.bleManager.onPermissionsGranted()
     }
 
     private fun startBackgroundService() {
@@ -151,7 +156,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 Log.d(TAG, "All requested permissions granted by user.")
             }
-            startBackgroundService()
+            onBlePermissionsReady()
         }
     }
 }

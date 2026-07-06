@@ -312,7 +312,7 @@ void RadioManager::loop() {
     }
 }
 
-bool RadioManager::sendPacket(uint8_t* payload, size_t len) {
+bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     if (isTransmitting) {
         // Polling fallback check
         uint16_t irq = radio->getIrqStatus();
@@ -340,17 +340,19 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len) {
     setHeltecV4TransmitEnable(false);
 #endif
 
-    // Perform CAD check before sending to avoid collisions
-    Serial.println("Performing CAD check...");
-    int cadState = radio->scanChannel();
-    if (cadState == RADIOLIB_LORA_DETECTED) {
-        Serial.println("Channel busy! Backing off...");
-        delay(random(50, 200)); // Random backoff
+    if (!skipCad) {
+        // Perform CAD check before sending to avoid collisions
+        Serial.println("Performing CAD check...");
+        int cadState = radio->scanChannel();
+        if (cadState == RADIOLIB_LORA_DETECTED) {
+            Serial.println("Channel busy! Backing off...");
+            delay(random(50, 200)); // Random backoff
+        }
+        // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag that
+        // loop() would misreport as a "TX glitch" on every send. Discard it here;
+        // the radio is in standby now, so no genuine RX/TX event can be pending.
+        operationDone = false;
     }
-    // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag that
-    // loop() would misreport as a "TX glitch" on every send. Discard it here;
-    // the radio is in standby now, so no genuine RX/TX event can be pending.
-    operationDone = false;
     
     Serial.print("Sending LoRa Packet. Length: ");
     Serial.println(len);

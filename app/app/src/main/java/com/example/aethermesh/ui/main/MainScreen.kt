@@ -106,6 +106,30 @@ val TextMuted: Color get() = activePalette.textMuted
 val AccentCyan = Color(0xFF22D3EE)
 val AccentMint = Color(0xFF34D399)
 val AccentRed = Color(0xFFEF4444)
+private const val NODE_STALE_MS = 5 * 60 * 1000L
+
+fun batteryLevelColor(level: Int): Color {
+    return when {
+        level < 0 -> TextMuted
+        level <= 20 -> AccentRed
+        level <= 50 -> Color(0xFFFBBF24)
+        else -> AccentMint
+    }
+}
+
+fun isNodeStale(lastActive: Long): Boolean {
+    return System.currentTimeMillis() - lastActive > NODE_STALE_MS
+}
+
+fun formatLastHeard(lastActive: Long): String {
+    val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
+    return when {
+        elapsedSeconds < 60 -> "${elapsedSeconds}s ago"
+        elapsedSeconds < 3600 -> "${elapsedSeconds / 60}m ago"
+        elapsedSeconds < 86_400 -> "${elapsedSeconds / 3600}h ago"
+        else -> "${elapsedSeconds / 86_400}d ago"
+    }
+}
 
 
 fun t(text: String, lang: String): String {
@@ -354,6 +378,7 @@ fun MainScreen(
                         onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
                         onCreateChannel = { viewModel.createChannel(it) },
                         onSendMessage = { viewModel.sendMessage(it) },
+                        onRetryMessage = { viewModel.retryMessage(it) },
                         getChatKey = { viewModel.getChatKey(it) },
                         saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) }
                     )
@@ -568,6 +593,7 @@ fun ChatView(
     onSelectDirectMessage: (Long) -> Unit,
     onCreateChannel: (String) -> Unit,
     onSendMessage: (String) -> Unit,
+    onRetryMessage: (ChatMessage) -> Unit,
     getChatKey: (String) -> String?,
     saveChatKey: (String, String) -> Unit
 ) {
@@ -796,7 +822,11 @@ fun ChatView(
                 reverseLayout = false
             ) {
                 items(messages) { message ->
-                    MessageBubble(message = message, localNodeId = localNodeId)
+                    MessageBubble(
+                        message = message,
+                        localNodeId = localNodeId,
+                        onRetryMessage = onRetryMessage
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
@@ -950,9 +980,25 @@ fun NewChannelDialog(
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage, localNodeId: Long) {
+fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (ChatMessage) -> Unit) {
     // A message is "ours" when its sender matches the locally connected node.
     val isMe = localNodeId != 0L && message.senderId == localNodeId
+    val canRetry = isMe && message.status == "FAILED"
+    val statusText = when (message.status) {
+        "DELIVERED" -> "✓ Delivered"
+        "PENDING" -> "… Pending"
+        "FAILED" -> "✗ Failed - tap to retry"
+        "QUEUED" -> "… Queued"
+        "RETRIED" -> "↻ Retried"
+        else -> "✓ Sent"
+    }
+    val statusColor = when (message.status) {
+        "DELIVERED", "SENT" -> AccentMint
+        "FAILED" -> AccentRed
+        "PENDING", "QUEUED" -> Color(0xFFFBBF24)
+        "RETRIED" -> TextMuted
+        else -> TextMuted
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -969,6 +1015,7 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long) {
                     )
                 )
                 .background(if (isMe) AccentCyan else SurfaceDark)
+                .clickable(enabled = canRetry) { onRetryMessage(message) }
                 .padding(12.dp)
         ) {
             Text(
@@ -984,6 +1031,15 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long) {
             fontSize = 10.sp,
             modifier = Modifier.padding(top = 2.dp)
         )
+        if (isMe) {
+            Text(
+                text = statusText,
+                color = statusColor,
+                fontSize = 10.sp,
+                fontWeight = if (message.status == "FAILED") FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier.padding(top = 1.dp)
+            )
+        }
     }
 }
 
@@ -1142,12 +1198,15 @@ fun NodeItem(
 ) {
     val initials = getInitials(node.name)
     val badgeColor = getBadgeColor(node.name)
+    val stale = isNodeStale(node.lastActive)
+    val primaryText = if (stale) TextMuted else TextLight
+    val secondaryText = if (stale) TextMuted.copy(alpha = 0.75f) else TextMuted
     
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceDark)
+            .background(if (stale) SurfaceDark.copy(alpha = 0.55f) else SurfaceDark)
             .clickable { onClick() }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1157,7 +1216,7 @@ fun NodeItem(
             modifier = Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(badgeColor),
+                .background(if (stale) badgeColor.copy(alpha = 0.45f) else badgeColor),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -1171,10 +1230,10 @@ fun NodeItem(
         Spacer(modifier = Modifier.width(12.dp))
         
         Column(modifier = Modifier.weight(1f)) {
-            Text(node.name, color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Text(
                 "ID: 0x${node.nodeId.toString(16).uppercase()} | Model: ${node.model}",
-                color = TextMuted,
+                color = secondaryText,
                 fontSize = 12.sp
             )
             
@@ -1204,15 +1263,15 @@ fun NodeItem(
                 }
                 Text(
                     text = distStr,
-                    color = AccentMint,
+                    color = if (stale) secondaryText else AccentMint,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
             
             Text(
-                "${t("Last Active", appLanguage)}: ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(node.lastActive))}",
-                color = AccentCyan,
+                "${t("Last Active", appLanguage)}: ${formatLastHeard(node.lastActive)} (${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(node.lastActive))})",
+                color = if (stale) TextMuted else AccentCyan,
                 fontSize = 11.sp
             )
             if (node.uptimeSeconds > 0 || node.firmwareVersion.isNotEmpty()) {
@@ -1254,16 +1313,16 @@ fun NodeItem(
                     Spacer(modifier = Modifier.width(4.dp))
                 }
                 Icon(
-                    imageVector = Icons.Default.Favorite,
+                    imageVector = Icons.Default.BatteryFull,
                     contentDescription = "Battery",
-                    tint = AccentMint,
+                    tint = batteryLevelColor(node.battery),
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("${node.battery}%", color = TextLight, fontSize = 14.sp)
+                Text("${node.battery}%", color = primaryText, fontSize = 14.sp)
             }
-            Text("Lat: %.4f".format(node.latitude), color = TextMuted, fontSize = 10.sp)
-            Text("Lon: %.4f".format(node.longitude), color = TextMuted, fontSize = 10.sp)
+            Text("Lat: %.4f".format(node.latitude), color = secondaryText, fontSize = 10.sp)
+            Text("Lon: %.4f".format(node.longitude), color = secondaryText, fontSize = 10.sp)
         }
     }
 }
@@ -1547,11 +1606,11 @@ fun MapViewCompose(
                 val marker = Marker(mapView).apply {
                     position = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
                     title = node.name
-                    subDescription = "Battery: ${node.battery}% | Model: ${node.model}"
+                    subDescription = "Battery: ${node.battery}% | Last heard ${formatLastHeard(node.lastActive)}"
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER) // Center of the badge circle
 
                     val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
-                    val isNodeActive = (System.currentTimeMillis() - node.lastActive) < 300000L // Active if heard within 5 mins
+                    val isNodeActive = !isNodeStale(node.lastActive)
                     icon = createBadgeMarkerDrawable(context, nodeShortName, color, isActive = isNodeActive, isPingMarker = false)
 
                     setOnMarkerClickListener { _, _ ->
@@ -1744,6 +1803,9 @@ fun MapViewCompose(
         } ?: selectedMapNode
         activeMapNode?.let { node ->
             val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+            val stale = isNodeStale(node.lastActive)
+            val mapPrimaryText = if (stale) TextMuted else TextLight
+            val mapAccentText = if (stale) TextMuted else AccentCyan
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1775,7 +1837,7 @@ fun MapViewCompose(
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(node.name, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                        Text(node.name, color = mapPrimaryText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Box(
                                             modifier = Modifier
@@ -1804,21 +1866,21 @@ fun MapViewCompose(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
                                 Text(if (appLanguage == "Spanish") "Modelo" else "Model", color = TextMuted, fontSize = 9.sp)
-                                Text(node.model, color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(node.model, color = mapPrimaryText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(if (appLanguage == "Spanish") "Batería" else "Battery", color = TextMuted, fontSize = 9.sp)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Favorite, contentDescription = null, tint = AccentMint, modifier = Modifier.size(12.dp))
+                                    Icon(Icons.Default.BatteryFull, contentDescription = null, tint = batteryLevelColor(node.battery), modifier = Modifier.size(12.dp))
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    Text("${node.battery}%", color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("${node.battery}%", color = mapPrimaryText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 Text(if (appLanguage == "Spanish") "Último Activo" else "Last Active", color = TextMuted, fontSize = 9.sp)
                                 Text(
-                                    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(node.lastActive)),
-                                    color = AccentCyan,
+                                    formatLastHeard(node.lastActive),
+                                    color = mapAccentText,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -4807,9 +4869,9 @@ fun ConnectionView(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = Icons.Default.Favorite,
+                                imageVector = Icons.Default.BatteryFull,
                                 contentDescription = null,
-                                tint = AccentMint,
+                                tint = batteryLevelColor(batteryVal),
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -5168,7 +5230,16 @@ fun ConnectionView(
                             }
 
                             Button(
-                                onClick = { selectedRangeTargetNode?.let { viewModel.clearRangeTestLogs(it.nodeId) } },
+                                onClick = {
+                                    val targetId = if (isRangeTestActive && viewModel.rangeTestTargetId != 0L) {
+                                        viewModel.rangeTestTargetId
+                                    } else {
+                                        selectedRangeTargetNode?.nodeId
+                                    }
+                                    if (targetId != null) {
+                                        viewModel.clearRangeTestLogs(targetId)
+                                    }
+                                },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF451a1a)),
                                 shape = RoundedCornerShape(8.dp),

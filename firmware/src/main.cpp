@@ -56,6 +56,9 @@ uint32_t txPacketCount = 0;
 uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
 
+// Connected node: range-test PINGs are sent once. Retransmitting from the phone
+// node collides with PONG replies on the same half-duplex radio; the target
+// already retries PONG and re-queues on duplicate PING.
 // Hardware external-power detection where the platform provides it.
 // On nRF52840 (RAK), VBUSDETECT reads the 5V input rail, which the WisBlock
 // base feeds from both USB and the solar connector - instant and definite.
@@ -606,12 +609,21 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
 
     // 1. Forward to connected phone via BLE if authenticated.
     // Skip mesh rebroadcast duplicates and reflections of our own packets, otherwise
-    // the app stores the same chat message once per relay that repeats it.
+    // the app stores the same chat message once per relay that repeats it. ACKs are
+    // control events though: the app's range-test counter depends on seeing them.
+    bool isAckPacket = decodeSuccess && packet.which_payload == aethermesh_MeshPacket_ack_tag;
+    bool isPongPacket = decodeSuccess &&
+                        packet.which_payload == aethermesh_MeshPacket_text_tag &&
+                        strncmp(packet.payload.text.content, "PONG_", 5) == 0;
     bool isDuplicate = decodeSuccess &&
                        (packet.sender_id == localNodeId ||
-                        router.hasSeen(packet.sender_id, packet.packet_id));
+                        ((!isAckPacket && !isPongPacket) && router.hasSeen(packet.sender_id, packet.packet_id)));
     if (bleMgr.isDeviceConnected() && isBleClientAuthenticated && !isDuplicate) {
         if (decodeSuccess) {
+            if (isPongPacket) {
+                Serial.printf("Range-test PONG received, forwarding to phone: %s\n",
+                              packet.payload.text.content);
+            }
             packet.rx_rssi = rssi;
             packet.rx_snr = snr;
 
@@ -624,6 +636,8 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
             // Fallback: forward raw bytes if decode fails
             bleMgr.sendToPhone(data, len);
         }
+    } else if (decodeSuccess && isPongPacket && bleMgr.isDeviceConnected() && !isBleClientAuthenticated) {
+        Serial.println("PONG received but BLE client not authenticated; not forwarding to phone.");
     }
     
     // 2. Feed into router for routing processing (unicast/broadcast relays, ACKs, etc)
@@ -657,6 +671,36 @@ void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     if (pb_encode(&stream, aethermesh_MeshPacket_fields, &response)) {
         bleMgr.sendToPhone(buffer, stream.bytes_written);
+    }
+}
+
+void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr) {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+        return;
+    }
+
+    aethermesh_MeshPacket statusPacket = aethermesh_MeshPacket_init_zero;
+    statusPacket.sender_id = localNodeId;
+    statusPacket.recipient_id = 0; // Local BLE client
+    statusPacket.packet_id = random(1, 100000);
+    statusPacket.hop_limit = 1;
+    statusPacket.want_ack = false;
+    statusPacket.prev_hop_id = localNodeId;
+    statusPacket.rx_rssi = ackRssi;
+    statusPacket.rx_snr = ackSnr;
+    statusPacket.which_payload = aethermesh_MeshPacket_delivery_status_tag;
+    statusPacket.payload.delivery_status.packet_id = packetId;
+    statusPacket.payload.delivery_status.recipient_id = recipientId;
+    statusPacket.payload.delivery_status.state = state;
+    statusPacket.payload.delivery_status.reason = reason;
+    statusPacket.payload.delivery_status.retry_count = retryCount;
+
+    uint8_t buffer[96];
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &statusPacket)) {
+        bleMgr.sendToPhone(buffer, stream.bytes_written);
+    } else {
+        Serial.println("Failed to encode delivery status for BLE.");
     }
 }
 
@@ -785,11 +829,13 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         // Ensure correct sender ID
         packet.sender_id = localNodeId;
         packet.prev_hop_id = localNodeId;
-        
+
         Serial.print("Sending phone packet over LoRa mesh. Recipient: 0x");
         Serial.println(packet.recipient_id, HEX);
         
-        router.sendRawPacket(&packet);
+        bool isRangePing = packet.which_payload == aethermesh_MeshPacket_text_tag &&
+                           strncmp(packet.payload.text.content, "PING_", 5) == 0;
+        router.sendRawPacket(&packet, isRangePing);
         
         updateDisplay();
     } else {
@@ -836,7 +882,13 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     Serial.print(senderId, HEX);
     Serial.print(": ");
     Serial.println(text);
-    
+
+    // Range-test control traffic: don't pop the OLED message overlay for every
+    // ping (they arrive every few seconds and would pin the display awake).
+    if (text && (strncmp(text, "PING_", 5) == 0 || strncmp(text, "PONG_", 5) == 0)) {
+        return;
+    }
+
     // Store message info for OLED popup
     lastMsgSender = senderId;
     size_t out = 0;
@@ -975,6 +1027,7 @@ void setup() {
     router.init(localNodeId);
     router.onReceivedTextMessage(onReceivedTextMessage);
     router.onReceivedConfig(onReceivedConfig);
+    router.onDeliveryStatus(sendDeliveryStatusToPhone);
     
     // 6. Initialize BLE Manager with custom name if configured
     if (nodeRole != 2) {
@@ -1018,7 +1071,6 @@ void loop() {
 
     radioMgr.loop();
     router.loop();
-    
     if (nodeRole != 2) {
         if (bleMgr.isAdvertising) {
             bleMgr.loop();

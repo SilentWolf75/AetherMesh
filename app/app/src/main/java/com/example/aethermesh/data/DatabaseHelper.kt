@@ -364,6 +364,27 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
     }
 
+    fun updateMessageStatusById(messageId: Long, status: String) {
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COL_MSG_STATUS, status)
+        }
+        db.update(TABLE_MESSAGES, values, "$COL_MSG_ID = ?", arrayOf(messageId.toString()))
+    }
+
+    fun markTimedOutPendingMessages(cutoffTimestamp: Long): Int {
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COL_MSG_STATUS, "FAILED")
+        }
+        return db.update(
+            TABLE_MESSAGES,
+            values,
+            "$COL_MSG_STATUS = ? AND $COL_MSG_TIMESTAMP <= ?",
+            arrayOf("PENDING", cutoffTimestamp.toString())
+        )
+    }
+
     // Retrieve all messages for a specific chat (either a named group channel or direct
     // messages with a specific node). For channel chats, pass the channel name in `channel`.
     fun getMessages(chatId: Long, isChannel: Boolean, channel: String = "General"): List<ChatMessage> {
@@ -380,6 +401,40 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val args = if (isChannel) arrayOf(channel) else arrayOf(canonicalChatId.toString(), canonicalChatId.toString())
 
         val cursor = db.rawQuery(query, args)
+        if (cursor.moveToFirst()) {
+            do {
+                list.add(ChatMessage(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_ID)),
+                    senderId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_SENDER)),
+                    recipientId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_RECIPIENT)),
+                    content = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CONTENT)),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_TIMESTAMP)),
+                    channel = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CHANNEL)),
+                    packetId = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_PACKET_ID)),
+                    status = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_STATUS)) ?: "SENT",
+                    isEncrypted = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_IS_ENCRYPTED)) != 0
+                ))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
+    }
+
+    fun getRetryableDirectMessages(recipientId: Long, limit: Int = 5): List<ChatMessage> {
+        val db = this.readableDatabase
+        val canonicalRecipient = resolveCanonicalNodeId(db, recipientId)
+        val list = mutableListOf<ChatMessage>()
+        val cursor = db.rawQuery(
+            """
+                SELECT * FROM $TABLE_MESSAGES
+                WHERE $COL_MSG_RECIPIENT = ?
+                  AND $COL_MSG_CHANNEL = ''
+                  AND $COL_MSG_STATUS IN ('FAILED', 'QUEUED')
+                ORDER BY $COL_MSG_TIMESTAMP ASC
+                LIMIT ?
+            """.trimIndent(),
+            arrayOf(canonicalRecipient.toString(), limit.toString())
+        )
         if (cursor.moveToFirst()) {
             do {
                 list.add(ChatMessage(
@@ -513,6 +568,25 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     fun clearRangeTestLogs(targetId: Long) {
         val db = this.writableDatabase
         db.delete(TABLE_RANGE_TEST_LOGS, "$COL_LOG_TARGET_ID = ?", arrayOf(targetId.toString()))
+    }
+
+    // Remove the most recent timeout/failure row for a target (used when a late ACK arrives).
+    fun deleteLastRangeTestFailure(targetId: Long): Boolean {
+        val db = this.writableDatabase
+        val cursor = db.rawQuery(
+            "SELECT $COL_LOG_ID FROM $TABLE_RANGE_TEST_LOGS WHERE $COL_LOG_TARGET_ID = ? AND $COL_LOG_SUCCESS = 0 ORDER BY $COL_LOG_TIMESTAMP DESC LIMIT 1",
+            arrayOf(targetId.toString())
+        )
+        return try {
+            if (!cursor.moveToFirst()) {
+                false
+            } else {
+                val rowId = cursor.getLong(0)
+                db.delete(TABLE_RANGE_TEST_LOGS, "$COL_LOG_ID = ?", arrayOf(rowId.toString())) > 0
+            }
+        } finally {
+            cursor.close()
+        }
     }
 
     // Distinct named group channels that have at least one message (excludes the "" DM channel).

@@ -15,6 +15,7 @@ message MeshPacket {
   uint32 prev_hop_id = 10;   // The node that just transmitted/relayed this packet
   float rx_rssi = 14;        // Received Signal Strength Indicator (LoRa last hop)
   float rx_snr = 15;         // Signal-to-Noise Ratio (LoRa last hop)
+  uint32 retry_count = 16;   // Retransmit attempt for this packet_id; relays forward higher attempts.
 
   oneof payload {
     TextMessage text = 6;
@@ -24,6 +25,7 @@ message MeshPacket {
     NodeConfig config = 11;
     AuthRequest auth_request = 12;
     AuthResponse auth_response = 13;
+    DeliveryStatus delivery_status = 17;
   }
 }
 
@@ -65,6 +67,29 @@ message Ack {
   float acked_rx_snr = 3;    // SNR (dB) at which the ACKing node heard the acked packet
 }
 
+// Local delivery lifecycle event from a connected node to the companion app.
+// These events are sent over BLE only; they are not routed over LoRa.
+message DeliveryStatus {
+  enum State {
+    UNKNOWN = 0;
+    DELIVERED = 1;
+    FAILED = 2;
+    RETRYING = 3;
+  }
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    ACK_TIMEOUT = 1;
+    QUEUE_EVICTED = 2;
+    LOCAL_SEND_FAILED = 3;
+  }
+
+  uint32 packet_id = 1;
+  uint32 recipient_id = 2;
+  State state = 3;
+  Reason reason = 4;
+  uint32 retry_count = 5;
+}
+
 // Configuration settings sync
 message NodeConfig {
   string node_name = 1;      // Custom name (max size 16 characters)
@@ -93,4 +118,3 @@ message AuthResponse {
   string message = 2;
   bool password_not_set = 3;
 }
-

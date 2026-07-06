@@ -12,6 +12,9 @@
 #define ROUTE_TIMEOUT_MS 600000 // 10 minutes
 #define MAX_PENDING_REBROADCASTS 3
 #define MAX_PENDING_ACKS 4
+#define MAX_PENDING_PONGS 4
+#define PONG_RETRY_WINDOW_MS 12000
+#define PONG_RESEND_INTERVAL_MS 1500
 #define ACK_RETRY_INTERVAL_MS 3000
 #define ACK_MAX_RETRIES 3
 
@@ -26,6 +29,7 @@ struct RouteEntry {
 struct SeenPacket {
     uint32_t senderId;
     uint32_t packetId;
+    uint32_t retryCount;
     uint32_t timestamp;
 };
 
@@ -44,6 +48,15 @@ struct PendingAck {
     bool active;
 };
 
+struct PendingPongReply {
+    uint32_t recipientId;
+    char content[24];
+    uint32_t sendAtMs;
+    uint32_t firstQueuedMs;
+    uint32_t sendCount;
+    bool active;
+};
+
 class MeshRouter {
 public:
     MeshRouter(RadioManager* radioMgr);
@@ -52,6 +65,8 @@ public:
     
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
+    // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
+    bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false);
     bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
@@ -61,6 +76,7 @@ public:
     void onReceivedTextMessage(void (*callback)(uint32_t senderId, const char* text));
     void onReceivedTelemetry(void (*callback)(uint32_t senderId, uint8_t battery, float lat, float lon));
     void onReceivedConfig(void (*callback)(uint32_t senderId, const aethermesh_NodeConfig& config));
+    void onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr));
     
     // Routing Table Diagnostics
     uint32_t getLocalId() { return localNodeId; }
@@ -68,10 +84,10 @@ public:
 
     // True if this (sender, packet) pair is already in the dedup cache.
     // Lets callers (e.g. the BLE forward path) skip mesh rebroadcast duplicates.
-    bool hasSeen(uint32_t senderId, uint32_t packetId) { return isDuplicatePacket(senderId, packetId); }
+    bool hasSeen(uint32_t senderId, uint32_t packetId) { return hasSeenPacketId(senderId, packetId); }
 
-    // Raw packet transmit helper
-    bool sendRawPacket(aethermesh_MeshPacket* packet);
+    // Raw packet transmit helper. urgent=true skips CAD (range-test PING/PONG).
+    bool sendRawPacket(aethermesh_MeshPacket* packet, bool urgent = false);
 
 private:
     RadioManager* radio;
@@ -84,18 +100,21 @@ private:
     uint8_t seenPacketsIndex;
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
+    PendingPongReply pendingPongs[MAX_PENDING_PONGS];
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);
     void (*telemetryCallback)(uint32_t senderId, uint8_t battery, float lat, float lon);
     void (*configCallback)(uint32_t senderId, const aethermesh_NodeConfig& config);
+    void (*deliveryStatusCallback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr);
     
     // Private Helpers
     void addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric);
     RouteEntry* getRoute(uint32_t targetId);
     
-    bool isDuplicatePacket(uint32_t senderId, uint32_t packetId);
-    void markPacketAsSeen(uint32_t senderId, uint32_t packetId);
+    bool hasSeenPacketId(uint32_t senderId, uint32_t packetId);
+    bool isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
+    void markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
     
     bool handleRouteRequest(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rreq);
     void handleRouteReply(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rrep);
@@ -105,15 +124,20 @@ private:
     
     // Rebroadcast Queue helpers
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
-    void cancelRebroadcast(uint32_t senderId, uint32_t packetId);
+    void cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount = UINT32_MAX);
 
     // ACK/retransmit helpers
     void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
     void trackForAck(const aethermesh_MeshPacket& packet);
-    void clearPendingAck(uint32_t ackedPacketId);
+    void clearPendingAck(uint32_t ackedPacketId, float ackRssi = 0.0f, float ackSnr = 0.0f);
+    void emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi = 0.0f, float ackSnr = 0.0f);
+
+    void maybeQueuePongForPingText(const aethermesh_MeshPacket& packet);
+    void queuePongReply(uint32_t recipientId, const char* pingId);
+    void drainPendingPongReplies();
     
     // Buffer serialization helpers
-    bool serializeAndSend(aethermesh_MeshPacket* packet);
+    bool serializeAndSend(aethermesh_MeshPacket* packet, bool urgent = false);
 };
 
 #endif // MESH_ROUTER_H

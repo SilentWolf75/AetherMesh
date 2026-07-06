@@ -102,6 +102,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.sendMessage(recipientId, content, targetChannel)
     }
 
+    fun retryMessage(message: ChatMessage): Boolean {
+        return repository.retryMessage(message)
+    }
+
     fun selectChannel(channel: String) {
         repository.selectChannel(channel)
     }
@@ -165,6 +169,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     // Range Test management
     val isRangeTestActive: StateFlow<Boolean> = repository.isRangeTestActive
     val rangeTestLogs: StateFlow<List<com.example.aethermesh.data.RangeTestLog>> = repository.rangeTestLogs
+    val rangeTestTargetId: Long
+        get() = repository.activeRangeTestTargetId
 
     fun startRangeTest(targetId: Long, intervalSec: Int) {
         repository.startRangeTest(targetId, intervalSec)

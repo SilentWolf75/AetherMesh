@@ -21,6 +21,9 @@ PB_BIND(aethermesh_RouteDiscovery, aethermesh_RouteDiscovery, AUTO)
 PB_BIND(aethermesh_Ack, aethermesh_Ack, AUTO)
 
 
+PB_BIND(aethermesh_DeliveryStatus, aethermesh_DeliveryStatus, AUTO)
+
+
 PB_BIND(aethermesh_NodeConfig, aethermesh_NodeConfig, AUTO)
 
 

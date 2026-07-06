@@ -11,8 +11,9 @@ public:
     bool init();
     void loop();
     
-    // Sends a raw packet over LoRa
-    bool sendPacket(uint8_t* payload, size_t len);
+    // Sends a raw packet over LoRa. skipCad=true bypasses channel-activity check
+    // for time-critical small replies (e.g. range-test PONG).
+    bool sendPacket(uint8_t* payload, size_t len, bool skipCad = false);
     
     // Callback registers
     void onReceive(void (*callback)(uint8_t* data, size_t len, float rssi, float snr));

@@ -9,6 +9,12 @@ static void terminateTextFields(aethermesh_TextMessage& text) {
     text.channel[sizeof(text.channel) - 1] = '\0';
 }
 
+static bool isRangeTestTextPacket(const aethermesh_MeshPacket& packet) {
+    return packet.which_payload == aethermesh_MeshPacket_text_tag &&
+           (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
+            strncmp(packet.payload.text.content, "PONG_", 5) == 0);
+}
+
 MeshRouter::MeshRouter(RadioManager* radioMgr) {
     radio = radioMgr;
     localNodeId = 0;
@@ -17,6 +23,7 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     textCallback = nullptr;
     telemetryCallback = nullptr;
     configCallback = nullptr;
+    deliveryStatusCallback = nullptr;
     
     // Clear tables
     for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
@@ -25,6 +32,7 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
         seenPackets[i].senderId = 0;
         seenPackets[i].packetId = 0;
+        seenPackets[i].retryCount = 0;
         seenPackets[i].timestamp = 0;
     }
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
@@ -32,6 +40,11 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     }
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         pendingAcks[i].active = false;
+    }
+    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
+        pendingPongs[i].active = false;
+        pendingPongs[i].sendCount = 0;
+        pendingPongs[i].firstQueuedMs = 0;
     }
 }
 
@@ -45,9 +58,11 @@ void MeshRouter::init(uint32_t localId) {
 
 void MeshRouter::loop() {
     uint32_t now = millis();
+    drainPendingPongReplies();
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (pendingRebroadcasts[i].active && now >= pendingRebroadcasts[i].transmitTime) {
-            if (serializeAndSend(&pendingRebroadcasts[i].packet)) {
+            bool urgent = isRangeTestTextPacket(pendingRebroadcasts[i].packet);
+            if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
                 pendingRebroadcasts[i].active = false;
                 Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
                               pendingRebroadcasts[i].packet.packet_id, pendingRebroadcasts[i].packet.sender_id);
@@ -70,6 +85,13 @@ void MeshRouter::loop() {
                 pendingAcks[i].active = false;
                 Serial.printf("No ACK for packet %u after all retries. Giving up.\n",
                               pendingAcks[i].packet.packet_id);
+                emitDeliveryStatus(
+                    pendingAcks[i].packet.packet_id,
+                    pendingAcks[i].packet.recipient_id,
+                    aethermesh_DeliveryStatus_State_FAILED,
+                    aethermesh_DeliveryStatus_Reason_ACK_TIMEOUT,
+                    pendingAcks[i].packet.retry_count
+                );
                 continue;
             }
             // If we still have no route, ask again while retrying (the direct
@@ -77,11 +99,23 @@ void MeshRouter::loop() {
             if (getRoute(pendingAcks[i].packet.recipient_id) == nullptr) {
                 sendRouteRequest(pendingAcks[i].packet.recipient_id);
             }
+            pendingAcks[i].packet.retry_count++;
             if (serializeAndSend(&pendingAcks[i].packet)) {
                 pendingAcks[i].retriesLeft--;
                 pendingAcks[i].nextRetryTime = now + ACK_RETRY_INTERVAL_MS + random(0, 500);
-                Serial.printf("Retransmitting packet %u (retries left: %u)\n",
-                              pendingAcks[i].packet.packet_id, pendingAcks[i].retriesLeft);
+                Serial.printf("Retransmitting packet %u retry %u (retries left: %u)\n",
+                              pendingAcks[i].packet.packet_id,
+                              pendingAcks[i].packet.retry_count,
+                              pendingAcks[i].retriesLeft);
+                emitDeliveryStatus(
+                    pendingAcks[i].packet.packet_id,
+                    pendingAcks[i].packet.recipient_id,
+                    aethermesh_DeliveryStatus_State_RETRYING,
+                    aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED,
+                    pendingAcks[i].packet.retry_count
+                );
+            } else {
+                pendingAcks[i].packet.retry_count--;
             }
             // Radio busy: leave the slot as-is and try again next loop pass
         }
@@ -167,7 +201,7 @@ RouteEntry* MeshRouter::getRoute(uint32_t targetId) {
     return nullptr;
 }
 
-bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId) {
+bool MeshRouter::hasSeenPacketId(uint32_t senderId, uint32_t packetId) {
     for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
         if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
             return true;
@@ -176,9 +210,27 @@ bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId) {
     return false;
 }
 
-void MeshRouter::markPacketAsSeen(uint32_t senderId, uint32_t packetId) {
+bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
+    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
+        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
+            return retryCount <= seenPackets[i].retryCount;
+        }
+    }
+    return false;
+}
+
+void MeshRouter::markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
+    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
+        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
+            seenPackets[i].retryCount = retryCount;
+            seenPackets[i].timestamp = millis();
+            return;
+        }
+    }
+
     seenPackets[seenPacketsIndex].senderId = senderId;
     seenPackets[seenPacketsIndex].packetId = packetId;
+    seenPackets[seenPacketsIndex].retryCount = retryCount;
     seenPackets[seenPacketsIndex].timestamp = millis();
     
     seenPacketsIndex = (seenPacketsIndex + 1) % MAX_SEEN_PACKETS_CACHE;
@@ -211,10 +263,13 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         return;
     }
     
-    // 2. Filter duplicate broadcasts
-    if (isDuplicatePacket(packet.sender_id, packet.packet_id)) {
+    // 2. Filter duplicate attempts. A higher retry_count for the same packet_id
+    // is a real retransmit that relays should forward again, while the final
+    // recipient should re-ACK without delivering the payload twice.
+    bool packetIdSeenBefore = hasSeenPacketId(packet.sender_id, packet.packet_id);
+    if (isDuplicatePacket(packet.sender_id, packet.packet_id, packet.retry_count)) {
         // Cancel pending rebroadcast if we hear a duplicate
-        cancelRebroadcast(packet.sender_id, packet.packet_id);
+        cancelRebroadcast(packet.sender_id, packet.packet_id, packet.retry_count);
         // A duplicate unicast addressed to us means the sender is retransmitting
         // because our ACK was lost — re-ACK it (without re-delivering the payload).
         if (packet.recipient_id == localNodeId && packet.want_ack &&
@@ -222,9 +277,14 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             Serial.printf("Duplicate of packet %u for us; re-sending ACK.\n", packet.packet_id);
             sendAck(packet.sender_id, packet.packet_id, rssi, snr);
         }
+        // Range-test PING retries (same packet_id) mean the sender never got our
+        // PONG — queue another reply without re-displaying the ping on screen.
+        if (packet.recipient_id == localNodeId) {
+            maybeQueuePongForPingText(packet);
+        }
         return;
     }
-    markPacketAsSeen(packet.sender_id, packet.packet_id);
+    markPacketAsSeen(packet.sender_id, packet.packet_id, packet.retry_count);
     
     // 3. Update routing table
     // If prev_hop_id is set, it's the node that directly relayed it to us.
@@ -262,6 +322,15 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             sendAck(packet.sender_id, packet.packet_id, rssi, snr);
         }
 
+        // Always queue PONG for range-test pings, even if this is a retry duplicate.
+        maybeQueuePongForPingText(packet);
+
+        if (packetIdSeenBefore && packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+            Serial.printf("Retry %u of packet %u for us; ACKed without duplicate delivery.\n",
+                          packet.retry_count, packet.packet_id);
+            return;
+        }
+
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
                 if (textCallback) {
@@ -286,7 +355,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             case aethermesh_MeshPacket_ack_tag:
                 Serial.print("Received ACK for packet_id: ");
                 Serial.println(packet.payload.ack.acked_packet_id);
-                clearPendingAck(packet.payload.ack.acked_packet_id);
+                clearPendingAck(packet.payload.ack.acked_packet_id, rssi, snr);
                 break;
             case aethermesh_MeshPacket_config_tag:
                 if (configCallback) {
@@ -337,7 +406,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
     } else {
         // Unicast packet for someone else (we are a relay node)
-        if (packet.hop_limit > 1) {
+        if (packet.hop_limit >= 1) {
             RouteEntry* route = getRoute(packet.recipient_id);
             if (route) {
                 Serial.print("Relaying unicast packet for 0x");
@@ -365,6 +434,17 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 // collides with that ACK at the sender every time (all responders
                 // are triggered by the same packet). Wait out the ACK airtime with
                 // jitter; if a duplicate arrives meanwhile, the relay is cancelled.
+                queueRebroadcast(packet, millis() + random(300, 700));
+            } else if (packet.which_payload == aethermesh_MeshPacket_text_tag &&
+                       (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
+                        strncmp(packet.payload.text.content, "PONG_", 5) == 0)) {
+                // Range-test ping/pong with no route: flood anyway (telemetry uses
+                // broadcast and often gets through when routed unicast would drop here).
+                Serial.print("No route to 0x");
+                Serial.print(packet.recipient_id, HEX);
+                Serial.println("; flooding range-test PING/PONG.");
+                packet.hop_limit--;
+                packet.prev_hop_id = localNodeId;
                 queueRebroadcast(packet, millis() + random(300, 700));
             } else {
                 Serial.print("No route to 0x");
@@ -400,6 +480,28 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
 
     trackForAck(packet);
     return serializeAndSend(&packet);
+}
+
+bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urgent) {
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = recipientId;
+    packet.packet_id = ++packetSequenceCounter;
+    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.want_ack = false;
+    packet.prev_hop_id = localNodeId;
+    packet.which_payload = aethermesh_MeshPacket_text_tag;
+
+    strncpy(packet.payload.text.content, text, sizeof(packet.payload.text.content) - 1);
+    packet.payload.text.content[sizeof(packet.payload.text.content) - 1] = '\0';
+    packet.payload.text.channel[0] = '\0';
+    packet.payload.text.is_encrypted = false;
+
+    if (recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
+        sendRouteRequest(recipientId);
+    }
+
+    return serializeAndSend(&packet, urgent);
 }
 
 bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging) {
@@ -496,7 +598,7 @@ void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t
     queueRebroadcast(packet, millis() + random(100, 400));
 }
 
-bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet) {
+bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet, bool urgent) {
     uint8_t buffer[256];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     
@@ -505,7 +607,7 @@ bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet) {
         return false;
     }
     
-    return radio->sendPacket(buffer, stream.bytes_written);
+    return radio->sendPacket(buffer, stream.bytes_written, urgent);
 }
 
 void MeshRouter::onReceivedTextMessage(void (*callback)(uint32_t senderId, const char* text)) {
@@ -518,6 +620,10 @@ void MeshRouter::onReceivedTelemetry(void (*callback)(uint32_t senderId, uint8_t
 
 void MeshRouter::onReceivedConfig(void (*callback)(uint32_t senderId, const aethermesh_NodeConfig& config)) {
     configCallback = callback;
+}
+
+void MeshRouter::onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr)) {
+    deliveryStatusCallback = callback;
 }
 
 void MeshRouter::printRoutingTable() {
@@ -538,11 +644,111 @@ void MeshRouter::printRoutingTable() {
     Serial.println("---------------------");
 }
 
-bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet) {
-    // Phone-originated packets (DMs, range test pings) get the same
-    // retransmit-until-ACKed treatment as locally generated ones.
-    trackForAck(*packet);
-    return serializeAndSend(packet);
+bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
+    // Only track for ACK/retransmit when the sender requested it (DMs, etc.).
+    // Range-test PINGs set want_ack=false and are scored via PONG replies.
+    if (packet->want_ack) {
+        trackForAck(*packet);
+    }
+    return serializeAndSend(packet, urgent);
+}
+
+void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet) {
+    if (packet.which_payload != aethermesh_MeshPacket_text_tag) {
+        return;
+    }
+    // Range test uses mesh ACKs (want_ack=true). PONG replies are only for
+    // want_ack=false pings and would just congest the channel otherwise.
+    if (packet.want_ack) {
+        return;
+    }
+    if (strncmp(packet.payload.text.content, "PING_", 5) != 0) {
+        return;
+    }
+    const char* pingId = packet.payload.text.content + 5;
+    if (pingId[0] != '\0' && strlen(pingId) < 8) {
+        queuePongReply(packet.sender_id, pingId);
+    }
+}
+
+void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId) {
+    char pongContent[24];
+    snprintf(pongContent, sizeof(pongContent), "PONG_%s", pingId);
+
+    // Coalesce duplicate PING retries for the same id.
+    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
+        if (pendingPongs[i].active &&
+            pendingPongs[i].recipientId == recipientId &&
+            strcmp(pendingPongs[i].content, pongContent) == 0) {
+            pendingPongs[i].sendAtMs = millis() + 100 + random(0, 100);
+            pendingPongs[i].firstQueuedMs = millis();
+            pendingPongs[i].sendCount = 0;
+            Serial.printf("Refreshed queued %s to 0x%08X (slot %d)\n", pongContent, recipientId, i);
+            drainPendingPongReplies();
+            return;
+        }
+    }
+
+    int slot = -1;
+    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
+        if (!pendingPongs[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == -1) {
+        uint32_t earliest = pendingPongs[0].sendAtMs;
+        slot = 0;
+        for (int i = 1; i < MAX_PENDING_PONGS; i++) {
+            if (pendingPongs[i].active && pendingPongs[i].sendAtMs < earliest) {
+                earliest = pendingPongs[i].sendAtMs;
+                slot = i;
+            }
+        }
+    }
+
+    // A new ping id supersedes stale PONG retries — stop flooding the channel
+    // with PONG replies for the previous ping while the next one is in flight.
+    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
+        if (pendingPongs[i].active &&
+            pendingPongs[i].recipientId == recipientId &&
+            strcmp(pendingPongs[i].content, pongContent) != 0) {
+            Serial.printf("Cancelled stale %s (new ping queued)\n", pendingPongs[i].content);
+            pendingPongs[i].active = false;
+        }
+    }
+
+    strncpy(pendingPongs[slot].content, pongContent, sizeof(pendingPongs[slot].content) - 1);
+    pendingPongs[slot].content[sizeof(pendingPongs[slot].content) - 1] = '\0';
+    pendingPongs[slot].recipientId = recipientId;
+    pendingPongs[slot].sendAtMs = millis() + 100 + random(0, 100);
+    pendingPongs[slot].firstQueuedMs = millis();
+    pendingPongs[slot].sendCount = 0;
+    pendingPongs[slot].active = true;
+    Serial.printf("Queued %s to 0x%08X (slot %d)\n", pongContent, recipientId, slot);
+    drainPendingPongReplies();
+}
+
+void MeshRouter::drainPendingPongReplies() {
+    uint32_t now = millis();
+    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
+        if (!pendingPongs[i].active || (int32_t)(now - pendingPongs[i].sendAtMs) < 0) {
+            continue;
+        }
+        if (now - pendingPongs[i].firstQueuedMs > PONG_RETRY_WINDOW_MS) {
+            Serial.printf("Dropping PONG %s after %ums of retries\n",
+                          pendingPongs[i].content, PONG_RETRY_WINDOW_MS);
+            pendingPongs[i].active = false;
+            continue;
+        }
+        if (sendTextNoAck(pendingPongs[i].recipientId, pendingPongs[i].content, true)) {
+            pendingPongs[i].sendCount++;
+            Serial.printf("Sent range-test %s (attempt %u)\n",
+                          pendingPongs[i].content, pendingPongs[i].sendCount);
+            pendingPongs[i].sendAtMs = now + PONG_RESEND_INTERVAL_MS + random(0, 300);
+        }
+        // Radio busy: leave slot active and retry next loop pass until window expires.
+    }
 }
 
 void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime) {
@@ -594,6 +800,12 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
     serializeAndSend(&ackPacket);
 }
 
+void MeshRouter::emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr) {
+    if (deliveryStatusCallback) {
+        deliveryStatusCallback(packetId, recipientId, state, reason, retryCount, ackRssi, ackSnr);
+    }
+}
+
 void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     if (!packet.want_ack || packet.recipient_id == 0xFFFFFFFF) {
         return;
@@ -618,6 +830,13 @@ void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
         }
         Serial.printf("Pending-ACK queue full. Evicting packet %u.\n",
                       pendingAcks[slot].packet.packet_id);
+        emitDeliveryStatus(
+            pendingAcks[slot].packet.packet_id,
+            pendingAcks[slot].packet.recipient_id,
+            aethermesh_DeliveryStatus_State_FAILED,
+            aethermesh_DeliveryStatus_Reason_QUEUE_EVICTED,
+            pendingAcks[slot].packet.retry_count
+        );
     }
     pendingAcks[slot].packet = packet;
     pendingAcks[slot].retriesLeft = ACK_MAX_RETRIES;
@@ -625,23 +844,33 @@ void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     pendingAcks[slot].active = true;
 }
 
-void MeshRouter::clearPendingAck(uint32_t ackedPacketId) {
+void MeshRouter::clearPendingAck(uint32_t ackedPacketId, float ackRssi, float ackSnr) {
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         if (pendingAcks[i].active && pendingAcks[i].packet.packet_id == ackedPacketId) {
+            emitDeliveryStatus(
+                pendingAcks[i].packet.packet_id,
+                pendingAcks[i].packet.recipient_id,
+                aethermesh_DeliveryStatus_State_DELIVERED,
+                aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED,
+                pendingAcks[i].packet.retry_count,
+                ackRssi,
+                ackSnr
+            );
             pendingAcks[i].active = false;
             Serial.printf("Packet %u acknowledged; retransmit tracking cleared.\n", ackedPacketId);
         }
     }
 }
 
-void MeshRouter::cancelRebroadcast(uint32_t senderId, uint32_t packetId) {
+void MeshRouter::cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (pendingRebroadcasts[i].active && 
             pendingRebroadcasts[i].packet.sender_id == senderId && 
-            pendingRebroadcasts[i].packet.packet_id == packetId) {
+            pendingRebroadcasts[i].packet.packet_id == packetId &&
+            pendingRebroadcasts[i].packet.retry_count <= retryCount) {
             pendingRebroadcasts[i].active = false;
-            Serial.printf("Cancelled pending rebroadcast for packet %u from sender 0x%08X (duplicate heard)\n", 
-                          packetId, senderId);
+            Serial.printf("Cancelled pending rebroadcast for packet %u retry %u from sender 0x%08X\n",
+                          packetId, pendingRebroadcasts[i].packet.retry_count, senderId);
         }
     }
 }
