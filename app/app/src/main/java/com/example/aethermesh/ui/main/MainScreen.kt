@@ -394,7 +394,8 @@ fun MainScreen(
                         },
                         onRenameNode = { nodeId, longName, shortName ->
                             viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
-                        }
+                        },
+                        getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) }
                     )
                     TabItem.MAP -> MapViewCompose(
                         nodes = nodes,
@@ -1051,7 +1052,8 @@ fun NodesView(
     appLanguage: String,
     useImperialUnits: Boolean,
     onNodeClick: (Long) -> Unit,
-    onRenameNode: (Long, String, String) -> Unit
+    onRenameNode: (Long, String, String) -> Unit,
+    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() }
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var detailNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -1104,6 +1106,43 @@ fun NodesView(
                     if (node.latitude != 0.0f || node.longitude != 0.0f) {
                         DetailRow("Position", "%.4f, %.4f".format(node.latitude, node.longitude))
                     }
+
+                    // Battery history graph (solar monitoring): battery % over time,
+                    // green where the node reported charging.
+                    val history = remember(node.nodeId, node.lastActive) { getTelemetryHistory(node.nodeId) }
+                    if (history.size >= 2) {
+                        Spacer(Modifier.height(10.dp))
+                        val latestV = history.last().voltage
+                        Text(
+                            "Battery history" + if (latestV > 0f) "  (now ${"%.2f".format(latestV)} V)" else "",
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        androidx.compose.foundation.Canvas(
+                            modifier = Modifier.fillMaxWidth().height(70.dp)
+                                .clip(RoundedCornerShape(8.dp)).background(DarkBackground).padding(6.dp)
+                        ) {
+                            val n = history.size
+                            val stepX = if (n > 1) size.width / (n - 1) else size.width
+                            // battery is 0..100 -> y from bottom
+                            fun yFor(b: Int) = size.height - (b / 100f) * size.height
+                            for (i in 0 until n - 1) {
+                                val a = history[i]; val b = history[i + 1]
+                                drawLine(
+                                    color = if (b.isCharging) Color(0xFF34D399) else AccentCyan,
+                                    start = androidx.compose.ui.geometry.Offset(i * stepX, yFor(a.battery)),
+                                    end = androidx.compose.ui.geometry.Offset((i + 1) * stepX, yFor(b.battery)),
+                                    strokeWidth = 3f
+                                )
+                            }
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${history.first().battery}%", color = TextMuted, fontSize = 9.sp)
+                            Text("${history.size} samples", color = TextMuted, fontSize = 9.sp)
+                            Text("${history.last().battery}%", color = TextMuted, fontSize = 9.sp)
+                        }
+                    }
+
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(

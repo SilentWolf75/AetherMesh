@@ -150,6 +150,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     fun lastPhoneFix() = repository.lastPhoneFix()
 
+    fun getTelemetryHistory(nodeId: Long) = repository.getTelemetryHistory(nodeId)
+
     fun sendAuthRequest(password: String): Boolean {
         return repository.sendAuthRequest(password)
     }

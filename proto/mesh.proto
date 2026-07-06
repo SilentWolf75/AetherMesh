@@ -46,6 +46,7 @@ message Telemetry {
   uint32 uptime_seconds = 6;   // Seconds since the node booted
   string firmware_version = 7; // Firmware version string (e.g. "1.2.0")
   bool is_charging = 8;        // True when the battery is charging (voltage rising / on solar)
+  float battery_voltage = 9;   // Raw pack voltage (V); 0 if unmeasured. For solar monitoring.
 }
 
 // Path discovery for unicast routing

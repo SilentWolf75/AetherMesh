@@ -479,6 +479,8 @@ class AetherMeshRepository(private val context: Context) {
                     rssi = packet.rxRssi,
                     snr = packet.rxSnr
                 )
+                // Append to telemetry history for battery/voltage graphs.
+                dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
                 retryQueuedDirectMessages(senderId)
                 refreshData()
             }
@@ -947,6 +949,8 @@ class AetherMeshRepository(private val context: Context) {
 
     /** Latest phone GPS fix (fresh only while a range test is running). */
     fun lastPhoneFix(): android.location.Location? = lastPhoneLocation
+
+    fun getTelemetryHistory(nodeId: Long) = dbHelper.getTelemetryHistory(nodeId)
 
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList()

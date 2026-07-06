@@ -9,7 +9,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 10
+        private const val DATABASE_VERSION = 11
+
+        // Telemetry history (append-only) for per-node battery/voltage graphs
+        const val TABLE_TELEMETRY = "telemetry_history"
+        const val COL_TEL_ID = "id"
+        const val COL_TEL_NODE_ID = "node_id"
+        const val COL_TEL_TIMESTAMP = "timestamp"
+        const val COL_TEL_BATTERY = "battery"
+        const val COL_TEL_VOLTAGE = "voltage"
+        const val COL_TEL_CHARGING = "is_charging"
+        // Keep this many most-recent samples per node; older rows are pruned on insert.
+        private const val TELEMETRY_KEEP_PER_NODE = 500
 
         // Messages Table
         const val TABLE_MESSAGES = "messages"
@@ -157,8 +168,20 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             VALUES ('StandardMesh', 'AQ==', 1, 1, 1, 1, 0.0, 1)
         """.trimIndent()
 
+        val createTelemetryTable = """
+            CREATE TABLE $TABLE_TELEMETRY (
+                $COL_TEL_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_TEL_NODE_ID INTEGER,
+                $COL_TEL_TIMESTAMP INTEGER,
+                $COL_TEL_BATTERY INTEGER,
+                $COL_TEL_VOLTAGE REAL,
+                $COL_TEL_CHARGING INTEGER DEFAULT 0
+            )
+        """.trimIndent()
+
         db.execSQL(createMessagesTable)
         db.execSQL(createNodesTable)
+        db.execSQL(createTelemetryTable)
         db.execSQL(createKeysTable)
         db.execSQL(createRangeLogsTable)
         db.execSQL(createChannelsTable)
@@ -264,6 +287,63 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 android.util.Log.e("DatabaseHelper", "Failed to add signal columns: ${e.message}")
             }
         }
+        if (oldVersion < 11) {
+            try {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS $TABLE_TELEMETRY (
+                        $COL_TEL_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        $COL_TEL_NODE_ID INTEGER,
+                        $COL_TEL_TIMESTAMP INTEGER,
+                        $COL_TEL_BATTERY INTEGER,
+                        $COL_TEL_VOLTAGE REAL,
+                        $COL_TEL_CHARGING INTEGER DEFAULT 0
+                    )
+                """.trimIndent())
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add telemetry_history table: ${e.message}")
+            }
+        }
+    }
+
+    // Append a telemetry sample and prune old rows for that node.
+    fun insertTelemetrySample(nodeId: Long, battery: Int, voltage: Float, isCharging: Boolean) {
+        if (nodeId == 0L) return
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COL_TEL_NODE_ID, nodeId)
+            put(COL_TEL_TIMESTAMP, System.currentTimeMillis())
+            put(COL_TEL_BATTERY, battery)
+            put(COL_TEL_VOLTAGE, voltage.toDouble())
+            put(COL_TEL_CHARGING, if (isCharging) 1 else 0)
+        }
+        db.insert(TABLE_TELEMETRY, null, values)
+        // Prune: keep only the newest TELEMETRY_KEEP_PER_NODE rows for this node.
+        db.execSQL(
+            "DELETE FROM $TABLE_TELEMETRY WHERE $COL_TEL_NODE_ID = ? AND $COL_TEL_ID NOT IN " +
+            "(SELECT $COL_TEL_ID FROM $TABLE_TELEMETRY WHERE $COL_TEL_NODE_ID = ? ORDER BY $COL_TEL_ID DESC LIMIT $TELEMETRY_KEEP_PER_NODE)",
+            arrayOf(nodeId.toString(), nodeId.toString())
+        )
+    }
+
+    fun getTelemetryHistory(nodeId: Long): List<TelemetrySample> {
+        val db = this.readableDatabase
+        val list = mutableListOf<TelemetrySample>()
+        val cursor = db.rawQuery(
+            "SELECT $COL_TEL_TIMESTAMP, $COL_TEL_BATTERY, $COL_TEL_VOLTAGE, $COL_TEL_CHARGING FROM $TABLE_TELEMETRY WHERE $COL_TEL_NODE_ID = ? ORDER BY $COL_TEL_TIMESTAMP ASC",
+            arrayOf(nodeId.toString())
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                list.add(TelemetrySample(
+                    timestamp = cursor.getLong(0),
+                    battery = cursor.getInt(1),
+                    voltage = cursor.getDouble(2).toFloat(),
+                    isCharging = cursor.getInt(3) != 0
+                ))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
     }
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -277,6 +357,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.execSQL("DROP TABLE IF EXISTS $TABLE_KEYS")
         db.execSQL("DROP TABLE IF EXISTS $TABLE_RANGE_TEST_LOGS")
         db.execSQL("DROP TABLE IF EXISTS $TABLE_CHANNELS")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_TELEMETRY")
         onCreate(db)
     }
 
@@ -911,6 +992,13 @@ data class MeshNode(
     val isCharging: Boolean = false,
     val rssi: Float = 0f,
     val snr: Float = 0f
+)
+
+data class TelemetrySample(
+    val timestamp: Long,
+    val battery: Int,
+    val voltage: Float,
+    val isCharging: Boolean
 )
 
 data class RangeTestLog(

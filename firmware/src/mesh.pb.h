@@ -47,6 +47,7 @@ typedef struct _aethermesh_Telemetry {
     uint32_t uptime_seconds; /* Seconds since the node booted */
     char firmware_version[20]; /* Firmware version string (e.g. "1.2.0") */
     bool is_charging; /* True when the battery is charging (voltage rising / on solar) */
+    float battery_voltage; /* Raw pack voltage (V); 0 if unmeasured. For solar monitoring. */
 } aethermesh_Telemetry;
 
 /* Path discovery for unicast routing */
@@ -160,7 +161,7 @@ extern "C" {
 /* Initializer values for message structs */
 #define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
-#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0}
+#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
@@ -169,7 +170,7 @@ extern "C" {
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
-#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0}
+#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
@@ -189,6 +190,7 @@ extern "C" {
 #define aethermesh_Telemetry_uptime_seconds_tag  6
 #define aethermesh_Telemetry_firmware_version_tag 7
 #define aethermesh_Telemetry_is_charging_tag     8
+#define aethermesh_Telemetry_battery_voltage_tag 9
 #define aethermesh_RouteDiscovery_type_tag       1
 #define aethermesh_RouteDiscovery_target_id_tag  2
 #define aethermesh_RouteDiscovery_metric_tag     3
@@ -279,7 +281,8 @@ X(a, STATIC,   SINGULAR, INT32,    altitude,          4) \
 X(a, STATIC,   SINGULAR, STRING,   node_model,        5) \
 X(a, STATIC,   SINGULAR, UINT32,   uptime_seconds,    6) \
 X(a, STATIC,   SINGULAR, STRING,   firmware_version,   7) \
-X(a, STATIC,   SINGULAR, BOOL,     is_charging,       8)
+X(a, STATIC,   SINGULAR, BOOL,     is_charging,       8) \
+X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9)
 #define aethermesh_Telemetry_CALLBACK NULL
 #define aethermesh_Telemetry_DEFAULT NULL
 
@@ -364,7 +367,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_MeshPacket_size               257
 #define aethermesh_NodeConfig_size               100
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                89
+#define aethermesh_Telemetry_size                94
 #define aethermesh_TextMessage_size              205
 
 #ifdef __cplusplus

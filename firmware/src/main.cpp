@@ -55,6 +55,7 @@ uint32_t rxPacketCount = 0;
 uint32_t txPacketCount = 0;
 uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
+float batteryVoltage = 0.0f; // last measured pack voltage (0 if never measured)
 
 // Connected node: range-test PINGs are sent once. Retransmitting from the phone
 // node collides with PONG replies on the same half-duplex radio; the target
@@ -91,6 +92,7 @@ void updateChargingState(float voltage) {
     if (voltage < 2.5f) {
         return; // Ignore invalid/stabilizing readings on boot
     }
+    batteryVoltage = voltage;
 
     if (externalPowerPresent()) {
         batteryCharging = true;
@@ -1220,7 +1222,7 @@ void loop() {
             uint8_t battery = readBatteryLevel();
             
             // 1. Broadcast telemetry over LoRa Mesh
-            router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, batteryCharging);
+            router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, batteryCharging, batteryVoltage);
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
             if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
@@ -1238,6 +1240,7 @@ void loop() {
                 localTelemetryPacket.payload.telemetry.longitude = lon;
                 localTelemetryPacket.payload.telemetry.altitude = alt;
                 localTelemetryPacket.payload.telemetry.is_charging = batteryCharging;
+                localTelemetryPacket.payload.telemetry.battery_voltage = batteryVoltage;
                 localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
                 strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
                         sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);
