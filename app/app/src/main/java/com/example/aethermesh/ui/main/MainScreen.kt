@@ -1054,6 +1054,78 @@ fun NodesView(
     onRenameNode: (Long, String, String) -> Unit
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
+    var detailNode by remember { mutableStateOf<MeshNode?>(null) }
+
+    // Consolidated node detail: all facts about one node + actions in one place.
+    detailNode?.let { selected ->
+        // Re-resolve from the live list so the sheet updates as telemetry arrives.
+        val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
+        val route = observedRoutes[node.nodeId]
+        val sigRssi = route?.lastRssi ?: node.rssi
+        val sigSnr = route?.lastSnr ?: node.snr
+        val distStr = if (phoneLocation != null && node.latitude != 0.0f && node.longitude != 0.0f) {
+            val km = calculateDistance(phoneLocation.latitude, phoneLocation.longitude, node.latitude.toDouble(), node.longitude.toDouble())
+            if (useImperialUnits) {
+                val mi = km * 0.621371
+                if (mi < 0.2) "${(mi * 5280).toInt()} ft" else "%.2f mi".format(mi)
+            } else if (km < 1.0) "${(km * 1000).toInt()} m" else "%.2f km".format(km)
+        } else null
+
+        @Composable
+        fun DetailRow(label: String, value: String) {
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(label, color = TextMuted, fontSize = 12.sp)
+                Text(value, color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { detailNode = null },
+            containerColor = SurfaceDark,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(node.name, color = TextLight, fontWeight = FontWeight.Bold)
+                    if (node.isCharging) {
+                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.WbSunny, contentDescription = "Charging", tint = Color(0xFFFACC15), modifier = Modifier.size(16.dp))
+                    }
+                }
+            },
+            text = {
+                Column {
+                    DetailRow("Node ID", "0x${node.nodeId.toString(16).uppercase()}")
+                    DetailRow("Model", node.model.ifEmpty { "—" })
+                    DetailRow("Firmware", node.firmwareVersion.ifEmpty { "unknown" })
+                    DetailRow("Battery", "${node.battery}%${if (node.isCharging) " (charging)" else ""}")
+                    DetailRow("Last heard", formatLastHeard(node.lastActive))
+                    if (node.uptimeSeconds > 0) DetailRow("Uptime", formatUptime(node.uptimeSeconds))
+                    if (sigRssi != 0f) DetailRow("Signal", "${sigRssi.toInt()} dBm  •  ${"%.1f".format(sigSnr)} dB SNR")
+                    if (distStr != null) DetailRow("Distance", distStr)
+                    if (node.latitude != 0.0f || node.longitude != 0.0f) {
+                        DetailRow("Position", "%.4f, %.4f".format(node.latitude, node.longitude))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { detailNode = null; onNodeClick(node.nodeId) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Message", color = SurfaceDark, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                        Button(
+                            onClick = { renamingNode = node; detailNode = null },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) { Text("Rename", color = TextLight, fontSize = 12.sp) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { detailNode = null }) { Text("Close", color = AccentCyan) }
+            }
+        )
+    }
 
     if (renamingNode != null) {
         val node = renamingNode!!
@@ -1140,7 +1212,7 @@ fun NodesView(
                         phoneLocation = phoneLocation,
                         appLanguage = appLanguage,
                         useImperialUnits = useImperialUnits,
-                        onClick = { onNodeClick(node.nodeId) },
+                        onClick = { detailNode = node },
                         onRenameClick = { renamingNode = node }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
