@@ -385,9 +385,11 @@ class AetherMeshRepository(private val context: Context) {
         
         Log.d(TAG, "Received mesh packet from 0x${senderId.toString(16).uppercase()}")
 
-        // Update routing diagnostics map
+        // Update routing diagnostics map. Only for frames that carry a real
+        // over-the-air reading (rxRssi != 0) - a relayed/loopback frame with
+        // rx_rssi 0 must not overwrite a node's known-good signal with a blank.
         val prevHopId = packet.prevHopId.toLong() and 0xFFFFFFFFL
-        if (prevHopId != 0L) {
+        if (prevHopId != 0L && packet.rxRssi != 0f) {
             val hopsCount = if (senderId == prevHopId) 1 else 2
             val currentMap = _observedRoutes.value.toMutableMap()
             currentMap[senderId] = RouteHopInfo(

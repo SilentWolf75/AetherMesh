@@ -1063,8 +1063,9 @@ fun NodesView(
         // Re-resolve from the live list so the sheet updates as telemetry arrives.
         val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
         val route = observedRoutes[node.nodeId]
-        val sigRssi = route?.lastRssi ?: node.rssi
-        val sigSnr = route?.lastSnr ?: node.snr
+        val hasLiveSignal = route != null && route.lastRssi != 0f
+        val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
+        val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
         val distStr = if (phoneLocation != null && node.latitude != 0.0f && node.longitude != 0.0f) {
             val km = calculateDistance(phoneLocation.latitude, phoneLocation.longitude, node.latitude.toDouble(), node.longitude.toDouble())
             if (useImperialUnits) {
@@ -1393,12 +1394,14 @@ fun NodeItem(
                 Text(parts.joinToString("  •  "), color = TextMuted, fontSize = 10.sp)
             }
             
-            // Prefer the live observed route; fall back to the last-heard signal
-            // persisted on the node record (survives app restarts). rssi 0 = the
-            // local/connected node, which has no over-the-air signal to show.
+            // Prefer a live observed route with a REAL reading; a 0 in the map
+            // (from a relayed/forwarded frame carrying no rx_rssi) must not shadow
+            // the last-heard signal persisted on the node record. rssi 0 from both
+            // sources = never heard over air (e.g. the local/connected node).
             val route = observedRoutes[node.nodeId]
-            val sigRssi = route?.lastRssi ?: node.rssi
-            val sigSnr = route?.lastSnr ?: node.snr
+            val hasLiveSignal = route != null && route.lastRssi != 0f
+            val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
+            val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
             if (sigRssi != 0f) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
