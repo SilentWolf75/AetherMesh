@@ -4899,9 +4899,35 @@ fun ConnectionView(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                            val fwVersion = connectedNode?.firmwareVersion?.takeIf { it.isNotEmpty() } ?: "unknown"
                             Text(
-                                "Firmware Version: 1.2.0-b532da",
+                                "Firmware: $fwVersion",
                                 color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    // Warn when nodes in the mesh run different firmware builds - the
+                    // usual cause of "node X behaves differently" after a partial reflash.
+                    val fwVersions = nodes.map { it.firmwareVersion }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                    if (fwVersions.size > 1) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF422006))
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFACC15), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Mixed firmware in mesh: ${fwVersions.joinToString(", ")}. Reflash all nodes to the same build.",
+                                color = Color(0xFFFDE68A),
                                 fontSize = 11.sp
                             )
                         }
