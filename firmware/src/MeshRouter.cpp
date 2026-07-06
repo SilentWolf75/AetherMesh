@@ -1,4 +1,5 @@
 #include "MeshRouter.h"
+#include "MeshMath.h"
 #include "Version.h"
 #include "pb_common.h"
 #include "pb_encode.h"
@@ -291,10 +292,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
     // If not, it's the original sender.
     uint32_t immediateSender = (packet.prev_hop_id != 0) ? packet.prev_hop_id : packet.sender_id;
     
-    // Calculate SNR-weighted hop cost
-    float constrainedSnr = constrain(snr, -20.0f, 10.0f);
-    uint8_t hopCost = (uint8_t)(1.0f + (10.0f - constrainedSnr) * (24.0f / 30.0f));
-    
+    // Calculate SNR-weighted hop cost (pure math in MeshMath.h, host-tested)
+    uint8_t hopCost = meshmath::hopCost(snr);
+
     // Always add/update route to the immediate sender (neighbor)
     addRoute(immediateSender, immediateSender, hopCost);
     
@@ -399,10 +399,8 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             packet.hop_limit--;
             packet.prev_hop_id = localNodeId;
             
-            // Queue rebroadcast with SNR-based delay
-            float constrainedSnr = constrain(snr, -20.0f, 10.0f);
-            uint32_t delayMs = (uint32_t)(500.0f + (10.0f - constrainedSnr) * (1500.0f / 30.0f));
-            queueRebroadcast(packet, millis() + delayMs);
+            // Queue rebroadcast with SNR-based delay (pure math in MeshMath.h)
+            queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr));
         }
     } else {
         // Unicast packet for someone else (we are a relay node)
