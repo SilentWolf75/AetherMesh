@@ -395,7 +395,8 @@ fun MainScreen(
                         onRenameNode = { nodeId, longName, shortName ->
                             viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
                         },
-                        getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) }
+                        getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
+                        connectedNodeId = viewModel.connectedNodeId
                     )
                     TabItem.MAP -> MapViewCompose(
                         nodes = nodes,
@@ -1053,7 +1054,8 @@ fun NodesView(
     useImperialUnits: Boolean,
     onNodeClick: (Long) -> Unit,
     onRenameNode: (Long, String, String) -> Unit,
-    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() }
+    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
+    connectedNodeId: Long = 0L
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var detailNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -1253,7 +1255,8 @@ fun NodesView(
                         appLanguage = appLanguage,
                         useImperialUnits = useImperialUnits,
                         onClick = { detailNode = node },
-                        onRenameClick = { renamingNode = node }
+                        onRenameClick = { renamingNode = node },
+                        isConnectedNode = node.nodeId == connectedNodeId
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
@@ -1306,7 +1309,8 @@ fun NodeItem(
     appLanguage: String,
     useImperialUnits: Boolean,
     onClick: () -> Unit,
-    onRenameClick: () -> Unit
+    onRenameClick: () -> Unit,
+    isConnectedNode: Boolean = false
 ) {
     val initials = getInitials(node.name)
     val badgeColor = getBadgeColor(node.name)
@@ -1402,7 +1406,16 @@ fun NodeItem(
             val hasLiveSignal = route != null && route.lastRssi != 0f
             val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
             val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
-            if (sigRssi != 0f) {
+            if (isConnectedNode) {
+                // The node the phone is connected to over BLE has no LoRa RSSI to
+                // report about itself - make that explicit instead of a blank row.
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(13.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("This device (BLE link)", color = TextMuted, fontSize = 10.sp)
+                }
+            } else if (sigRssi != 0f) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SignalBars(rssi = sigRssi)
