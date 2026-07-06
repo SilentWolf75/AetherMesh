@@ -45,7 +45,7 @@ typedef struct _aethermesh_Telemetry {
     int32_t altitude; /* Altitude (meters) */
     char node_model[32]; /* Board name/model (e.g. "Heltec V4") */
     uint32_t uptime_seconds; /* Seconds since the node booted */
-    char firmware_version[12]; /* Firmware version string (e.g. "1.2.0") */
+    char firmware_version[20]; /* Firmware version string (e.g. "1.2.0") */
     bool is_charging; /* True when the battery is charging (voltage rising / on solar) */
 } aethermesh_Telemetry;
 
@@ -64,7 +64,8 @@ typedef struct _aethermesh_Ack {
     float acked_rx_snr; /* SNR (dB) at which the ACKing node heard the acked packet */
 } aethermesh_Ack;
 
-/* Local delivery lifecycle event from a connected node to the companion app. */
+/* Local delivery lifecycle event from a connected node to the companion app.
+ These events are sent over BLE only; they are not routed over LoRa. */
 typedef struct _aethermesh_DeliveryStatus {
     uint32_t packet_id;
     uint32_t recipient_id;
@@ -134,9 +135,11 @@ extern "C" {
 #define _aethermesh_RouteDiscovery_Type_MIN aethermesh_RouteDiscovery_Type_REQUEST
 #define _aethermesh_RouteDiscovery_Type_MAX aethermesh_RouteDiscovery_Type_REPLY
 #define _aethermesh_RouteDiscovery_Type_ARRAYSIZE ((aethermesh_RouteDiscovery_Type)(aethermesh_RouteDiscovery_Type_REPLY+1))
+
 #define _aethermesh_DeliveryStatus_State_MIN aethermesh_DeliveryStatus_State_UNKNOWN
 #define _aethermesh_DeliveryStatus_State_MAX aethermesh_DeliveryStatus_State_RETRYING
 #define _aethermesh_DeliveryStatus_State_ARRAYSIZE ((aethermesh_DeliveryStatus_State)(aethermesh_DeliveryStatus_State_RETRYING+1))
+
 #define _aethermesh_DeliveryStatus_Reason_MIN aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED
 #define _aethermesh_DeliveryStatus_Reason_MAX aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED
 #define _aethermesh_DeliveryStatus_Reason_ARRAYSIZE ((aethermesh_DeliveryStatus_Reason)(aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED+1))
@@ -145,9 +148,10 @@ extern "C" {
 
 
 #define aethermesh_RouteDiscovery_type_ENUMTYPE aethermesh_RouteDiscovery_Type
+
+
 #define aethermesh_DeliveryStatus_state_ENUMTYPE aethermesh_DeliveryStatus_State
 #define aethermesh_DeliveryStatus_reason_ENUMTYPE aethermesh_DeliveryStatus_Reason
-
 
 
 
@@ -224,11 +228,11 @@ extern "C" {
 #define aethermesh_MeshPacket_config_tag         11
 #define aethermesh_MeshPacket_auth_request_tag   12
 #define aethermesh_MeshPacket_auth_response_tag  13
+#define aethermesh_MeshPacket_delivery_status_tag 17
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
 #define aethermesh_MeshPacket_retry_count_tag    16
-#define aethermesh_MeshPacket_delivery_status_tag 17
 
 /* Struct field encoding specification for nanopb */
 #define aethermesh_MeshPacket_FIELDLIST(X, a) \
@@ -356,11 +360,11 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_Ack_size                      16
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
-#define aethermesh_DeliveryStatus_size           30
-#define aethermesh_MeshPacket_size               256
+#define aethermesh_DeliveryStatus_size           22
+#define aethermesh_MeshPacket_size               257
 #define aethermesh_NodeConfig_size               100
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                81
+#define aethermesh_Telemetry_size                89
 #define aethermesh_TextMessage_size              205
 
 #ifdef __cplusplus

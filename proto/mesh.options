@@ -1,7 +1,7 @@
 aethermesh.TextMessage.content max_size:168
 aethermesh.TextMessage.channel max_size:32
 aethermesh.Telemetry.node_model max_size:32
-aethermesh.Telemetry.firmware_version max_size:12
+aethermesh.Telemetry.firmware_version max_size:20
 aethermesh.NodeConfig.node_name max_size:17
 aethermesh.AuthRequest.password max_size:32
 aethermesh.AuthRequest.new_password max_size:32
