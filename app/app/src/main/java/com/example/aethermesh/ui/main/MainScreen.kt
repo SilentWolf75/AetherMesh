@@ -5479,7 +5479,11 @@ fun ConnectionView(
 
                     // Warn when nodes in the mesh run different firmware builds - the
                     // usual cause of "node X behaves differently" after a partial reflash.
-                    val fwVersions = nodes.map { it.firmwareVersion }
+                    // Only consider recently-heard nodes: a stored version from a node
+                    // that is offline (or was just reflashed and hasn't sent telemetry
+                    // yet) is stale data, not a live mismatch.
+                    val fwVersions = nodes.filter { !isNodeStale(it.lastActive) }
+                        .map { it.firmwareVersion }
                         .filter { it.isNotEmpty() }
                         .distinct()
                     if (fwVersions.size > 1) {

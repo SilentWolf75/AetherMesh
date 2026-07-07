@@ -12,11 +12,14 @@ def git_hash():
     except Exception:
         return "nogit"
     try:
-        dirty = subprocess.call(
-            ["git", "diff", "--quiet", "--", ":!app", ":!docs"],
+        # Compare actual content, not `git diff --quiet` exit codes: --quiet
+        # short-circuits on stat-cache/line-ending churn and can report dirty
+        # for files whose content is unchanged (false '*' on every build).
+        changed = subprocess.check_output(
+            ["git", "diff", "--name-only", "--", ":!app", ":!docs"],
             stderr=subprocess.DEVNULL,
-        )
-        if dirty != 0:
+        ).decode().strip()
+        if changed:
             h += "*"  # uncommitted firmware/proto changes present
     except Exception:
         pass
