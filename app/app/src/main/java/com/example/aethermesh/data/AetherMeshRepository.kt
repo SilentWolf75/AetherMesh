@@ -392,6 +392,14 @@ class AetherMeshRepository(private val context: Context) {
             return
         }
 
+        // OTA status/acks are BLE-only control messages addressed to the phone
+        // (recipient_id = 0), so they must be handled before the invalid-recipient
+        // guard below - the same as AuthResponse and DeliveryStatus above.
+        if (packet.payloadCase == MeshPacket.PayloadCase.OTA_STATUS) {
+            otaStatusChannel.trySend(packet.otaStatus)
+            return
+        }
+
         if (senderId == 0L || recipientId == 0L) {
             Log.w(TAG, "Ignoring packet with invalid sender/recipient: sender=0x${senderId.toString(16)}, recipient=0x${recipientId.toString(16)}")
             return
@@ -418,10 +426,6 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         when (packet.payloadCase) {
-            MeshPacket.PayloadCase.OTA_STATUS -> {
-                // Firmware-update handshake/acks from the connected node
-                otaStatusChannel.trySend(packet.otaStatus)
-            }
             MeshPacket.PayloadCase.TEXT -> {
                 val textMsg = packet.text
                 val isEncrypted = textMsg.isEncrypted
