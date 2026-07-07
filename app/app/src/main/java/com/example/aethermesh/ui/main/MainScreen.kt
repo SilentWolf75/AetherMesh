@@ -50,9 +50,14 @@ import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.views.overlay.compass.CompassOverlay
 import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
+import org.osmdroid.views.overlay.ScaleBarOverlay
+import org.osmdroid.util.BoundingBox
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.draw.scale
 import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
@@ -1457,6 +1462,35 @@ fun NodeItem(
     }
 }
 
+// Blue "you are here" dot for the phone's GPS position (the stock osmdroid
+// person icon is suppressed in the MyLocation overlay)
+fun createPhoneDotDrawable(context: Context): BitmapDrawable {
+    val density = context.resources.displayMetrics.density
+    val size = (28f * density).toInt()
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+    val c = size / 2f
+    val halo = Paint().apply {
+        isAntiAlias = true
+        color = 0x333B82F6
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(c, c, c, halo)
+    val ring = Paint().apply {
+        isAntiAlias = true
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(c, c, 8f * density, ring)
+    val dot = Paint().apply {
+        isAntiAlias = true
+        color = 0xFF3B82F6.toInt()
+        style = Paint.Style.FILL
+    }
+    canvas.drawCircle(c, c, 6f * density, dot)
+    return BitmapDrawable(context.resources, bitmap)
+}
+
 fun createBadgeMarkerDrawable(
     context: Context,
     label: String,
@@ -1531,10 +1565,15 @@ fun MapViewCompose(
 ) {
     var hasCentered by remember { mutableStateOf(false) }
     var selectedMapNode by remember { mutableStateOf<MeshNode?>(null) }
+    var selectedPingLog by remember { mutableStateOf<com.example.aethermesh.data.RangeTestLog?>(null) }
     var showRemoteConfigDialog by remember { mutableStateOf<MeshNode?>(null) }
     val context = LocalContext.current
     val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
     val breadcrumbs = remember { mutableStateListOf<GeoPoint>() }
+    val mapPrefs = remember { context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE) }
+    var darkMapTiles by remember { mutableStateOf(mapPrefs.getBoolean("dark_tiles", false)) }
+    var showCoverageRings by remember { mutableStateOf(mapPrefs.getBoolean("coverage_rings", false)) }
+    var showLayersMenu by remember { mutableStateOf(false) }
 
     // Remembered MapView to avoid reloading tiles on recomposition
     val mapView = remember {
@@ -1592,18 +1631,51 @@ fun MapViewCompose(
                 enableCompass()
             }
             overlays.add(compassOverlay)
+
+            val d = context.resources.displayMetrics.density
+            val scaleBar = ScaleBarOverlay(this).apply {
+                setAlignBottom(true)
+                setScaleBarOffset((16 * d).toInt(), (24 * d).toInt())
+            }
+            overlays.add(scaleBar)
         }
     }
 
+    // Dark tile filter: invert tile colors so the map matches the dark UI
+    LaunchedEffect(darkMapTiles) {
+        if (darkMapTiles) {
+            val invert = ColorMatrix(floatArrayOf(
+                -1f, 0f, 0f, 0f, 255f,
+                0f, -1f, 0f, 0f, 255f,
+                0f, 0f, -1f, 0f, 255f,
+                0f, 0f, 0f, 1f, 0f
+            ))
+            mapView.overlayManager.tilesOverlay.setColorFilter(ColorMatrixColorFilter(invert))
+        } else {
+            mapView.overlayManager.tilesOverlay.setColorFilter(null)
+        }
+        mapView.invalidate()
+    }
+
+    LaunchedEffect(useImperialUnits) {
+        mapView.overlays.filterIsInstance<ScaleBarOverlay>().firstOrNull()?.unitsOfMeasure =
+            if (useImperialUnits) ScaleBarOverlay.UnitsOfMeasure.imperial else ScaleBarOverlay.UnitsOfMeasure.metric
+        mapView.invalidate()
+    }
+
     // Update overlays reactively whenever nodes, rangeTestLogs, phoneLocation, or breadcrumbs size changes
-    LaunchedEffect(nodes, rangeTestLogs, phoneLocation, breadcrumbs.size) {
-        val myLocationOverlays = mapView.overlays.filterIsInstance<MyLocationNewOverlay>()
+    LaunchedEffect(nodes, rangeTestLogs, phoneLocation, breadcrumbs.size, showCoverageRings) {
+        // Keep the long-lived overlays (location, compass, scale bar); rebuild the rest
+        val persistentOverlays = mapView.overlays.filter {
+            it is MyLocationNewOverlay || it is CompassOverlay || it is ScaleBarOverlay
+        }
         mapView.overlays.clear()
-        mapView.overlays.addAll(myLocationOverlays)
+        mapView.overlays.addAll(persistentOverlays)
 
         val mapEventsOverlay = MapEventsOverlay(object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
                 selectedMapNode = null
+                selectedPingLog = null
                 return false
             }
             override fun longPressHelper(p: GeoPoint?): Boolean {
@@ -1624,6 +1696,18 @@ fun MapViewCompose(
                 setPoints(breadcrumbs.toList())
             }
             mapView.overlays.add(breadcrumbPolyline)
+        }
+
+        // Draw the phone's own position (the default osmdroid person icon is suppressed)
+        phoneLocation?.let { loc ->
+            val phoneMarker = Marker(mapView).apply {
+                position = loc
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                icon = createPhoneDotDrawable(context)
+                infoWindow = null
+                setOnMarkerClickListener { _, _ -> true } // absorb taps, no popup
+            }
+            mapView.overlays.add(phoneMarker)
         }
 
         // 1. Draw mesh link polylines (dashed cyan lines) from the local node to remote nodes
@@ -1677,18 +1761,18 @@ fun MapViewCompose(
                 mapView.overlays.add(polyline)
             }
 
-            // Draw Range Test target node markers with sequence pins
+            // Draw Range Test target node markers with sequence pins.
+            // No osmdroid InfoWindow (it renders as an empty bubble) — tapping a
+            // pin opens the styled ping-detail card instead.
             validLogs.forEachIndexed { index, log ->
                 val marker = Marker(mapView).apply {
                     position = GeoPoint(log.latitude, log.longitude)
-                    title = if (appLanguage == "Spanish") "Prueba #${index + 1}" else "Ping #${index + 1}"
-                    subDescription = if (log.success) {
-                        val pingSide = log.remoteRssi?.let { "Ping@target: $it dBm | " } ?: ""
-                        val speedPart = log.speedMps?.let {
-                            " | ${String.format(java.util.Locale.US, "%.0f", it * 2.237)} mph"
-                        } ?: ""
-                        "${pingSide}ACK: ${log.rssi} dBm / ${log.snr} dB$speedPart"
-                    } else "TIMEOUT"
+                    infoWindow = null
+                    setOnMarkerClickListener { _, _ ->
+                        selectedPingLog = log
+                        selectedMapNode = null
+                        true
+                    }
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     icon = if (log.success) {
                         createBadgeMarkerDrawable(
@@ -1712,44 +1796,78 @@ fun MapViewCompose(
             }
         }
 
-        // 3. Draw custom initials-badge markers for each active node
-        for (node in nodes) {
-            if (node.latitude != 0.0f && node.longitude != 0.0f) {
-                val color = getBadgeColor(node.name).toArgb()
-                val density = context.resources.displayMetrics.density
+        // 3. Draw custom initials-badge markers for each active node.
+        // Nodes sitting at (nearly) the same spot get fanned out on a small ring so
+        // every badge stays visible and tappable instead of stacking.
+        val placedNodes = nodes.filter { it.latitude != 0.0f && it.longitude != 0.0f }
+        val nodeGroups = mutableListOf<MutableList<MeshNode>>()
+        for (node in placedNodes) {
+            val group = nodeGroups.find { g ->
+                calculateDistance(
+                    g[0].latitude.toDouble(), g[0].longitude.toDouble(),
+                    node.latitude.toDouble(), node.longitude.toDouble()
+                ) < 0.03 // within 30 m
+            }
+            if (group != null) group.add(node) else nodeGroups.add(mutableListOf(node))
+        }
+        val displayPositions = mutableMapOf<Long, GeoPoint>()
+        for (group in nodeGroups) {
+            if (group.size == 1) {
+                val n = group[0]
+                displayPositions[n.nodeId] = GeoPoint(n.latitude.toDouble(), n.longitude.toDouble())
+            } else {
+                val cLat = group.map { it.latitude.toDouble() }.average()
+                val cLon = group.map { it.longitude.toDouble() }.average()
+                val fanRadiusM = 25.0
+                group.forEachIndexed { i, n ->
+                    val angle = 2.0 * Math.PI * i / group.size - Math.PI / 2.0
+                    val dLat = fanRadiusM * kotlin.math.cos(angle) / 111_320.0
+                    val dLon = fanRadiusM * kotlin.math.sin(angle) /
+                        (111_320.0 * kotlin.math.cos(Math.toRadians(cLat)))
+                    displayPositions[n.nodeId] = GeoPoint(cLat + dLat, cLon + dLon)
+                }
+            }
+        }
 
-                // Draw geographical precision circle polygon (natively scales with zoom level)
+        for (node in placedNodes) {
+            val color = getBadgeColor(node.name).toArgb()
+            val density = context.resources.displayMetrics.density
+
+            // Optional coverage ring at the node's true position (off by default —
+            // with several nodes the overlapping fills used to wash out the map)
+            if (showCoverageRings) {
                 val circle = Polygon(mapView).apply {
                     val center = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
                     points = Polygon.pointsAsCircle(center, 350.0) // 350 meters radius
                     fillPaint.color = color
-                    fillPaint.alpha = 32
+                    fillPaint.alpha = 18
                     fillPaint.style = Paint.Style.FILL
-                    
+
                     outlinePaint.color = color
-                    outlinePaint.alpha = 110
+                    outlinePaint.alpha = 90
                     outlinePaint.style = Paint.Style.STROKE
                     outlinePaint.strokeWidth = 1.5f * density
                 }
                 mapView.overlays.add(circle)
-
-                val marker = Marker(mapView).apply {
-                    position = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
-                    title = node.name
-                    subDescription = "Battery: ${node.battery}% | Last heard ${formatLastHeard(node.lastActive)}"
-                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER) // Center of the badge circle
-
-                    val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
-                    val isNodeActive = !isNodeStale(node.lastActive)
-                    icon = createBadgeMarkerDrawable(context, nodeShortName, color, isActive = isNodeActive, isPingMarker = false)
-
-                    setOnMarkerClickListener { _, _ ->
-                        selectedMapNode = node
-                        true
-                    }
-                }
-                mapView.overlays.add(marker)
             }
+
+            val marker = Marker(mapView).apply {
+                position = displayPositions[node.nodeId]
+                    ?: GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
+                infoWindow = null
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER) // Center of the badge circle
+
+                val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                val isNodeActive = !isNodeStale(node.lastActive)
+                icon = createBadgeMarkerDrawable(context, nodeShortName, color, isActive = isNodeActive, isPingMarker = false)
+
+                setOnMarkerClickListener { _, _ ->
+                    selectedMapNode = node
+                    selectedPingLog = null
+                    true
+                }
+            }
+            mapView.overlays.add(marker)
         }
 
         // Auto-center on first valid node if we haven't already centered
@@ -1859,6 +1977,16 @@ fun MapViewCompose(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Map layers menu
+            FloatingActionButton(
+                onClick = { showLayersMenu = !showLayersMenu },
+                containerColor = SurfaceDark.copy(alpha = 0.85f),
+                contentColor = if (showLayersMenu) AccentMint else AccentCyan,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(Icons.Default.Layers, contentDescription = "Map Layers", modifier = Modifier.size(20.dp))
+            }
             // Zoom In
             FloatingActionButton(
                 onClick = { mapView.controller.zoomIn() },
@@ -1907,10 +2035,18 @@ fun MapViewCompose(
                 onClick = {
                     val validNodes = nodes.filter { it.latitude != 0.0f && it.longitude != 0.0f }
                     if (validNodes.isNotEmpty()) {
-                        val avgLat = validNodes.map { it.latitude.toDouble() }.average()
-                        val avgLon = validNodes.map { it.longitude.toDouble() }.average()
-                        mapView.controller.animateTo(GeoPoint(avgLat, avgLon))
-                        mapView.controller.setZoom(14.0)
+                        val points = validNodes.map {
+                            GeoPoint(it.latitude.toDouble(), it.longitude.toDouble())
+                        } + listOfNotNull(phoneLocation)
+                        val bb = BoundingBox.fromGeoPoints(points)
+                        // Co-located points give a degenerate box — just center on them
+                        if (bb.latitudeSpan < 0.0005 && bb.longitudeSpanWithDateLine < 0.0005) {
+                            mapView.controller.animateTo(bb.centerWithDateLine)
+                            mapView.controller.setZoom(16.0)
+                        } else {
+                            val pad = (48 * context.resources.displayMetrics.density).toInt()
+                            mapView.zoomToBoundingBox(bb, true, pad)
+                        }
                     } else {
                         android.widget.Toast.makeText(
                             context,
@@ -1925,6 +2061,66 @@ fun MapViewCompose(
                 modifier = Modifier.size(40.dp)
             ) {
                 Icon(Icons.Default.Home, contentDescription = "Center on Mesh", modifier = Modifier.size(20.dp))
+            }
+        }
+
+        // Layers menu popup (left of the control column)
+        if (showLayersMenu) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.95f)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, BorderDark),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 16.dp, end = 68.dp)
+                    .width(200.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text(
+                        text = if (appLanguage == "Spanish") "Capas del Mapa" else "Map Layers",
+                        color = AccentCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Mapa oscuro" else "Dark map",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Switch(
+                            checked = darkMapTiles,
+                            onCheckedChange = {
+                                darkMapTiles = it
+                                mapPrefs.edit().putBoolean("dark_tiles", it).apply()
+                            },
+                            modifier = Modifier.scale(0.7f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Anillos de cobertura" else "Coverage rings",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Switch(
+                            checked = showCoverageRings,
+                            onCheckedChange = {
+                                showCoverageRings = it
+                                mapPrefs.edit().putBoolean("coverage_rings", it).apply()
+                            },
+                            modifier = Modifier.scale(0.7f)
+                        )
+                    }
+                }
             }
         }
 
@@ -2099,6 +2295,145 @@ fun MapViewCompose(
                                     Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentMint)
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(if (appLanguage == "Spanish") "Configurar" else "Remote Config", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ping detail card — shown when a range-test pin is tapped
+        if (activeMapNode == null) selectedPingLog?.let { log ->
+            val validLogs = rangeTestLogs.filter { it.latitude != 0.0 && it.longitude != 0.0 }
+            val pingNumber = validLogs.indexOfFirst { it.id == log.id } + 1
+            val statusColor = if (log.success) AccentMint else AccentRed
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 76.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth()
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.92f)),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, BorderDark),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(statusColor),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (log.success) "$pingNumber" else "X",
+                                        color = Color.Black,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = if (appLanguage == "Spanish") "Prueba #$pingNumber" else "Ping #$pingNumber",
+                                        color = TextLight,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = SimpleDateFormat("h:mm:ss a", Locale.getDefault()).format(Date(log.timestamp)),
+                                        color = TextMuted,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (log.success) "ACK" else "TIMEOUT",
+                                    color = statusColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                IconButton(
+                                    onClick = { selectedPingLog = null },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+
+                        if (log.success) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = BorderDark)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column {
+                                    Text(
+                                        text = if (appLanguage == "Spanish") "ACK recibido" else "ACK signal",
+                                        color = TextMuted, fontSize = 9.sp
+                                    )
+                                    Text(
+                                        "${log.rssi.toInt()} dBm / ${log.snr} dB",
+                                        color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (log.remoteRssi != null) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = if (appLanguage == "Spanish") "En el destino" else "At target",
+                                            color = TextMuted, fontSize = 9.sp
+                                        )
+                                        Text(
+                                            "${log.remoteRssi.toInt()} dBm" + (log.remoteSnr?.let { " / $it dB" } ?: ""),
+                                            color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    val targetNode = nodes.find {
+                                        it.nodeId == log.targetId && it.latitude != 0.0f && it.longitude != 0.0f
+                                    }
+                                    if (targetNode != null) {
+                                        val distKm = calculateDistance(
+                                            log.latitude, log.longitude,
+                                            targetNode.latitude.toDouble(), targetNode.longitude.toDouble()
+                                        )
+                                        Text(
+                                            text = if (appLanguage == "Spanish") "Distancia" else "Distance",
+                                            color = TextMuted, fontSize = 9.sp
+                                        )
+                                        Text(
+                                            text = if (useImperialUnits)
+                                                "%.0f ft".format(distKm * 3280.84)
+                                            else
+                                                "%.0f m".format(distKm * 1000),
+                                            color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                                        )
+                                    } else if (log.speedMps != null) {
+                                        Text(
+                                            text = if (appLanguage == "Spanish") "Velocidad" else "Speed",
+                                            color = TextMuted, fontSize = 9.sp
+                                        )
+                                        Text(
+                                            text = if (useImperialUnits)
+                                                "%.0f mph".format(log.speedMps * 2.237)
+                                            else
+                                                "%.0f km/h".format(log.speedMps * 3.6),
+                                            color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                 }
                             }
                         }
