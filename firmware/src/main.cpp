@@ -59,25 +59,30 @@ uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
 float batteryVoltage = 0.0f; // last measured pack voltage (0 if never measured)
 
-// Recently-heard mesh peers, for the OLED "Nodes" count. Small fixed table;
-// a peer counts as active if heard within the last 5 minutes.
-struct PeerSeen { uint32_t id; uint32_t lastMs; };
+// Recently-heard mesh peers, for the OLED "Nodes" count and NODES page. Small
+// fixed table; a peer counts as active if heard within the last 5 minutes.
+struct PeerSeen { uint32_t id; uint32_t lastMs; float rssi; };
 static PeerSeen peersSeen[12] = {};
 static const uint32_t PEER_ACTIVE_WINDOW_MS = 5UL * 60UL * 1000UL;
 
-void notePeerHeard(uint32_t id) {
+void notePeerHeard(uint32_t id, float rssi) {
     if (id == 0 || id == localNodeId) return;
     int freeSlot = -1;
     uint32_t oldest = 0xFFFFFFFF;
     int oldestIdx = 0;
     for (int i = 0; i < 12; i++) {
-        if (peersSeen[i].id == id) { peersSeen[i].lastMs = millis(); return; }
+        if (peersSeen[i].id == id) {
+            peersSeen[i].lastMs = millis();
+            peersSeen[i].rssi = rssi;
+            return;
+        }
         if (peersSeen[i].id == 0 && freeSlot < 0) freeSlot = i;
         if (peersSeen[i].lastMs < oldest) { oldest = peersSeen[i].lastMs; oldestIdx = i; }
     }
     int slot = (freeSlot >= 0) ? freeSlot : oldestIdx;
     peersSeen[slot].id = id;
     peersSeen[slot].lastMs = millis();
+    peersSeen[slot].rssi = rssi;
 }
 
 uint8_t countActivePeers() {
@@ -210,6 +215,18 @@ char lastMsgText[40] = "";
 uint32_t lastMsgSender = 0;
 uint32_t lastMsgReceivedTime = 0;
 bool hasNewMsgPopup = false;
+
+// OLED page carousel: the user button cycles pages while the screen is on
+// (waking from off always lands on HOME; a visible popup is dismissed first).
+uint8_t oledPage = 0;
+const uint8_t OLED_PAGE_COUNT = 5; // HOME, GPS, MESSAGES, NODES, SYSTEM
+bool displayIsOn = false;
+
+// Ring of recently received chat messages for the MESSAGES screen page
+struct RecentMsg { uint32_t sender; char text[40]; uint32_t atMs; };
+RecentMsg recentMsgs[4] = {};
+uint8_t recentMsgHead = 0;
+uint8_t recentMsgCount = 0;
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
 
@@ -540,6 +557,168 @@ void drawBatteryIcon(uint8_t x, uint8_t y, uint8_t pct, bool charging) {
         u8g2.drawLine(x - 5, y + 5, x - 9, y + 10);
     }
 }
+
+// "32s" / "4m" / "2h" style age strings for the NODES/MESSAGES pages
+static void formatAge(uint32_t ageMs, char* out, size_t n) {
+    uint32_t s = ageMs / 1000UL;
+    if (s < 60) snprintf(out, n, "%lus", (unsigned long)s);
+    else if (s < 3600) snprintf(out, n, "%lum", (unsigned long)(s / 60));
+    else snprintf(out, n, "%luh", (unsigned long)(s / 3600));
+}
+
+// Shared header for the non-HOME pages: title left, "2/5" page indicator right
+static void drawPageHeader(const char* title, uint8_t page) {
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(0, 10, title);
+    char pg[8];
+    snprintf(pg, sizeof(pg), "%u/%u", (unsigned)(page + 1), (unsigned)OLED_PAGE_COUNT);
+    u8g2.drawStr(128 - (int)u8g2.getStrWidth(pg), 10, pg);
+    u8g2.drawHLine(0, 12, 128);
+}
+
+// Page 2/5 — GPS detail: source, coordinates, altitude/speed, satellites
+void drawGpsPage() {
+    u8g2.clearBuffer();
+    drawPageHeader("GPS", 1);
+    u8g2.setFont(u8g2_font_6x10_tf);
+    char line[26];
+
+    bool ownFix = gps.location.isValid();
+    bool phoneFix = hasInheritedLocation && (millis() - lastInheritedTime < 300000);
+    if (ownFix || phoneFix) {
+        double lat = ownFix ? gps.location.lat() : (double)inheritedLat;
+        double lon = ownFix ? gps.location.lng() : (double)inheritedLon;
+        snprintf(line, sizeof(line), "Src: %s", ownFix ? "Onboard GPS" : "Phone GPS");
+        u8g2.drawStr(0, 23, line);
+        snprintf(line, sizeof(line), "Lat %.5f", lat);
+        u8g2.drawStr(0, 34, line);
+        snprintf(line, sizeof(line), "Lon %.5f", lon);
+        u8g2.drawStr(0, 45, line);
+        if (ownFix) {
+            // The region setting hints at preferred units: US915 -> mph
+            float spd = (nodeRegion == 0) ? gps.speed.mph() : gps.speed.kmph();
+            snprintf(line, sizeof(line), "Alt %dm  Spd %.1f%s",
+                     (int)gps.altitude.meters(), spd, (nodeRegion == 0) ? "mph" : "km/h");
+            u8g2.drawStr(0, 56, line);
+            snprintf(line, sizeof(line), "Sats %lu  HDOP %.1f",
+                     (unsigned long)gps.satellites.value(), gps.hdop.hdop());
+            u8g2.drawStr(0, 64, line);
+        } else {
+            snprintf(line, sizeof(line), "Phone fix %lus ago",
+                     (unsigned long)((millis() - lastInheritedTime) / 1000));
+            u8g2.drawStr(0, 56, line);
+        }
+    } else {
+        u8g2.setFont(u8g2_font_7x14_tf);
+        u8g2.drawStr(0, 32, "NO GPS LOCK");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        snprintf(line, sizeof(line), "Sats in view: %lu", (unsigned long)gps.satellites.value());
+        u8g2.drawStr(0, 47, line);
+        u8g2.drawStr(0, 58, "Waiting for fix...");
+    }
+    u8g2.sendBuffer();
+}
+
+// Page 3/5 — last received chat messages (newest first, up to 2 shown)
+void drawMsgsPage() {
+    u8g2.clearBuffer();
+    drawPageHeader("MESSAGES", 2);
+    if (recentMsgCount == 0) {
+        u8g2.setFont(u8g2_font_6x10_tf);
+        u8g2.drawStr(0, 36, "No messages yet");
+        u8g2.sendBuffer();
+        return;
+    }
+    u8g2.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 22;
+    uint8_t toShow = (recentMsgCount < 2) ? recentMsgCount : 2;
+    for (uint8_t k = 0; k < toShow; k++) {
+        const RecentMsg& m = recentMsgs[(recentMsgHead + 4 - 1 - k) % 4];
+        char age[8];
+        formatAge(millis() - m.atMs, age, sizeof(age));
+        char hdr[28];
+        snprintf(hdr, sizeof(hdr), "0x%04X  %s ago:", (unsigned)(m.sender & 0xFFFF), age);
+        u8g2.drawStr(0, y, hdr);
+        y += 8;
+        char lineBuf[26];
+        strncpy(lineBuf, m.text, 25);
+        lineBuf[25] = '\0';
+        u8g2.drawStr(4, y, lineBuf);
+        y += 8;
+        if (strlen(m.text) > 25) {
+            strncpy(lineBuf, m.text + 25, 25);
+            lineBuf[25] = '\0';
+            u8g2.drawStr(4, y, lineBuf);
+            y += 8;
+        }
+        y += 3; // gap between messages
+    }
+    u8g2.sendBuffer();
+}
+
+// Page 4/5 — mesh peers heard in the last 5 minutes (id, signal, age)
+void drawNodesPage() {
+    u8g2.clearBuffer();
+    char title[16];
+    snprintf(title, sizeof(title), "NODES %u", (unsigned)countActivePeers());
+    drawPageHeader(title, 3);
+    u8g2.setFont(u8g2_font_6x10_tf);
+
+    bool used[12] = {};
+    uint8_t shown = 0;
+    for (uint8_t row = 0; row < 4; row++) {
+        int best = -1;
+        for (int i = 0; i < 12; i++) {
+            if (used[i] || peersSeen[i].id == 0) continue;
+            if (millis() - peersSeen[i].lastMs >= PEER_ACTIVE_WINDOW_MS) continue;
+            if (best < 0 || peersSeen[i].lastMs > peersSeen[best].lastMs) best = i;
+        }
+        if (best < 0) break;
+        used[best] = true;
+        char age[8];
+        formatAge(millis() - peersSeen[best].lastMs, age, sizeof(age));
+        char line[26];
+        snprintf(line, sizeof(line), "%08X %.0fdB %s",
+                 (unsigned)peersSeen[best].id, peersSeen[best].rssi, age);
+        u8g2.drawStr(0, 23 + row * 11, line);
+        shown++;
+    }
+    if (shown == 0) {
+        u8g2.drawStr(0, 34, "No peers heard in");
+        u8g2.drawStr(0, 45, "the last 5 minutes");
+    }
+    u8g2.sendBuffer();
+}
+
+// Page 5/5 — system detail: id, role/power/region, battery, heap, version
+void drawSysPage() {
+    u8g2.clearBuffer();
+    drawPageHeader("SYSTEM", 4);
+    u8g2.setFont(u8g2_font_6x10_tf);
+    char line[28];
+
+    snprintf(line, sizeof(line), "ID 0x%08X", (unsigned)localNodeId);
+    u8g2.drawStr(0, 23, line);
+    const char* roleName = (nodeRole == 1) ? "Router" : (nodeRole == 2) ? "Repeater" : "Client";
+    snprintf(line, sizeof(line), "%s TX %ddBm %s", roleName, (int)loraTxPower,
+             (nodeRegion == 0) ? "US915" : "EU868");
+    u8g2.drawStr(0, 34, line);
+    snprintf(line, sizeof(line), "Batt %u%% %.2fV%s", (unsigned)readBatteryLevel(),
+             batteryVoltage, batteryCharging ? " CHG" : "");
+    u8g2.drawStr(0, 45, line);
+    snprintf(line, sizeof(line), "Heap %luk", (unsigned long)(ESP.getFreeHeap() / 1024));
+    u8g2.drawStr(0, 56, line);
+
+    u8g2.setFont(u8g2_font_5x7_tf);
+    snprintf(line, sizeof(line), "v%s", AETHERMESH_FW_VERSION);
+    u8g2.drawStr(0, 64, line);
+    if (positionPrecisionM > 0) {
+        char pp[16];
+        snprintf(pp, sizeof(pp), "Pos +/-%um", (unsigned)positionPrecisionM);
+        u8g2.drawStr(128 - (int)u8g2.getStrWidth(pp), 64, pp);
+    }
+    u8g2.sendBuffer();
+}
 #endif
 
 // Update the OLED display screen
@@ -547,9 +726,10 @@ void updateDisplay() {
 #if defined(HELTEC_V4)
     if (nodeRole == 2) {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
+        displayIsOn = false;
         return;
     }
-    
+
     unsigned long now = millis();
     bool shouldBeOn = true;
     // Power save caps the screen-on window at 10s, but never overrides "Always Off"
@@ -573,9 +753,14 @@ void updateDisplay() {
 
     if (!shouldBeOn) {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
+        displayIsOn = false;
         return;
     }
+    if (!displayIsOn) {
+        oledPage = 0; // waking from off always lands on the HOME page
+    }
     u8g2.setPowerSave(0); // Ensure awake if not repeater
+    displayIsOn = true;
     
     // Check if we should render message popup overlay
     if (hasNewMsgPopup && (now - lastMsgReceivedTime < 10000)) {
@@ -619,6 +804,14 @@ void updateDisplay() {
         return;
     } else {
         hasNewMsgPopup = false;
+    }
+
+    switch (oledPage) {
+        case 1: drawGpsPage(); return;
+        case 2: drawMsgsPage(); return;
+        case 3: drawNodesPage(); return;
+        case 4: drawSysPage(); return;
+        default: break; // HOME below
     }
 
     u8g2.clearBuffer();
@@ -697,7 +890,7 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
     bool decodeSuccess = pb_decode(&stream, aethermesh_MeshPacket_fields, &packet);
 
     if (decodeSuccess) {
-        notePeerHeard(packet.sender_id);
+        notePeerHeard(packet.sender_id, rssi);
         if (packet.which_payload == aethermesh_MeshPacket_telemetry_tag) {
             Serial.printf("{\"event\":\"telemetry\",\"node_id\":%u,\"battery\":%u,\"lat\":%.6f,\"lon\":%.6f,\"rssi\":%.1f,\"snr\":%.1f,\"model\":\"%s\",\"uptime\":%u,\"fw\":\"%s\"}\n",
                           packet.sender_id,
@@ -1008,7 +1201,16 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     lastMsgText[out] = '\0';
     lastMsgReceivedTime = millis();
     hasNewMsgPopup = true;
-    
+
+    // Also keep it in the recent-messages ring for the MESSAGES screen page
+    RecentMsg& slot = recentMsgs[recentMsgHead];
+    slot.sender = senderId;
+    strncpy(slot.text, lastMsgText, sizeof(slot.text) - 1);
+    slot.text[sizeof(slot.text) - 1] = '\0';
+    slot.atMs = millis();
+    recentMsgHead = (recentMsgHead + 1) % 4;
+    if (recentMsgCount < 4) recentMsgCount++;
+
     updateDisplay();
 }
 
@@ -1172,6 +1374,16 @@ void loop() {
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
     if (currentButtonState == LOW && lastButtonState == HIGH) {
+#if defined(HELTEC_V4)
+        // Button behavior: dismiss a visible message popup first; otherwise
+        // advance the page carousel while the screen is on. Pressing while the
+        // screen is off just wakes it (updateDisplay lands on HOME).
+        if (hasNewMsgPopup) {
+            hasNewMsgPopup = false;
+        } else if (displayIsOn) {
+            oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
+        }
+#endif
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
             lastBleActiveTime = millis();
