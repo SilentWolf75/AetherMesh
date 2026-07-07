@@ -130,6 +130,16 @@ void updateChargingState(float voltage) {
     }
     batteryVoltage = voltage;
 
+#if defined(RAK4631) || defined(RAK3401_1W)
+    // VBUSDETECT is definitive on nRF52 (USB and the solar connector share the
+    // VBUS rail), so it alone decides. The voltage-rise heuristic must NOT run
+    // here: the battery's rebound after each LoRa TX burst exceeds any usable
+    // rise threshold, which kept flagging phantom "charging" on an unplugged
+    // node (rising + 3-min hold re-triggered forever).
+    batteryCharging = externalPowerPresent();
+    return;
+#endif
+
     if (externalPowerPresent()) {
         batteryCharging = true;
         return;
@@ -162,11 +172,8 @@ void updateChargingState(float voltage) {
 
     // Rising above the recent floor => charge current present. The absolute
     // 4.15V catch handles the near-full charging plateau where the rise stalls.
-#if defined(RAK4631) || defined(RAK3401_1W)
-    const float riseThreshold = 0.008f; // More sensitive due to cleaner ADC on nRF52
-#else
+    // (ESP32/Heltec only - the nRF52 boards return on VBUSDETECT above.)
     const float riseThreshold = 0.080f; // High threshold (80mV) to completely block noise/load transient triggers
-#endif
 
     bool rising = (filteredVoltage - minV) > riseThreshold;
     bool high = filteredVoltage >= 4.15f;
@@ -418,6 +425,24 @@ uint32_t getHardwareNodeId() {
 #endif
 }
 
+// LiPo state-of-charge from voltage. A LiPo discharge curve is far from
+// linear: the top sags from 4.2V to ~4.0V almost immediately under load
+// (only a few % of real capacity), while most of the capacity lives on the
+// flat 3.6-3.8V plateau. The old linear 3.3-4.2V mapping exaggerated drain
+// at the top and doom at the bottom.
+uint8_t lipoPercentFromVoltage(float v) {
+    static const float ocv[] = {4.20f, 4.10f, 4.00f, 3.92f, 3.85f, 3.79f, 3.74f, 3.68f, 3.60f, 3.45f, 3.30f};
+    static const uint8_t pct[] = {100,   90,   80,   70,   60,   50,   40,   30,   20,   10,    0};
+    if (v >= ocv[0]) return 100;
+    for (int i = 1; i < 11; i++) {
+        if (v >= ocv[i]) {
+            float f = (v - ocv[i]) / (ocv[i - 1] - ocv[i]);
+            return (uint8_t)(pct[i] + f * (pct[i - 1] - pct[i]) + 0.5f);
+        }
+    }
+    return 0;
+}
+
 // Battery measurement helper for Heltec V4. The raw read toggles the divider
 // GPIO and blocks 10ms, and callers (display refresh) run every second, so the
 // result is cached for 30s.
@@ -452,14 +477,7 @@ uint8_t readBatteryLevel() {
     Serial.print(voltage);
     Serial.println(" V");
 
-    // Standard LiPo discharge range: 3.3V (0%) to 4.2V (100%)
-    if (voltage >= 4.2f) {
-        cachedLevel = 100;
-    } else if (voltage <= 3.3f) {
-        cachedLevel = 0;
-    } else {
-        cachedLevel = (uint8_t)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
-    }
+    cachedLevel = lipoPercentFromVoltage(voltage);
     haveSample = true;
     lastSampleTime = millis();
     return cachedLevel;
@@ -490,14 +508,7 @@ uint8_t readBatteryLevel() {
     Serial.print(voltage);
     Serial.println(" V");
 
-    // Standard LiPo discharge range: 3.3V (0%) to 4.2V (100%)
-    if (voltage >= 4.2f) {
-        cachedLevel = 100;
-    } else if (voltage <= 3.3f) {
-        cachedLevel = 0;
-    } else {
-        cachedLevel = (uint8_t)((voltage - 3.3f) / (4.2f - 3.3f) * 100.0f);
-    }
+    cachedLevel = lipoPercentFromVoltage(voltage);
     haveSample = true;
     lastSampleTime = millis();
     return cachedLevel;
