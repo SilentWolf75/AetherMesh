@@ -1,9 +1,18 @@
 #include "BLEManager.h"
 
+// SPSC ring of received phone packets. The BLE stack task produces, the main
+// loop consumes. Multiple slots matter for OTA: firmware chunks arrive in
+// bursts faster than one loop pass, and the old single-slot buffer dropped
+// everything after the first.
 static constexpr size_t BLE_RX_BUFFER_SIZE = 256;
-static uint8_t pendingPhoneData[BLE_RX_BUFFER_SIZE];
-static size_t pendingPhoneLen = 0;
-static volatile bool hasPendingPhoneData = false;
+static constexpr size_t BLE_RX_RING_SLOTS = 8;
+struct BleRxSlot {
+    uint8_t data[BLE_RX_BUFFER_SIZE];
+    size_t len;
+};
+static BleRxSlot bleRxRing[BLE_RX_RING_SLOTS];
+static volatile size_t bleRxHead = 0; // producer writes here
+static volatile size_t bleRxTail = 0; // consumer reads here
 
 static void queuePhonePacket(const uint8_t* data, size_t len) {
     if (!data || len == 0) {
@@ -15,14 +24,15 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
         return;
     }
 
-    if (hasPendingPhoneData) {
-        Serial.println("BLE packet queue full; dropping.");
+    size_t next = (bleRxHead + 1) % BLE_RX_RING_SLOTS;
+    if (next == bleRxTail) {
+        Serial.println("BLE packet ring full; dropping.");
         return;
     }
 
-    memcpy(pendingPhoneData, data, len);
-    pendingPhoneLen = len;
-    hasPendingPhoneData = true;
+    memcpy(bleRxRing[bleRxHead].data, data, len);
+    bleRxRing[bleRxHead].len = len;
+    bleRxHead = next;
 }
 
 #if defined(HELTEC_V4)
@@ -196,17 +206,19 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
 void BLEManager::loop() {
     // nRF52 BLE runs on an RTOS background thread automatically.
     // ESP32 BLE also runs in a separate thread.
-    if (!hasPendingPhoneData || !phoneCallback) {
+    if (!phoneCallback) {
         return;
     }
 
-    uint8_t packet[BLE_RX_BUFFER_SIZE];
-    size_t len = pendingPhoneLen;
-    memcpy(packet, pendingPhoneData, len);
-    hasPendingPhoneData = false;
-    pendingPhoneLen = 0;
+    // Drain everything queued since the last pass (OTA sends bursts)
+    while (bleRxTail != bleRxHead) {
+        uint8_t packet[BLE_RX_BUFFER_SIZE];
+        size_t len = bleRxRing[bleRxTail].len;
+        memcpy(packet, bleRxRing[bleRxTail].data, len);
+        bleRxTail = (bleRxTail + 1) % BLE_RX_RING_SLOTS;
 
-    phoneCallback(packet, len);
+        phoneCallback(packet, len);
+    }
 }
 
 bool BLEManager::sendToPhone(uint8_t* data, size_t len) {

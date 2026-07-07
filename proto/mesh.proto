@@ -26,7 +26,45 @@ message MeshPacket {
     AuthRequest auth_request = 12;
     AuthResponse auth_response = 13;
     DeliveryStatus delivery_status = 17;
+    OtaControl ota_control = 18;
+    OtaData ota_data = 19;
+    OtaStatus ota_status = 20;
   }
+}
+
+// --- BLE firmware update (OTA). These messages travel over BLE only, never
+// over LoRa. Flow: phone sends BEGIN (size+md5), node replies READY; phone
+// streams OtaData chunks in windows of OTA_WINDOW, node acks progress with
+// IN_PROGRESS every window; phone sends END, node verifies MD5, replies
+// SUCCESS and reboots into the new image. ABORT (either side) cancels.
+
+message OtaControl {
+  enum Op {
+    BEGIN = 0;
+    END = 1;
+    ABORT = 2;
+  }
+  Op op = 1;
+  uint32 total_size = 2;   // firmware image size in bytes (BEGIN)
+  string md5 = 3;          // hex MD5 of the full image (BEGIN)
+}
+
+message OtaData {
+  uint32 offset = 1;       // byte offset of this chunk; must be sequential
+  bytes data = 2;          // chunk payload (max 192 bytes, see mesh.options)
+}
+
+message OtaStatus {
+  enum State {
+    IDLE = 0;
+    READY = 1;        // BEGIN accepted, send data
+    IN_PROGRESS = 2;  // periodic ack; next_offset = bytes flashed so far
+    SUCCESS = 3;      // image verified, rebooting
+    ERROR = 4;        // aborted; message says why
+  }
+  State state = 1;
+  uint32 next_offset = 2;
+  string message = 3;
 }
 
 // Standard chat text message

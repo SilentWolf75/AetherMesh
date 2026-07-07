@@ -10,6 +10,20 @@
 #endif
 
 /* Enum definitions */
+typedef enum _aethermesh_OtaControl_Op {
+    aethermesh_OtaControl_Op_BEGIN = 0,
+    aethermesh_OtaControl_Op_END = 1,
+    aethermesh_OtaControl_Op_ABORT = 2
+} aethermesh_OtaControl_Op;
+
+typedef enum _aethermesh_OtaStatus_State {
+    aethermesh_OtaStatus_State_IDLE = 0,
+    aethermesh_OtaStatus_State_READY = 1, /* BEGIN accepted, send data */
+    aethermesh_OtaStatus_State_IN_PROGRESS = 2, /* periodic ack; next_offset = bytes flashed so far */
+    aethermesh_OtaStatus_State_SUCCESS = 3, /* image verified, rebooting */
+    aethermesh_OtaStatus_State_ERROR = 4 /* aborted; message says why */
+} aethermesh_OtaStatus_State;
+
 typedef enum _aethermesh_RouteDiscovery_Type {
     aethermesh_RouteDiscovery_Type_REQUEST = 0,
     aethermesh_RouteDiscovery_Type_REPLY = 1
@@ -30,6 +44,24 @@ typedef enum _aethermesh_DeliveryStatus_Reason {
 } aethermesh_DeliveryStatus_Reason;
 
 /* Struct definitions */
+typedef struct _aethermesh_OtaControl {
+    aethermesh_OtaControl_Op op;
+    uint32_t total_size; /* firmware image size in bytes (BEGIN) */
+    char md5[33]; /* hex MD5 of the full image (BEGIN) */
+} aethermesh_OtaControl;
+
+typedef PB_BYTES_ARRAY_T(192) aethermesh_OtaData_data_t;
+typedef struct _aethermesh_OtaData {
+    uint32_t offset; /* byte offset of this chunk; must be sequential */
+    aethermesh_OtaData_data_t data; /* chunk payload (max 192 bytes, see mesh.options) */
+} aethermesh_OtaData;
+
+typedef struct _aethermesh_OtaStatus {
+    aethermesh_OtaStatus_State state;
+    uint32_t next_offset;
+    char message[40];
+} aethermesh_OtaStatus;
+
 /* Standard chat text message */
 typedef struct _aethermesh_TextMessage {
     char content[168];
@@ -124,6 +156,9 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_AuthRequest auth_request;
         aethermesh_AuthResponse auth_response;
         aethermesh_DeliveryStatus delivery_status;
+        aethermesh_OtaControl ota_control;
+        aethermesh_OtaData ota_data;
+        aethermesh_OtaStatus ota_status;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
@@ -137,6 +172,14 @@ extern "C" {
 #endif
 
 /* Helper constants for enums */
+#define _aethermesh_OtaControl_Op_MIN aethermesh_OtaControl_Op_BEGIN
+#define _aethermesh_OtaControl_Op_MAX aethermesh_OtaControl_Op_ABORT
+#define _aethermesh_OtaControl_Op_ARRAYSIZE ((aethermesh_OtaControl_Op)(aethermesh_OtaControl_Op_ABORT+1))
+
+#define _aethermesh_OtaStatus_State_MIN aethermesh_OtaStatus_State_IDLE
+#define _aethermesh_OtaStatus_State_MAX aethermesh_OtaStatus_State_ERROR
+#define _aethermesh_OtaStatus_State_ARRAYSIZE ((aethermesh_OtaStatus_State)(aethermesh_OtaStatus_State_ERROR+1))
+
 #define _aethermesh_RouteDiscovery_Type_MIN aethermesh_RouteDiscovery_Type_REQUEST
 #define _aethermesh_RouteDiscovery_Type_MAX aethermesh_RouteDiscovery_Type_REPLY
 #define _aethermesh_RouteDiscovery_Type_ARRAYSIZE ((aethermesh_RouteDiscovery_Type)(aethermesh_RouteDiscovery_Type_REPLY+1))
@@ -149,6 +192,11 @@ extern "C" {
 #define _aethermesh_DeliveryStatus_Reason_MAX aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED
 #define _aethermesh_DeliveryStatus_Reason_ARRAYSIZE ((aethermesh_DeliveryStatus_Reason)(aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED+1))
 
+
+#define aethermesh_OtaControl_op_ENUMTYPE aethermesh_OtaControl_Op
+
+
+#define aethermesh_OtaStatus_state_ENUMTYPE aethermesh_OtaStatus_State
 
 
 
@@ -164,6 +212,9 @@ extern "C" {
 
 /* Initializer values for message structs */
 #define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0}
+#define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, ""}
+#define aethermesh_OtaData_init_default          {0, {0, {0}}}
+#define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
 #define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
@@ -173,6 +224,9 @@ extern "C" {
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0}
+#define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, ""}
+#define aethermesh_OtaData_init_zero             {0, {0, {0}}}
+#define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
 #define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
@@ -183,6 +237,14 @@ extern "C" {
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
 /* Field tags (for use in manual encoding/decoding) */
+#define aethermesh_OtaControl_op_tag             1
+#define aethermesh_OtaControl_total_size_tag     2
+#define aethermesh_OtaControl_md5_tag            3
+#define aethermesh_OtaData_offset_tag            1
+#define aethermesh_OtaData_data_tag              2
+#define aethermesh_OtaStatus_state_tag           1
+#define aethermesh_OtaStatus_next_offset_tag     2
+#define aethermesh_OtaStatus_message_tag         3
 #define aethermesh_TextMessage_content_tag       1
 #define aethermesh_TextMessage_channel_tag       2
 #define aethermesh_TextMessage_is_encrypted_tag  3
@@ -238,6 +300,9 @@ extern "C" {
 #define aethermesh_MeshPacket_auth_request_tag   12
 #define aethermesh_MeshPacket_auth_response_tag  13
 #define aethermesh_MeshPacket_delivery_status_tag 17
+#define aethermesh_MeshPacket_ota_control_tag    18
+#define aethermesh_MeshPacket_ota_data_tag       19
+#define aethermesh_MeshPacket_ota_status_tag     20
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
@@ -261,7 +326,10 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,auth_response,payload.auth_response)
 X(a, STATIC,   SINGULAR, FLOAT,    rx_rssi,          14) \
 X(a, STATIC,   SINGULAR, FLOAT,    rx_snr,           15) \
 X(a, STATIC,   SINGULAR, UINT32,   retry_count,      16) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,delivery_status,payload.delivery_status),  17)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,delivery_status,payload.delivery_status),  17) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_control,payload.ota_control),  18) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_data,payload.ota_data),  19) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_status,payload.ota_status),  20)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -272,6 +340,29 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,delivery_status,payload.delivery_sta
 #define aethermesh_MeshPacket_payload_auth_request_MSGTYPE aethermesh_AuthRequest
 #define aethermesh_MeshPacket_payload_auth_response_MSGTYPE aethermesh_AuthResponse
 #define aethermesh_MeshPacket_payload_delivery_status_MSGTYPE aethermesh_DeliveryStatus
+#define aethermesh_MeshPacket_payload_ota_control_MSGTYPE aethermesh_OtaControl
+#define aethermesh_MeshPacket_payload_ota_data_MSGTYPE aethermesh_OtaData
+#define aethermesh_MeshPacket_payload_ota_status_MSGTYPE aethermesh_OtaStatus
+
+#define aethermesh_OtaControl_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
+X(a, STATIC,   SINGULAR, UINT32,   total_size,        2) \
+X(a, STATIC,   SINGULAR, STRING,   md5,               3)
+#define aethermesh_OtaControl_CALLBACK NULL
+#define aethermesh_OtaControl_DEFAULT NULL
+
+#define aethermesh_OtaData_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   offset,            1) \
+X(a, STATIC,   SINGULAR, BYTES,    data,              2)
+#define aethermesh_OtaData_CALLBACK NULL
+#define aethermesh_OtaData_DEFAULT NULL
+
+#define aethermesh_OtaStatus_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    state,             1) \
+X(a, STATIC,   SINGULAR, UINT32,   next_offset,       2) \
+X(a, STATIC,   SINGULAR, STRING,   message,           3)
+#define aethermesh_OtaStatus_CALLBACK NULL
+#define aethermesh_OtaStatus_DEFAULT NULL
 
 #define aethermesh_TextMessage_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   content,           1) \
@@ -348,6 +439,9 @@ X(a, STATIC,   SINGULAR, BOOL,     password_not_set,   3)
 #define aethermesh_AuthResponse_DEFAULT NULL
 
 extern const pb_msgdesc_t aethermesh_MeshPacket_msg;
+extern const pb_msgdesc_t aethermesh_OtaControl_msg;
+extern const pb_msgdesc_t aethermesh_OtaData_msg;
+extern const pb_msgdesc_t aethermesh_OtaStatus_msg;
 extern const pb_msgdesc_t aethermesh_TextMessage_msg;
 extern const pb_msgdesc_t aethermesh_Telemetry_msg;
 extern const pb_msgdesc_t aethermesh_RouteDiscovery_msg;
@@ -359,6 +453,9 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define aethermesh_MeshPacket_fields &aethermesh_MeshPacket_msg
+#define aethermesh_OtaControl_fields &aethermesh_OtaControl_msg
+#define aethermesh_OtaData_fields &aethermesh_OtaData_msg
+#define aethermesh_OtaStatus_fields &aethermesh_OtaStatus_msg
 #define aethermesh_TextMessage_fields &aethermesh_TextMessage_msg
 #define aethermesh_Telemetry_fields &aethermesh_Telemetry_msg
 #define aethermesh_RouteDiscovery_fields &aethermesh_RouteDiscovery_msg
@@ -376,6 +473,9 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshPacket_size               257
 #define aethermesh_NodeConfig_size               112
+#define aethermesh_OtaControl_size               42
+#define aethermesh_OtaData_size                  201
+#define aethermesh_OtaStatus_size                49
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                100
 #define aethermesh_TextMessage_size              205

@@ -34,6 +34,7 @@ struct NodeSettings {
 
 #ifdef ESP32
 #include <Preferences.h>
+#include <Update.h>
 Preferences preferences;
 #endif
 
@@ -750,9 +751,16 @@ void drawSysPage() {
 }
 #endif
 
+// OTA progress owns the screen while a firmware update streams in; declared
+// ahead of its definition further down.
+extern bool otaActive;
+
 // Update the OLED display screen
 void updateDisplay() {
 #if defined(HELTEC_V4)
+    if (otaActive) {
+        return; // drawOtaProgress() renders during firmware updates
+    }
     if (nodeRole == 2) {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
         displayIsOn = false;
@@ -1031,6 +1039,164 @@ void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aetherme
     }
 }
 
+// --- BLE firmware update (OTA). Heltec/ESP32 only: chunks stream over the
+// authenticated BLE link into the inactive OTA app partition (dual-slot
+// default_16MB layout), MD5-verified before reboot. Windowed flow control:
+// the phone sends OTA_WINDOW chunks then waits for our IN_PROGRESS ack.
+bool otaActive = false;
+uint32_t otaExpectedOffset = 0;
+uint32_t otaTotalSize = 0;
+uint32_t otaLastChunkMs = 0;
+uint32_t otaChunksSinceAck = 0;
+static const uint32_t OTA_WINDOW = 4;          // chunks per ack (ring holds 8)
+static const uint32_t OTA_TIMEOUT_MS = 30000;  // abort if the phone goes silent
+
+void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const char* msg) {
+    if (!bleMgr.isDeviceConnected()) return;
+    aethermesh_MeshPacket pkt = aethermesh_MeshPacket_init_zero;
+    pkt.sender_id = localNodeId;
+    pkt.recipient_id = 0;
+    pkt.packet_id = 0;
+    pkt.which_payload = aethermesh_MeshPacket_ota_status_tag;
+    pkt.payload.ota_status.state = state;
+    pkt.payload.ota_status.next_offset = nextOffset;
+    if (msg) {
+        strncpy(pkt.payload.ota_status.message, msg, sizeof(pkt.payload.ota_status.message) - 1);
+    }
+    uint8_t buf[128];
+    pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &pkt)) {
+        bleMgr.sendToPhone(buf, stream.bytes_written);
+    }
+}
+
+#if defined(HELTEC_V4)
+void drawOtaProgress(uint8_t pct, const char* label) {
+    u8g2.setPowerSave(0);
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_7x14_tf);
+    u8g2.drawStr((128 - u8g2.getStrWidth("FIRMWARE UPDATE")) / 2, 20, "FIRMWARE UPDATE");
+    u8g2.drawFrame(14, 30, 100, 12);
+    u8g2.drawBox(16, 32, (uint8_t)((uint16_t)pct * 96 / 100), 8);
+    u8g2.setFont(u8g2_font_6x10_tf);
+    char pctStr[24];
+    snprintf(pctStr, sizeof(pctStr), "%u%%  %s", pct, label ? label : "");
+    u8g2.drawStr((128 - u8g2.getStrWidth(pctStr)) / 2, 56, pctStr);
+    u8g2.sendBuffer();
+}
+#endif
+
+void otaAbort(const char* reason) {
+#if defined(HELTEC_V4)
+    if (otaActive) {
+        Update.abort();
+    }
+#endif
+    otaActive = false;
+    otaExpectedOffset = 0;
+    Serial.printf("OTA aborted: %s\n", reason ? reason : "");
+    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, otaExpectedOffset, reason);
+}
+
+void handleOtaControl(const aethermesh_OtaControl& ctl) {
+#if defined(HELTEC_V4)
+    switch (ctl.op) {
+        case aethermesh_OtaControl_Op_BEGIN: {
+            if (otaActive) {
+                Update.abort();
+                otaActive = false;
+            }
+            if (ctl.total_size == 0) {
+                sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "Zero image size");
+                return;
+            }
+            if (!Update.begin(ctl.total_size, U_FLASH)) {
+                sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, Update.errorString());
+                return;
+            }
+            if (ctl.md5[0] != '\0') {
+                Update.setMD5(ctl.md5);
+            }
+            otaActive = true;
+            otaExpectedOffset = 0;
+            otaTotalSize = ctl.total_size;
+            otaLastChunkMs = millis();
+            otaChunksSinceAck = 0;
+            Serial.printf("OTA begin: %u bytes, md5=%s\n", ctl.total_size, ctl.md5);
+            drawOtaProgress(0, "receiving");
+            sendOtaStatus(aethermesh_OtaStatus_State_READY, 0, "");
+            break;
+        }
+        case aethermesh_OtaControl_Op_END: {
+            if (!otaActive) {
+                sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
+                return;
+            }
+            if (otaExpectedOffset != otaTotalSize) {
+                otaAbort("Incomplete image at END");
+                return;
+            }
+            if (Update.end(true)) {
+                otaActive = false;
+                Serial.println("OTA success. Rebooting into new firmware...");
+                drawOtaProgress(100, "rebooting");
+                sendOtaStatus(aethermesh_OtaStatus_State_SUCCESS, otaTotalSize, "Rebooting");
+                delay(800); // let the notify flush
+                ESP.restart();
+            } else {
+                otaAbort(Update.errorString());
+            }
+            break;
+        }
+        case aethermesh_OtaControl_Op_ABORT:
+        default:
+            otaAbort("Cancelled by phone");
+            break;
+    }
+#else
+    (void)ctl;
+    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "OTA not supported on this board");
+#endif
+}
+
+void handleOtaData(const aethermesh_OtaData& od) {
+#if defined(HELTEC_V4)
+    if (!otaActive) {
+        sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
+        return;
+    }
+    if (od.offset != otaExpectedOffset) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Offset gap at %u", (unsigned)od.offset);
+        otaAbort(msg);
+        return;
+    }
+    size_t written = Update.write((uint8_t*)od.data.bytes, od.data.size);
+    if (written != od.data.size) {
+        otaAbort(Update.errorString());
+        return;
+    }
+    otaExpectedOffset += od.data.size;
+    otaLastChunkMs = millis();
+
+    if (++otaChunksSinceAck >= OTA_WINDOW || otaExpectedOffset == otaTotalSize) {
+        otaChunksSinceAck = 0;
+        sendOtaStatus(aethermesh_OtaStatus_State_IN_PROGRESS, otaExpectedOffset, "");
+    }
+
+    // OLED progress roughly every 2%
+    static uint8_t lastDrawnPct = 255;
+    uint8_t pct = (uint8_t)((uint64_t)otaExpectedOffset * 100 / otaTotalSize);
+    if (pct != lastDrawnPct && (pct % 2 == 0)) {
+        lastDrawnPct = pct;
+        drawOtaProgress(pct, "receiving");
+    }
+#else
+    (void)od;
+    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "OTA not supported on this board");
+#endif
+}
+
 // Callback: Phone BLE -> LoRa / Router
 void onBlePacketReceived(uint8_t* data, size_t len) {
     Serial.print("BLE Packet received from Phone. Size: ");
@@ -1105,6 +1271,17 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                 Serial.println("Device password update failed: Incorrect current password.");
                 sendAuthResponse(false, "Incorrect current password", false);
             }
+            return;
+        }
+
+        // Firmware update stream (BLE-only, requires the authenticated session
+        // established above; never forwarded to LoRa)
+        if (packet.which_payload == aethermesh_MeshPacket_ota_control_tag) {
+            handleOtaControl(packet.payload.ota_control);
+            return;
+        }
+        if (packet.which_payload == aethermesh_MeshPacket_ota_data_tag) {
+            handleOtaData(packet.payload.ota_data);
             return;
         }
 
@@ -1449,6 +1626,11 @@ void loop() {
     if (millis() - lastDisplayRefresh > 1000) {
         lastDisplayRefresh = millis();
         updateDisplay();
+    }
+
+    // Abort a stalled firmware update (phone app killed / walked away)
+    if (otaActive && (millis() - otaLastChunkMs > OTA_TIMEOUT_MS)) {
+        otaAbort("Transfer timed out");
     }
 
     radioMgr.loop();

@@ -287,14 +287,18 @@ class BleConnectionManager(private val context: Context) {
         }
     }
 
-    // Write packet to TX characteristic
+    // Write packet to TX characteristic. Synchronized: the OTA chunk stream and
+    // periodic sends (GPS share, telemetry) run on different threads, and the
+    // characteristic's value is shared mutable state - unsynchronized calls can
+    // clobber each other's payload before the write is dispatched.
+    @Synchronized
     fun sendPacket(packetBytes: ByteArray): Boolean {
         val gatt = bluetoothGatt ?: return false
         val char = txCharacteristic ?: return false
-        
+
         char.value = packetBytes
         char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        
+
         return gatt.writeCharacteristic(char)
     }
 

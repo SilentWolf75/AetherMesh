@@ -141,6 +141,20 @@ class AetherMeshRepository(private val context: Context) {
     private var rangeTestJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
 
+    // --- BLE firmware update (OTA) state ---
+    data class OtaState(
+        val active: Boolean = false,
+        val progress: Int = 0,          // 0-100
+        val status: String = "",
+        val error: Boolean = false,
+        val done: Boolean = false
+    )
+    private val _otaState = MutableStateFlow(OtaState())
+    val otaState: StateFlow<OtaState> = _otaState.asStateFlow()
+    private val otaStatusChannel =
+        kotlinx.coroutines.channels.Channel<com.example.aethermesh.proto.OtaStatus>(kotlinx.coroutines.channels.Channel.BUFFERED)
+    private var otaJob: Job? = null
+
     // Single thread for the heavy DB reads in refreshData: keeps queries off the
     // main thread (jank/ANR with a large history) while preserving their order.
     private val dbDispatcher =
@@ -404,6 +418,10 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         when (packet.payloadCase) {
+            MeshPacket.PayloadCase.OTA_STATUS -> {
+                // Firmware-update handshake/acks from the connected node
+                otaStatusChannel.trySend(packet.otaStatus)
+            }
             MeshPacket.PayloadCase.TEXT -> {
                 val textMsg = packet.text
                 val isEncrypted = textMsg.isEncrypted
@@ -714,6 +732,159 @@ class AetherMeshRepository(private val context: Context) {
             .build()
 
         return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    // --- BLE firmware update (OTA) sender ---
+    // Streams a firmware image to the connected node in 192-byte chunks,
+    // OTA_WINDOW chunks per node ack (the node's BLE rx ring holds 8, and our
+    // writes are WRITE_TYPE_NO_RESPONSE, so flow control is on us). The node
+    // MD5-verifies the complete image before it reboots into it.
+    private val OTA_CHUNK = 192
+    private val OTA_WINDOW = 4
+
+    fun startFirmwareUpdate(firmware: ByteArray) {
+        if (_otaState.value.active) return
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
+            _otaState.value = OtaState(error = true, status = "Not connected/authenticated")
+            return
+        }
+        val nodeId = bleManager.connectedNodeId
+
+        otaJob = repositoryScope.launch(Dispatchers.IO) {
+            try {
+                _otaState.value = OtaState(active = true, status = "Preparing...")
+
+                val md5 = MessageDigest.getInstance("MD5").digest(firmware)
+                    .joinToString("") { "%02x".format(it) }
+
+                // Drain stale statuses from a previous attempt
+                while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
+
+                sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5)
+                awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 10_000, "start acknowledgment")
+
+                _otaState.value = OtaState(active = true, status = "Uploading...")
+                var offset = 0
+                while (offset < firmware.size) {
+                    var windowEndOffset = offset
+                    for (w in 0 until OTA_WINDOW) {
+                        if (windowEndOffset >= firmware.size) break
+                        val len = minOf(OTA_CHUNK, firmware.size - windowEndOffset)
+                        val chunk = com.example.aethermesh.proto.OtaData.newBuilder()
+                            .setOffset(windowEndOffset)
+                            .setData(com.google.protobuf.ByteString.copyFrom(firmware, windowEndOffset, len))
+                        val pkt = MeshPacket.newBuilder()
+                            .setSenderId(nodeId.toInt())
+                            .setRecipientId(nodeId.toInt())
+                            .setHopLimit(1)
+                            .setOtaData(chunk)
+                            .build()
+                            .toByteArray()
+                        var tries = 0
+                        while (!bleManager.sendPacket(pkt)) {
+                            if (++tries > 100) throw Exception("BLE write failed repeatedly")
+                            delay(15)
+                        }
+                        windowEndOffset += len
+                        delay(8) // pace no-response writes
+                    }
+
+                    val ack = awaitOtaProgress(10_000)
+                    if (ack != windowEndOffset) {
+                        throw Exception("Node acked $ack, expected $windowEndOffset")
+                    }
+                    offset = windowEndOffset
+                    _otaState.value = OtaState(
+                        active = true,
+                        progress = (offset.toLong() * 100 / firmware.size).toInt(),
+                        status = "Uploading... ${offset / 1024} / ${firmware.size / 1024} kB"
+                    )
+                }
+
+                _otaState.value = OtaState(active = true, progress = 100, status = "Verifying...")
+                sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.END, 0, "")
+                awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.SUCCESS, 20_000, "verification")
+
+                _otaState.value = OtaState(
+                    progress = 100, done = true,
+                    status = "Update verified - node is rebooting into the new firmware"
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                try {
+                    sendOtaControl(bleManager.connectedNodeId, com.example.aethermesh.proto.OtaControl.Op.ABORT, 0, "")
+                } catch (_: Exception) {}
+                _otaState.value = OtaState(error = true, status = "Update cancelled")
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "OTA failed: ${e.message}")
+                try {
+                    sendOtaControl(bleManager.connectedNodeId, com.example.aethermesh.proto.OtaControl.Op.ABORT, 0, "")
+                } catch (_: Exception) {}
+                _otaState.value = OtaState(error = true, status = "Update failed: ${e.message}")
+            }
+        }
+    }
+
+    fun cancelFirmwareUpdate() {
+        otaJob?.cancel()
+    }
+
+    fun resetOtaState() {
+        if (!_otaState.value.active) _otaState.value = OtaState()
+    }
+
+    private fun sendOtaControl(nodeId: Long, op: com.example.aethermesh.proto.OtaControl.Op, size: Int, md5: String) {
+        val ctl = com.example.aethermesh.proto.OtaControl.newBuilder()
+            .setOp(op)
+            .setTotalSize(size)
+            .setMd5(md5)
+        val pkt = MeshPacket.newBuilder()
+            .setSenderId(nodeId.toInt())
+            .setRecipientId(nodeId.toInt())
+            .setHopLimit(1)
+            .setOtaControl(ctl)
+            .build()
+            .toByteArray()
+        if (!bleManager.sendPacket(pkt)) {
+            throw Exception("BLE write failed (${op.name})")
+        }
+    }
+
+    // Wait for a specific terminal state; ERROR from the node always throws.
+    private suspend fun awaitOtaState(
+        wanted: com.example.aethermesh.proto.OtaStatus.State,
+        timeoutMs: Long,
+        what: String
+    ) {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                val st = otaStatusChannel.receive()
+                when (st.state) {
+                    wanted -> return@withTimeoutOrNull
+                    com.example.aethermesh.proto.OtaStatus.State.ERROR ->
+                        throw Exception(st.message.ifEmpty { "node reported error" })
+                    else -> { /* keep waiting */ }
+                }
+            }
+        } ?: throw Exception("Timed out waiting for $what")
+    }
+
+    // Wait for the next IN_PROGRESS ack and return the node's flashed offset.
+    private suspend fun awaitOtaProgress(timeoutMs: Long): Int {
+        val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            var acked = -1
+            while (acked < 0) {
+                val st = otaStatusChannel.receive()
+                when (st.state) {
+                    com.example.aethermesh.proto.OtaStatus.State.IN_PROGRESS -> acked = st.nextOffset
+                    com.example.aethermesh.proto.OtaStatus.State.ERROR ->
+                        throw Exception(st.message.ifEmpty { "node reported error" })
+                    else -> { /* keep waiting */ }
+                }
+            }
+            acked
+        }
+        return result ?: throw Exception("Timed out waiting for chunk ack")
     }
 
     // Post a system notification for an incoming chat message, Meshtastic-style:

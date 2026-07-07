@@ -9,6 +9,15 @@
 PB_BIND(aethermesh_MeshPacket, aethermesh_MeshPacket, AUTO)
 
 
+PB_BIND(aethermesh_OtaControl, aethermesh_OtaControl, AUTO)
+
+
+PB_BIND(aethermesh_OtaData, aethermesh_OtaData, AUTO)
+
+
+PB_BIND(aethermesh_OtaStatus, aethermesh_OtaStatus, AUTO)
+
+
 PB_BIND(aethermesh_TextMessage, aethermesh_TextMessage, AUTO)
 
 
@@ -31,6 +40,10 @@ PB_BIND(aethermesh_AuthRequest, aethermesh_AuthRequest, AUTO)
 
 
 PB_BIND(aethermesh_AuthResponse, aethermesh_AuthResponse, AUTO)
+
+
+
+
 
 
 

@@ -8,3 +8,6 @@ aethermesh.AuthRequest.new_password max_size:32
 aethermesh.AuthResponse.message max_size:32
 
 aethermesh.NodeConfig.config_password max_size:33
+aethermesh.OtaControl.md5 max_size:33
+aethermesh.OtaData.data max_size:192
+aethermesh.OtaStatus.message max_size:40

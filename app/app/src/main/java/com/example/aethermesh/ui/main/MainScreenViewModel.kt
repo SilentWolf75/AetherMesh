@@ -150,6 +150,12 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     fun getAllRangeTestLogs() = repository.getAllRangeTestLogs()
 
+    // BLE firmware update (OTA)
+    val otaState = repository.otaState
+    fun startFirmwareUpdate(firmware: ByteArray) = repository.startFirmwareUpdate(firmware)
+    fun cancelFirmwareUpdate() = repository.cancelFirmwareUpdate()
+    fun resetOtaState() = repository.resetOtaState()
+
     fun lastPhoneFix() = repository.lastPhoneFix()
 
     fun getTelemetryHistory(nodeId: Long) = repository.getTelemetryHistory(nodeId)
