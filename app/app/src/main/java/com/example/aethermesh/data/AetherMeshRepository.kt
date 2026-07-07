@@ -760,8 +760,25 @@ class AetherMeshRepository(private val context: Context) {
                 // Drain stale statuses from a previous attempt
                 while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
 
-                sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5)
-                awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 10_000, "start acknowledgment")
+                // The node erases its OTA flash partition before it can reply
+                // READY, which can take 10-20s; and if it just rebooted from a
+                // prior update the BLE session may still be re-authenticating.
+                // So allow a generous window and retry BEGIN once.
+                var beganOk = false
+                for (attempt in 1..2) {
+                    sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5)
+                    try {
+                        awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 25_000, "start acknowledgment")
+                        beganOk = true
+                        break
+                    } catch (e: Exception) {
+                        if (attempt == 2) throw e
+                        _otaState.value = OtaState(active = true, status = "Retrying start...")
+                        delay(1500)
+                        while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
+                    }
+                }
+                if (!beganOk) throw Exception("Node never became ready")
 
                 _otaState.value = OtaState(active = true, status = "Uploading...")
                 var offset = 0
