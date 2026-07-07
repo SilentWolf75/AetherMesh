@@ -59,6 +59,35 @@ uint32_t rawBeaconCount = 0;
 bool batteryCharging = false;
 float batteryVoltage = 0.0f; // last measured pack voltage (0 if never measured)
 
+// Recently-heard mesh peers, for the OLED "Nodes" count. Small fixed table;
+// a peer counts as active if heard within the last 5 minutes.
+struct PeerSeen { uint32_t id; uint32_t lastMs; };
+static PeerSeen peersSeen[12] = {};
+static const uint32_t PEER_ACTIVE_WINDOW_MS = 5UL * 60UL * 1000UL;
+
+void notePeerHeard(uint32_t id) {
+    if (id == 0 || id == localNodeId) return;
+    int freeSlot = -1;
+    uint32_t oldest = 0xFFFFFFFF;
+    int oldestIdx = 0;
+    for (int i = 0; i < 12; i++) {
+        if (peersSeen[i].id == id) { peersSeen[i].lastMs = millis(); return; }
+        if (peersSeen[i].id == 0 && freeSlot < 0) freeSlot = i;
+        if (peersSeen[i].lastMs < oldest) { oldest = peersSeen[i].lastMs; oldestIdx = i; }
+    }
+    int slot = (freeSlot >= 0) ? freeSlot : oldestIdx;
+    peersSeen[slot].id = id;
+    peersSeen[slot].lastMs = millis();
+}
+
+uint8_t countActivePeers() {
+    uint8_t n = 0;
+    for (int i = 0; i < 12; i++) {
+        if (peersSeen[i].id != 0 && (millis() - peersSeen[i].lastMs) < PEER_ACTIVE_WINDOW_MS) n++;
+    }
+    return n;
+}
+
 // Connected node: range-test PINGs are sent once. Retransmitting from the phone
 // node collides with PONG replies on the same half-duplex radio; the target
 // already retries PONG and re-queues on duplicate PING.
@@ -460,6 +489,59 @@ uint8_t readBatteryLevel() {
 #endif
 }
 
+#if defined(HELTEC_V4)
+// Boot splash: mesh glyph + wordmark + firmware version. wavePhase pulses the
+// radio arcs while setup runs.
+void drawBootSplash(uint8_t wavePhase) {
+    u8g2.clearBuffer();
+
+    // Mesh glyph: three linked nodes, radio waves rippling from the top one
+    u8g2.drawDisc(64, 16, 3);
+    u8g2.drawDisc(44, 28, 2);
+    u8g2.drawDisc(84, 28, 2);
+    u8g2.drawLine(64, 16, 44, 28);
+    u8g2.drawLine(64, 16, 84, 28);
+    u8g2.drawLine(44, 28, 84, 28);
+    uint8_t r = 7 + (wavePhase % 3) * 4;
+    u8g2.drawCircle(64, 16, r, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
+    if (r > 7) {
+        u8g2.drawCircle(64, 16, r - 4, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
+    }
+
+    // Wordmark, centered (fall back to a smaller face if it would clip)
+    u8g2.setFont(u8g2_font_ncenB14_tr);
+    const char* title = "AetherMesh";
+    if (u8g2.getStrWidth(title) > 124) {
+        u8g2.setFont(u8g2_font_ncenB10_tr);
+    }
+    u8g2.drawStr((128 - u8g2.getStrWidth(title)) / 2, 50, title);
+
+    // Firmware version, centered at the bottom — lets you check what a node
+    // runs without the app (mismatched builds degrade the mesh)
+    u8g2.setFont(u8g2_font_5x7_tf);
+    char ver[28];
+    snprintf(ver, sizeof(ver), "v%s", AETHERMESH_FW_VERSION);
+    u8g2.drawStr((128 - u8g2.getStrWidth(ver)) / 2, 62, ver);
+
+    u8g2.sendBuffer();
+}
+
+// Battery glyph at (x, y): 20x9 body + terminal nub, fill proportional to pct,
+// lightning bolt drawn to the left while charging.
+void drawBatteryIcon(uint8_t x, uint8_t y, uint8_t pct, bool charging) {
+    u8g2.drawFrame(x, y, 20, 9);
+    u8g2.drawBox(x + 20, y + 2, 2, 5);
+    uint8_t fill = (uint8_t)(((uint16_t)pct * 16) / 100);
+    if (fill > 16) fill = 16;
+    if (fill > 0) u8g2.drawBox(x + 2, y + 2, fill, 5);
+    if (charging) {
+        u8g2.drawLine(x - 4, y, x - 8, y + 5);
+        u8g2.drawLine(x - 8, y + 5, x - 5, y + 5);
+        u8g2.drawLine(x - 5, y + 5, x - 9, y + 10);
+    }
+}
+#endif
+
 // Update the OLED display screen
 void updateDisplay() {
 #if defined(HELTEC_V4)
@@ -540,64 +622,68 @@ void updateDisplay() {
     }
 
     u8g2.clearBuffer();
-    
-    // Header
     u8g2.setFont(u8g2_font_6x10_tf);
+
+    // Header: name + short id (left), battery icon w/ charge bolt (right).
+    // The old layout printed the name twice (header AND a "Name:" line).
+    char nameHeader[24];
     if (strlen(nodeCustomName) > 0) {
-        char nameHeader[30];
-        snprintf(nameHeader, sizeof(nameHeader), "Aether: %.12s", nodeCustomName);
-        u8g2.drawStr(0, 10, nameHeader);
+        snprintf(nameHeader, sizeof(nameHeader), "%.9s 0x%04X", nodeCustomName, (unsigned int)(localNodeId & 0xFFFF));
     } else {
-        u8g2.drawStr(0, 10, "AetherMesh Node");
+        snprintf(nameHeader, sizeof(nameHeader), "Node 0x%08X", localNodeId);
     }
-
-    // Draw battery level right-aligned (with a charge marker when charging)
-    uint8_t batt = readBatteryLevel();
-    char battStr[16];
-    snprintf(battStr, sizeof(battStr), "%s%d%%", batteryCharging ? "+" : "BAT:", batt);
-    u8g2.drawStr(82, 10, battStr);
-
+    u8g2.drawStr(0, 10, nameHeader);
+    drawBatteryIcon(105, 1, readBatteryLevel(), batteryCharging);
     u8g2.drawHLine(0, 12, 128);
-    
-    // Node Info
-    char nodeStr[40];
-    if (strlen(nodeCustomName) > 0) {
-        snprintf(nodeStr, sizeof(nodeStr), "Name: %s (0x%04X)", nodeCustomName, (unsigned int)(localNodeId & 0xFFFF));
-    } else {
-        snprintf(nodeStr, sizeof(nodeStr), "Node ID: 0x%08X", localNodeId);
-    }
-    u8g2.drawStr(0, 23, nodeStr);
-    
-    // BLE connection status
-    if (bleMgr.isDeviceConnected()) {
-        u8g2.drawStr(0, 34, "BLE: Connected");
-    } else {
-        u8g2.drawStr(0, 34, "BLE: Advertising...");
-    }
-    
-    // Radio stats
-    char statsStr[32];
-    snprintf(statsStr, sizeof(statsStr), "RX: %u | TX: %u", rxPacketCount, txPacketCount);
-    u8g2.drawStr(0, 45, statsStr);
-    
-    // Live radio config (compare across nodes: frequency / SF / bandwidth)
+
+    // Radio config (compare across nodes: SF / bandwidth / frequency)
     char cfgStr[32];
-    snprintf(cfgStr, sizeof(cfgStr), "F%.1f S%u B%d R%.0f", radioMgr.getFrequency(),
-            (unsigned)radioMgr.getSpreadingFactor(), (int)radioMgr.getBandwidth(),
-            radioMgr.getLastRssi());
-    u8g2.drawStr(0, 56, cfgStr);
-    
+    snprintf(cfgStr, sizeof(cfgStr), "SF%u BW%d %.1fMHz",
+             (unsigned)radioMgr.getSpreadingFactor(), (int)radioMgr.getBandwidth(),
+             radioMgr.getFrequency());
+    u8g2.drawStr(0, 23, cfgStr);
+
+    // BLE state (left) + last received signal (right)
+    u8g2.drawStr(0, 34, bleMgr.isDeviceConnected() ? "BLE Connected" : "BLE Advertising");
+    float lastRssi = radioMgr.getLastRssi();
+    if (lastRssi != 0.0f) {
+        char rssiStr[12];
+        snprintf(rssiStr, sizeof(rssiStr), "%.0fdB", lastRssi);
+        u8g2.drawStr(128 - (int)u8g2.getStrWidth(rssiStr), 34, rssiStr);
+    }
+
+    // Traffic + how many mesh peers were heard in the last 5 minutes
+    char statsStr[32];
+    snprintf(statsStr, sizeof(statsStr), "RX %u TX %u Nodes %u", rxPacketCount, txPacketCount, countActivePeers());
+    u8g2.drawStr(0, 45, statsStr);
+
     // GPS Status line
     char gpsStr[32];
     if (gps.location.isValid()) {
-        snprintf(gpsStr, sizeof(gpsStr), "GPS: %.4f, %.4f", gps.location.lat(), gps.location.lng());
+        snprintf(gpsStr, sizeof(gpsStr), "GPS %.4f,%.4f", gps.location.lat(), gps.location.lng());
     } else if (hasInheritedLocation && (millis() - lastInheritedTime < 300000)) {
-        snprintf(gpsStr, sizeof(gpsStr), "PH_GPS: %.4f, %.4f", inheritedLat, inheritedLon);
+        snprintf(gpsStr, sizeof(gpsStr), "PhGPS %.4f,%.4f", inheritedLat, inheritedLon);
     } else {
-        snprintf(gpsStr, sizeof(gpsStr), "GPS: No Lock (%lu S)", (unsigned long)gps.satellites.value());
+        snprintf(gpsStr, sizeof(gpsStr), "GPS No Lock (%lu sat)", (unsigned long)gps.satellites.value());
     }
-    u8g2.drawStr(0, 64, gpsStr);
-    
+    u8g2.drawStr(0, 56, gpsStr);
+
+    // Footer: uptime (left) + firmware version (right), small font
+    u8g2.setFont(u8g2_font_5x7_tf);
+    uint32_t upSec = millis() / 1000UL;
+    char upStr[16];
+    if (upSec < 3600) {
+        snprintf(upStr, sizeof(upStr), "Up %lum", (unsigned long)(upSec / 60));
+    } else if (upSec < 86400) {
+        snprintf(upStr, sizeof(upStr), "Up %luh%02lum", (unsigned long)(upSec / 3600), (unsigned long)((upSec % 3600) / 60));
+    } else {
+        snprintf(upStr, sizeof(upStr), "Up %lud%luh", (unsigned long)(upSec / 86400), (unsigned long)((upSec % 86400) / 3600));
+    }
+    u8g2.drawStr(0, 64, upStr);
+    char verStr[24];
+    snprintf(verStr, sizeof(verStr), "v%s", AETHERMESH_FW_VERSION);
+    u8g2.drawStr(128 - (int)u8g2.getStrWidth(verStr), 64, verStr);
+
     u8g2.sendBuffer();
 #endif
 }
@@ -605,12 +691,13 @@ void updateDisplay() {
 // Callback: LoRa -> Phone / Router
 void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
     rxPacketCount++;
-    
+
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     bool decodeSuccess = pb_decode(&stream, aethermesh_MeshPacket_fields, &packet);
 
     if (decodeSuccess) {
+        notePeerHeard(packet.sender_id);
         if (packet.which_payload == aethermesh_MeshPacket_telemetry_tag) {
             Serial.printf("{\"event\":\"telemetry\",\"node_id\":%u,\"battery\":%u,\"lat\":%.6f,\"lon\":%.6f,\"rssi\":%.1f,\"snr\":%.1f,\"model\":\"%s\",\"uptime\":%u,\"fw\":\"%s\"}\n",
                           packet.sender_id,
@@ -988,10 +1075,12 @@ void setup() {
     localNodeId = getHardwareNodeId();
     randomSeed(localNodeId);
     
-    // 2. Initialize display if Heltec V4
+    // 2. Initialize display if Heltec V4 — show the boot splash while the
+    // radio/BLE/GPS bring-up below runs
 #if defined(HELTEC_V4)
     u8g2.begin();
-    updateDisplay();
+    drawBootSplash(0);
+    uint32_t splashShownAt = millis();
 #endif
 
     // 3. Initialize GPS serial port and power toggle
@@ -1061,6 +1150,16 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
+#if defined(HELTEC_V4)
+    // Hold the splash ~2.5s total, pulsing the radio waves. The radio is already
+    // live at this point (receive callback armed), so nothing is missed.
+    uint8_t splashPhase = 1;
+    while (millis() - splashShownAt < 2500) {
+        delay(300);
+        drawBootSplash(splashPhase++);
+    }
+#endif
+
     // Start the screen-timeout window from boot so the display shows initially
     lastDisplayActivityTime = millis();
     updateDisplay();
