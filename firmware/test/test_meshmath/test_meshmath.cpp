@@ -44,6 +44,61 @@ void test_backoff_monotonic() {
     }
 }
 
+void test_blur_zero_radius_passthrough() {
+    float lat, lon;
+    blurPosition(38.812345f, -94.912345f, 0, lat, lon);
+    TEST_ASSERT_EQUAL_FLOAT(38.812345f, lat);
+    TEST_ASSERT_EQUAL_FLOAT(-94.912345f, lon);
+}
+
+void test_blur_no_fix_passthrough() {
+    // (0,0) means "no GPS fix" in our telemetry; must not be moved to a cell center
+    float lat, lon;
+    blurPosition(0.0f, 0.0f, 1000, lat, lon);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, lat);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, lon);
+}
+
+void test_blur_within_radius_per_axis() {
+    // Reported cell center must be within +/-radius of the true position on each axis
+    const uint32_t radii[] = {100, 500, 1000, 5000};
+    const float positions[][2] = {
+        {38.8123f, -94.9123f}, {-33.8688f, 151.2093f}, {64.1466f, -21.9426f}
+    };
+    for (uint32_t r = 0; r < 4; r++) {
+        for (int p = 0; p < 3; p++) {
+            float lat, lon;
+            blurPosition(positions[p][0], positions[p][1], radii[r], lat, lon);
+            double latErrM = fabs((double)lat - positions[p][0]) * 111320.0;
+            double lonErrM = fabs((double)lon - positions[p][1]) * 111320.0 *
+                             cos(positions[p][0] * 3.14159265358979 / 180.0);
+            // ~2% headroom: float32 rounding + the lon cell being sized at the
+            // snapped (not true) latitude at high-latitude/large-radius combos
+            TEST_ASSERT_TRUE(latErrM <= radii[r] * 1.02 + 2.0);
+            TEST_ASSERT_TRUE(lonErrM <= radii[r] * 1.02 + 2.0);
+        }
+    }
+}
+
+void test_blur_deterministic() {
+    // Same input -> same output every time (no jitter to average away)
+    float lat1, lon1, lat2, lon2;
+    blurPosition(38.8123f, -94.9123f, 800, lat1, lon1);
+    blurPosition(38.8123f, -94.9123f, 800, lat2, lon2);
+    TEST_ASSERT_EQUAL_FLOAT(lat1, lat2);
+    TEST_ASSERT_EQUAL_FLOAT(lon1, lon2);
+}
+
+void test_blur_nearby_points_share_cell() {
+    // Two points ~50m apart with a 1km radius should usually snap to the same
+    // cell center — verifies real snapping (not just rounding the last digit)
+    float latA, lonA, latB, lonB;
+    blurPosition(38.81230f, -94.91230f, 1000, latA, lonA);
+    blurPosition(38.81260f, -94.91260f, 1000, latB, lonB);
+    TEST_ASSERT_EQUAL_FLOAT(latA, latB);
+    TEST_ASSERT_EQUAL_FLOAT(lonA, lonB);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_hopcost_strong_link_is_min);
@@ -52,5 +107,10 @@ int main(int, char**) {
     RUN_TEST(test_backoff_strong_link_shortest);
     RUN_TEST(test_backoff_weak_link_longest);
     RUN_TEST(test_backoff_monotonic);
+    RUN_TEST(test_blur_zero_radius_passthrough);
+    RUN_TEST(test_blur_no_fix_passthrough);
+    RUN_TEST(test_blur_within_radius_per_axis);
+    RUN_TEST(test_blur_deterministic);
+    RUN_TEST(test_blur_nearby_points_share_cell);
     return UNITY_END();
 }

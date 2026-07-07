@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "RadioManager.h"
 #include "MeshRouter.h"
+#include "MeshMath.h"
 #include "BLEManager.h"
 #include "Version.h"
 #include "pb_decode.h"
@@ -26,6 +27,7 @@ struct NodeSettings {
     uint32_t telemetryInterval;
     uint32_t screenTimeoutSecs;
     bool powerSaveMode;
+    uint32_t positionPrecisionM;
 };
 #endif
 
@@ -164,11 +166,15 @@ uint32_t telemetryIntervalSec = 60; // default telemetry broadcast interval in s
 uint32_t screenTimeoutSecs = 30; // Screen timeout in seconds (0 = display off, 0xFFFFFFFF = display always on)
 uint32_t lastDisplayActivityTime = 0;
 bool powerSaveMode = false;
+// Privacy blur radius (m) applied to broadcast positions; 0 = precise.
+// Persisted by saveSettings() directly from this global (not a parameter) so a
+// call site can't accidentally reset it by omitting a trailing argument.
+uint32_t positionPrecisionM = 0;
 float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
 bool hasInheritedLocation = false;
 uint32_t lastInheritedTime = 0;
-static const uint32_t SETTINGS_VERSION = 7;
+static const uint32_t SETTINGS_VERSION = 8;
 
 // OLED message popup state
 char lastMsgText[40] = "";
@@ -200,6 +206,7 @@ void loadSettings() {
         telemetryIntervalSec = preferences.getUInt("tel_interval", 60);
         screenTimeoutSecs = preferences.getUInt("scr_timeout", 30);
         powerSaveMode = preferences.getBool("power_save", false);
+        positionPrecisionM = preferences.getUInt("pos_prec", 0);
     } else {
         loraSF = 9;
         loraBW = 125.0f;
@@ -209,6 +216,7 @@ void loadSettings() {
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
         powerSaveMode = false;
+        positionPrecisionM = 0;
         nodePassword[0] = '\0';
         Serial.println("Radio settings version changed; resetting settings to defaults.");
     }
@@ -229,6 +237,7 @@ void loadSettings() {
     Serial.printf("  Telemetry Interval: %u sec\n", telemetryIntervalSec);
     Serial.printf("  Screen Timeout: %u sec\n", screenTimeoutSecs);
     Serial.printf("  Power Save Mode: %s\n", powerSaveMode ? "ON" : "OFF");
+    Serial.printf("  Position Precision: %u m\n", positionPrecisionM);
 #elif defined(RAK4631) || defined(RAK3401_1W)
     InternalFS.begin();
     File file(InternalFS);
@@ -250,6 +259,7 @@ void loadSettings() {
                 telemetryIntervalSec = settings.telemetryInterval;
                 screenTimeoutSecs = settings.screenTimeoutSecs;
                 powerSaveMode = settings.powerSaveMode;
+                positionPrecisionM = settings.positionPrecisionM;
                 loaded = true;
             }
         }
@@ -267,7 +277,8 @@ void loadSettings() {
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
         powerSaveMode = false;
-        
+        positionPrecisionM = 0;
+
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
     
@@ -283,6 +294,7 @@ void loadSettings() {
     Serial.print("  Telemetry Interval: "); Serial.print(telemetryIntervalSec); Serial.println(" sec");
     Serial.print("  Screen Timeout: "); Serial.print(screenTimeoutSecs); Serial.println(" sec");
     Serial.print("  Power Save Mode: "); Serial.println(powerSaveMode ? "ON" : "OFF");
+    Serial.print("  Position Precision: "); Serial.print(positionPrecisionM); Serial.println(" m");
 #else
     nodeCustomName[0] = '\0';
     nodePassword[0] = '\0';
@@ -312,6 +324,8 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putUInt("tel_interval", telemetryInterval);
     preferences.putUInt("scr_timeout", screenTimeout);
     preferences.putBool("power_save", powerSave);
+    // positionPrecisionM is persisted from the global on purpose (see its decl)
+    preferences.putUInt("pos_prec", positionPrecisionM);
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
@@ -334,7 +348,9 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         settings.telemetryInterval = telemetryInterval;
         settings.screenTimeoutSecs = screenTimeout;
         settings.powerSaveMode = powerSave;
-        
+        // positionPrecisionM is persisted from the global on purpose (see its decl)
+        settings.positionPrecisionM = positionPrecisionM;
+
         file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
         Serial.println("Saved settings to InternalFS.");
@@ -791,6 +807,8 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         if (packet.which_payload == aethermesh_MeshPacket_config_tag && configForLocal) {
             Serial.println("Received local NodeConfig packet from phone via BLE.");
 
+            positionPrecisionM = packet.payload.config.position_precision;
+
             // Save to NVS
             saveSettings(
                 packet.payload.config.node_name,
@@ -852,6 +870,8 @@ void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
     if (nodePassword[0] != '\0' && config.config_password[0] != '\0' &&
         strcmp(config.config_password, nodePassword) == 0) {
         Serial.println("Remote password verified successfully. Applying configuration...");
+
+        positionPrecisionM = config.position_precision;
 
         saveSettings(
             config.node_name,
@@ -1220,9 +1240,13 @@ void loop() {
             }
             
             uint8_t battery = readBatteryLevel();
-            
-            // 1. Broadcast telemetry over LoRa Mesh
-            router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, batteryCharging, batteryVoltage);
+
+            // 1. Broadcast telemetry over LoRa Mesh — position privacy-blurred
+            // when the user configured a precision radius (0 = precise)
+            float txLat = lat;
+            float txLon = lon;
+            meshmath::blurPosition(lat, lon, positionPrecisionM, txLat, txLon);
+            router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, batteryCharging, batteryVoltage, positionPrecisionM);
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
             if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
@@ -1236,11 +1260,15 @@ void loop() {
                 localTelemetryPacket.which_payload = aethermesh_MeshPacket_telemetry_tag;
                 
                 localTelemetryPacket.payload.telemetry.battery_level = battery;
+                // Owner's phone gets the TRUE position (it usually supplied it);
+                // only the LoRa broadcast above is blurred. Precision is included
+                // so the app can show "broadcast as +/- X" on our own node.
                 localTelemetryPacket.payload.telemetry.latitude = lat;
                 localTelemetryPacket.payload.telemetry.longitude = lon;
                 localTelemetryPacket.payload.telemetry.altitude = alt;
                 localTelemetryPacket.payload.telemetry.is_charging = batteryCharging;
                 localTelemetryPacket.payload.telemetry.battery_voltage = batteryVoltage;
+                localTelemetryPacket.payload.telemetry.position_precision = positionPrecisionM;
                 localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
                 strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
                         sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);

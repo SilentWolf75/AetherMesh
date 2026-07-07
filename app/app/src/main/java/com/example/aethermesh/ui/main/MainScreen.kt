@@ -126,6 +126,20 @@ fun isNodeStale(lastActive: Long): Boolean {
     return System.currentTimeMillis() - lastActive > NODE_STALE_MS
 }
 
+// Position privacy blur radius choices (meters); 0 = broadcast precise position
+val POSITION_PRECISION_STEPS = listOf(0, 100, 250, 500, 1000, 2000, 5000, 10000)
+
+fun formatPositionPrecision(meters: Int, imperial: Boolean, language: String): String {
+    if (meters <= 0) return if (language == "Spanish") "Precisa" else "Precise"
+    return if (imperial) {
+        if (meters < 400) "±${(meters * 3.28084 / 10).toInt() * 10} ft"
+        else "±%.1f mi".format(meters / 1609.34)
+    } else {
+        if (meters < 1000) "±$meters m"
+        else "±%.1f km".format(meters / 1000.0)
+    }
+}
+
 fun formatLastHeard(lastActive: Long): String {
     val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
     return when {
@@ -1572,7 +1586,6 @@ fun MapViewCompose(
     val breadcrumbs = remember { mutableStateListOf<GeoPoint>() }
     val mapPrefs = remember { context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE) }
     var darkMapTiles by remember { mutableStateOf(mapPrefs.getBoolean("dark_tiles", false)) }
-    var showCoverageRings by remember { mutableStateOf(mapPrefs.getBoolean("coverage_rings", false)) }
     var showLayersMenu by remember { mutableStateOf(false) }
 
     // Remembered MapView to avoid reloading tiles on recomposition
@@ -1664,7 +1677,7 @@ fun MapViewCompose(
     }
 
     // Update overlays reactively whenever nodes, rangeTestLogs, phoneLocation, or breadcrumbs size changes
-    LaunchedEffect(nodes, rangeTestLogs, phoneLocation, breadcrumbs.size, showCoverageRings) {
+    LaunchedEffect(nodes, rangeTestLogs, phoneLocation, breadcrumbs.size) {
         // Keep the long-lived overlays (location, compass, scale bar); rebuild the rest
         val persistentOverlays = mapView.overlays.filter {
             it is MyLocationNewOverlay || it is CompassOverlay || it is ScaleBarOverlay
@@ -1833,14 +1846,15 @@ fun MapViewCompose(
             val color = getBadgeColor(node.name).toArgb()
             val density = context.resources.displayMetrics.density
 
-            // Optional coverage ring at the node's true position (off by default —
-            // with several nodes the overlapping fills used to wash out the map)
-            if (showCoverageRings) {
+            // Position-privacy circle (Meshtastic-style): the node blurs its
+            // broadcast position, so it is "somewhere within this radius" of the
+            // reported point. Only drawn when the node reports a precision.
+            if (node.positionPrecision > 0) {
                 val circle = Polygon(mapView).apply {
                     val center = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
-                    points = Polygon.pointsAsCircle(center, 350.0) // 350 meters radius
+                    points = Polygon.pointsAsCircle(center, node.positionPrecision.toDouble())
                     fillPaint.color = color
-                    fillPaint.alpha = 18
+                    fillPaint.alpha = 20
                     fillPaint.style = Paint.Style.FILL
 
                     outlinePaint.color = color
@@ -2101,25 +2115,15 @@ fun MapViewCompose(
                             modifier = Modifier.scale(0.7f)
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Anillos de cobertura" else "Coverage rings",
-                            color = TextLight,
-                            fontSize = 12.sp
-                        )
-                        Switch(
-                            checked = showCoverageRings,
-                            onCheckedChange = {
-                                showCoverageRings = it
-                                mapPrefs.edit().putBoolean("coverage_rings", it).apply()
-                            },
-                            modifier = Modifier.scale(0.7f)
-                        )
-                    }
+                    Text(
+                        text = if (appLanguage == "Spanish")
+                            "Los círculos alrededor de los nodos muestran su radio de privacidad de posición."
+                        else
+                            "Circles around nodes show their position-privacy radius.",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
@@ -2219,6 +2223,14 @@ fun MapViewCompose(
                             Column {
                                 Text(if (appLanguage == "Spanish") "Ubicación" else "Location", color = TextMuted, fontSize = 9.sp)
                                 Text("Lat: %.5f, Lon: %.5f".format(node.latitude, node.longitude), color = TextLight, fontSize = 11.sp)
+                                if (node.positionPrecision > 0) {
+                                    Text(
+                                        text = formatPositionPrecision(node.positionPrecision, useImperialUnits, appLanguage) +
+                                            if (appLanguage == "Spanish") " (aproximada)" else " (approximate)",
+                                        color = Color(0xFFFBBF24),
+                                        fontSize = 10.sp
+                                    )
+                                }
                             }
                             
                             if (phoneLocation != null) {
@@ -2458,6 +2470,7 @@ fun MapViewCompose(
         var remoteRegion by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("region", 0)) }
         var remoteRole by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("node_role", 0)) }
         var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
+        var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
 
         AlertDialog(
             onDismissRequest = { showRemoteConfigDialog = null },
@@ -2564,6 +2577,30 @@ fun MapViewCompose(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text("Position Precision (privacy blur)", color = TextMuted, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(POSITION_PRECISION_STEPS) { meters ->
+                            val isSel = remotePositionPrecision == meters
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isSel) AccentCyan else SurfaceDark)
+                                    .clickable { remotePositionPrecision = meters }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    formatPositionPrecision(meters, useImperialUnits, appLanguage),
+                                    color = if (isSel) DarkBackground else TextLight,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -2578,9 +2615,11 @@ fun MapViewCompose(
                             txPower = remoteTxPower,
                             region = remoteRegion,
                             role = remoteRole,
-                            telemetryInterval = remoteTelemetryInterval
+                            telemetryInterval = remoteTelemetryInterval,
+                            positionPrecision = remotePositionPrecision
                         )
                         if (success) {
+                            remotePrefs.edit().putInt("position_precision", remotePositionPrecision).apply()
                             android.widget.Toast.makeText(context, "Remote config dispatched!", android.widget.Toast.LENGTH_SHORT).show()
                         } else {
                             android.widget.Toast.makeText(context, "Failed to dispatch config.", android.widget.Toast.LENGTH_SHORT).show()
@@ -2897,12 +2936,14 @@ fun SettingsView(
     var telemetryIntervalSecs by remember { mutableIntStateOf(60) }
     var screenTimeoutSecs by remember { mutableIntStateOf(30) }
     var powerSaveModeEnabled by remember { mutableStateOf(false) }
+    var positionPrecisionM by remember { mutableIntStateOf(0) }
 
     var isExpandedSF by remember { mutableStateOf(false) }
     var isExpandedBW by remember { mutableStateOf(false) }
     var isExpandedRegion by remember { mutableStateOf(false) }
     var isExpandedRole by remember { mutableStateOf(false) }
     var isExpandedTelemetry by remember { mutableStateOf(false) }
+    var isExpandedPosPrecision by remember { mutableStateOf(false) }
     var isExpandedScreenTimeout by remember { mutableStateOf(false) }
     var showConsoleLogs by remember { mutableStateOf(false) }
     var showIntroDialog by remember { mutableStateOf(false) }
@@ -2987,6 +3028,7 @@ fun SettingsView(
             telemetryIntervalSecs = nodePrefs.getInt("telemetry_interval", 60)
             screenTimeoutSecs = nodePrefs.getInt("screen_timeout", 30)
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
+            positionPrecisionM = nodePrefs.getInt("position_precision", 0)
         }
     }
 
@@ -3001,7 +3043,8 @@ fun SettingsView(
             role = role,
             telemetryInterval = telemetryIntervalSecs,
             screenTimeout = screenTimeoutSecs,
-            powerSaveMode = powerSaveModeEnabled
+            powerSaveMode = powerSaveModeEnabled,
+            positionPrecision = positionPrecisionM
         )
         if (success) {
             val nodeKey = viewModel.connectedNodeId
@@ -3018,6 +3061,7 @@ fun SettingsView(
                     putInt("telemetry_interval", telemetryIntervalSecs)
                     putInt("screen_timeout", screenTimeoutSecs)
                     putBoolean("power_save_mode", powerSaveModeEnabled)
+                    putInt("position_precision", positionPrecisionM)
                     apply()
                 }
             }
@@ -4059,6 +4103,66 @@ fun SettingsView(
                                         onClick = {
                                             telemetryIntervalSecs = secs
                                             isExpandedTelemetry = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Position Precision (privacy blur radius, Meshtastic-style)
+                        Text(
+                            text = if (appLanguage == "Spanish") "Precisión de Posición" else "Position Precision",
+                            color = TextLight,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Difumina la posición transmitida por la malla. Otros ven el nodo en algún lugar dentro de este radio."
+                            else
+                                "Blurs the position broadcast over the mesh. Others see the node somewhere within this radius; only your own phone sees it exactly.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { isExpandedPosPrecision = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = DarkBackground,
+                                    contentColor = TextLight
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(formatPositionPrecision(positionPrecisionM, useImperialUnitsSetting, appLanguage))
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = isExpandedPosPrecision,
+                                onDismissRequest = { isExpandedPosPrecision = false },
+                                modifier = Modifier.background(SurfaceDark)
+                            ) {
+                                POSITION_PRECISION_STEPS.forEach { meters ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                formatPositionPrecision(meters, useImperialUnitsSetting, appLanguage),
+                                                color = if (meters == 0) AccentMint else TextLight
+                                            )
+                                        },
+                                        onClick = {
+                                            positionPrecisionM = meters
+                                            isExpandedPosPrecision = false
                                         }
                                     )
                                 }
@@ -6701,7 +6805,10 @@ fun SubPortalView(
                             apply()
                         }
                         
-                        // Sync role/telemetry if Device config modified
+                        // Sync role/telemetry if Device config modified. Pass the
+                        // saved screen-timeout/power-save/position-precision values
+                        // too — omitting them pushes the proto defaults and silently
+                        // resets those settings on the node.
                         if (portalName == "DEVICE") {
                             viewModel.sendNodeConfig(
                                 name = connectedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: "Wolf Base",
@@ -6711,7 +6818,10 @@ fun SubPortalView(
                                 txPower = nodePrefs.getInt("lora_tx_power", 22),
                                 region = nodePrefs.getInt("region", 0),
                                 role = deviceRole,
-                                telemetryInterval = telemetryIntervalSecs
+                                telemetryInterval = telemetryIntervalSecs,
+                                screenTimeout = nodePrefs.getInt("screen_timeout", 30),
+                                powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
+                                positionPrecision = nodePrefs.getInt("position_precision", 0)
                             )
                         }
 

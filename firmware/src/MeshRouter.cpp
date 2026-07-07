@@ -502,7 +502,7 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     return serializeAndSend(&packet, urgent);
 }
 
-bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging, float voltage) {
+bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging, float voltage, uint32_t positionPrecision) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
@@ -518,6 +518,7 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     packet.payload.telemetry.altitude = 0;
     packet.payload.telemetry.is_charging = charging;
     packet.payload.telemetry.battery_voltage = voltage;
+    packet.payload.telemetry.position_precision = positionPrecision;
     packet.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
     strncpy(packet.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
             sizeof(packet.payload.telemetry.firmware_version) - 1);

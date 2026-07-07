@@ -71,7 +71,8 @@ public:
     bool sendText(uint32_t recipientId, const char* text);
     // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
     bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false);
-    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false, float voltage = 0.0f);
+    // lat/lon must already be privacy-blurred by the caller when positionPrecision > 0
+    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
     void processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr);

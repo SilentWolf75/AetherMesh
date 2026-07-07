@@ -48,6 +48,7 @@ typedef struct _aethermesh_Telemetry {
     char firmware_version[20]; /* Firmware version string (e.g. "1.2.0") */
     bool is_charging; /* True when the battery is charging (voltage rising / on solar) */
     float battery_voltage; /* Raw pack voltage (V); 0 if unmeasured. For solar monitoring. */
+    uint32_t position_precision; /* Privacy blur radius (meters) applied to lat/lon before */
 } aethermesh_Telemetry;
 
 /* Path discovery for unicast routing */
@@ -87,6 +88,8 @@ typedef struct _aethermesh_NodeConfig {
     uint32_t screen_timeout_secs; /* Screen timeout in seconds (0 = display always off, 0xFFFFFFFF = display always on, default/standard is 30s) */
     bool power_save_mode; /* Auto sleep, lower telemetry, reduce BLE advertising when low battery */
     char config_password[33]; /* Node admin password authorizing a remote (over-LoRa) config change. */
+    /* Empty for local BLE config (the BLE session is already authenticated). */
+    uint32_t position_precision; /* Privacy blur radius (meters) for broadcast positions; 0 = precise. */
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -161,20 +164,20 @@ extern "C" {
 /* Initializer values for message structs */
 #define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
-#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0}
+#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
-#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0}
+#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, ""}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -191,6 +194,7 @@ extern "C" {
 #define aethermesh_Telemetry_firmware_version_tag 7
 #define aethermesh_Telemetry_is_charging_tag     8
 #define aethermesh_Telemetry_battery_voltage_tag 9
+#define aethermesh_Telemetry_position_precision_tag 10
 #define aethermesh_RouteDiscovery_type_tag       1
 #define aethermesh_RouteDiscovery_target_id_tag  2
 #define aethermesh_RouteDiscovery_metric_tag     3
@@ -212,6 +216,7 @@ extern "C" {
 #define aethermesh_NodeConfig_screen_timeout_secs_tag 8
 #define aethermesh_NodeConfig_power_save_mode_tag 9
 #define aethermesh_NodeConfig_config_password_tag 10
+#define aethermesh_NodeConfig_position_precision_tag 11
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -282,7 +287,8 @@ X(a, STATIC,   SINGULAR, STRING,   node_model,        5) \
 X(a, STATIC,   SINGULAR, UINT32,   uptime_seconds,    6) \
 X(a, STATIC,   SINGULAR, STRING,   firmware_version,   7) \
 X(a, STATIC,   SINGULAR, BOOL,     is_charging,       8) \
-X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9)
+X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9) \
+X(a, STATIC,   SINGULAR, UINT32,   position_precision,  10)
 #define aethermesh_Telemetry_CALLBACK NULL
 #define aethermesh_Telemetry_DEFAULT NULL
 
@@ -319,7 +325,8 @@ X(a, STATIC,   SINGULAR, UINT32,   node_role,         6) \
 X(a, STATIC,   SINGULAR, UINT32,   telemetry_interval,   7) \
 X(a, STATIC,   SINGULAR, UINT32,   screen_timeout_secs,   8) \
 X(a, STATIC,   SINGULAR, BOOL,     power_save_mode,   9) \
-X(a, STATIC,   SINGULAR, STRING,   config_password,  10)
+X(a, STATIC,   SINGULAR, STRING,   config_password,  10) \
+X(a, STATIC,   SINGULAR, UINT32,   position_precision,  11)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -365,9 +372,9 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshPacket_size               257
-#define aethermesh_NodeConfig_size               100
+#define aethermesh_NodeConfig_size               106
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                94
+#define aethermesh_Telemetry_size                100
 #define aethermesh_TextMessage_size              205
 
 #ifdef __cplusplus

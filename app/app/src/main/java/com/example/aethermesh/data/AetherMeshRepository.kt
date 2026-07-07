@@ -480,7 +480,8 @@ class AetherMeshRepository(private val context: Context) {
                     isCharging = telemetry.isCharging,
                     rssi = packet.rxRssi,
                     snr = packet.rxSnr,
-                    voltage = telemetry.batteryVoltage
+                    voltage = telemetry.batteryVoltage,
+                    positionPrecision = telemetry.positionPrecision
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
@@ -617,7 +618,7 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false): Boolean {
+    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
@@ -633,6 +634,7 @@ class AetherMeshRepository(private val context: Context) {
             .setTelemetryInterval(telemetryInterval)
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
+            .setPositionPrecision(positionPrecision)
 
         // Build MeshPacket wrapper
         val packet = MeshPacket.newBuilder()
@@ -671,7 +673,8 @@ class AetherMeshRepository(private val context: Context) {
         role: Int,
         telemetryInterval: Int = 60,
         screenTimeout: Int = 30,
-        powerSaveMode: Boolean = false
+        powerSaveMode: Boolean = false,
+        positionPrecision: Int = 0
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
@@ -688,6 +691,7 @@ class AetherMeshRepository(private val context: Context) {
             .setTelemetryInterval(telemetryInterval)
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
+            .setPositionPrecision(positionPrecision)
 
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())

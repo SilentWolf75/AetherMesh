@@ -4,6 +4,7 @@
 // unit-tested on the host (see firmware/test/test_meshmath). No Arduino types.
 
 #include <stdint.h>
+#include <math.h>
 
 namespace meshmath {
 
@@ -25,6 +26,32 @@ inline uint8_t hopCost(float snr) {
 inline uint32_t rebroadcastDelayMs(float snr) {
     float s = clampf(snr, -20.0f, 10.0f);
     return (uint32_t)(500.0f + (10.0f - s) * (1500.0f / 30.0f));
+}
+
+// Position privacy blur: snap lat/lon to the center of a grid cell sized
+// 2*radiusM, so the true position stays within +/-radiusM per axis of what
+// gets broadcast. Deterministic on purpose: the same true position always
+// reports the same blurred position — per-packet random jitter could be
+// averaged over many telemetry packets to recover the real location.
+// radiusM == 0 or a (0,0) no-fix position passes through unchanged.
+inline void blurPosition(float latIn, float lonIn, uint32_t radiusM,
+                         float& latOut, float& lonOut) {
+    if (radiusM == 0 || (latIn == 0.0f && lonIn == 0.0f)) {
+        latOut = latIn;
+        lonOut = lonIn;
+        return;
+    }
+    const double M_PER_DEG_LAT = 111320.0;
+    double cellLat = (2.0 * radiusM) / M_PER_DEG_LAT;
+    double latSnapped = (floor((double)latIn / cellLat) + 0.5) * cellLat;
+
+    double mPerDegLon = M_PER_DEG_LAT * cos(latSnapped * 3.14159265358979 / 180.0);
+    if (mPerDegLon < 1.0) mPerDegLon = 1.0; // degenerate near the poles
+    double cellLon = (2.0 * radiusM) / mPerDegLon;
+    double lonSnapped = (floor((double)lonIn / cellLon) + 0.5) * cellLon;
+
+    latOut = (float)latSnapped;
+    lonOut = (float)lonSnapped;
 }
 
 } // namespace meshmath

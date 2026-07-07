@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 12
+        private const val DATABASE_VERSION = 13
 
         // Telemetry history (append-only) for per-node battery/voltage graphs
         const val TABLE_TELEMETRY = "telemetry_history"
@@ -53,6 +53,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_RSSI = "last_rssi"
         const val COL_NODE_SNR = "last_snr"
         const val COL_NODE_VOLTAGE = "battery_voltage"
+        const val COL_NODE_POS_PRECISION = "position_precision"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -122,7 +123,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_IS_CHARGING INTEGER DEFAULT 0,
                 $COL_NODE_RSSI REAL DEFAULT 0,
                 $COL_NODE_SNR REAL DEFAULT 0,
-                $COL_NODE_VOLTAGE REAL DEFAULT 0
+                $COL_NODE_VOLTAGE REAL DEFAULT 0,
+                $COL_NODE_POS_PRECISION INTEGER DEFAULT 0
             )
         """.trimIndent()
 
@@ -310,6 +312,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_VOLTAGE REAL DEFAULT 0")
             } catch (e: Exception) {
                 android.util.Log.e("DatabaseHelper", "Failed to add node voltage column: ${e.message}")
+            }
+        }
+        if (oldVersion < 13) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_POS_PRECISION INTEGER DEFAULT 0")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add position precision column: ${e.message}")
             }
         }
     }
@@ -775,7 +784,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         isCharging: Boolean = false,
         rssi: Float = 0f,
         snr: Float = 0f,
-        voltage: Float = 0f
+        voltage: Float = 0f,
+        positionPrecision: Int = 0
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -821,6 +831,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             if (voltage != 0f) {
                 put(COL_NODE_VOLTAGE, voltage.toDouble())
             }
+            // Precision is authoritative per telemetry packet: 0 legitimately
+            // means "precise" (or old firmware), so always store it.
+            put(COL_NODE_POS_PRECISION, positionPrecision)
         }
         
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
@@ -851,7 +864,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     isCharging = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_IS_CHARGING)) != 0,
                     rssi = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_RSSI)),
                     snr = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_SNR)),
-                    voltage = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_VOLTAGE))
+                    voltage = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_VOLTAGE)),
+                    positionPrecision = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_POS_PRECISION))
                 ))
             } while (cursor.moveToNext())
         }
@@ -1007,7 +1021,9 @@ data class MeshNode(
     val isCharging: Boolean = false,
     val rssi: Float = 0f,
     val snr: Float = 0f,
-    val voltage: Float = 0f
+    val voltage: Float = 0f,
+    // Privacy blur radius (m) the node applies to its broadcast position; 0 = precise
+    val positionPrecision: Int = 0
 )
 
 data class TelemetrySample(
