@@ -1051,8 +1051,7 @@ uint32_t otaChunksSinceAck = 0;
 static const uint32_t OTA_WINDOW = 4;          // chunks per ack (ring holds 8)
 static const uint32_t OTA_TIMEOUT_MS = 30000;  // abort if the phone goes silent
 
-// (OTA round-trip test marker: this build carries a distinct git hash so a
-// successful wireless flash is provable from the reported firmware version.)
+// (OTA round-trip test marker #2: distinct hash for a clean confirmation run.)
 void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const char* msg) {
     if (!bleMgr.isDeviceConnected()) return;
     aethermesh_MeshPacket pkt = aethermesh_MeshPacket_init_zero;
