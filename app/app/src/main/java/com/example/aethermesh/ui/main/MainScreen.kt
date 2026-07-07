@@ -1448,6 +1448,9 @@ fun NodeItem(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("${node.battery}%", color = primaryText, fontSize = 14.sp)
             }
+            if (node.voltage > 0f) {
+                Text("%.2f V".format(node.voltage), color = secondaryText, fontSize = 10.sp)
+            }
             Text("Lat: %.4f".format(node.latitude), color = secondaryText, fontSize = 10.sp)
             Text("Lon: %.4f".format(node.longitude), color = secondaryText, fontSize = 10.sp)
         }

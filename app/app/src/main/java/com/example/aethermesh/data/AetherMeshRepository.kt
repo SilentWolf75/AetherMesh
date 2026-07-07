@@ -479,7 +479,8 @@ class AetherMeshRepository(private val context: Context) {
                     firmwareVersion = telemetry.firmwareVersion,
                     isCharging = telemetry.isCharging,
                     rssi = packet.rxRssi,
-                    snr = packet.rxSnr
+                    snr = packet.rxSnr,
+                    voltage = telemetry.batteryVoltage
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
