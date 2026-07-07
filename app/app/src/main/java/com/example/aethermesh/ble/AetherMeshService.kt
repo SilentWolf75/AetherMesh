@@ -80,12 +80,21 @@ class AetherMeshService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun buildNotification(contentText: String): Notification {
+        // Tapping the notification opens the app (without this the tap is a no-op)
+        val tapIntent = Intent(this, com.example.aethermesh.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            this, 0, tapIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AetherMesh")
             .setContentText(contentText)
             .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
             .build()
     }
 

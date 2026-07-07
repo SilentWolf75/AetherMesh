@@ -448,6 +448,13 @@ class AetherMeshRepository(private val context: Context) {
                     isEncrypted = isEncrypted
                 )
                 refreshData()
+                notifyIncomingMessage(
+                    senderId = senderId,
+                    chatIdentifier = chatIdentifier,
+                    channel = targetChan,
+                    content = finalContent,
+                    isBroadcast = recipientId == 0xFFFFFFFFL
+                )
             }
             MeshPacket.PayloadCase.TELEMETRY -> {
                 val telemetry = packet.telemetry
@@ -704,6 +711,62 @@ class AetherMeshRepository(private val context: Context) {
             .build()
 
         return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    // Post a system notification for an incoming chat message, Meshtastic-style:
+    // one notification per conversation (newest message replaces the previous),
+    // tapping opens the app. Suppressed while the app is on screen, when the
+    // user turned off Background Alerts in Settings, or without POST_NOTIFICATIONS.
+    private fun notifyIncomingMessage(
+        senderId: Long,
+        chatIdentifier: String,
+        channel: String,
+        content: String,
+        isBroadcast: Boolean
+    ) {
+        val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("bg_alerts_enabled", true)) return
+        val app = context.applicationContext as? com.example.aethermesh.AetherMeshApplication
+        if (app?.isActivityVisible == true) return
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val notifChannelId = "aethermesh_messages"
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    notifChannelId, "Messages",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply { description = "Incoming mesh chat messages" }
+            )
+        }
+
+        val senderName = dbHelper.getNodes().find { it.nodeId == senderId }?.name
+            ?: "Node %04X".format(senderId and 0xFFFF)
+        val title = if (isBroadcast) "$senderName @ $channel" else senderName
+
+        val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context, chatIdentifier.hashCode(), tapIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = androidx.core.app.NotificationCompat.Builder(context, notifChannelId)
+            .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(content))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setGroup("aethermesh_messages")
+            .build()
+        nm.notify(chatIdentifier.hashCode(), notification)
     }
 
     fun refreshData() {

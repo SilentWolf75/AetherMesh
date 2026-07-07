@@ -30,6 +30,16 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
     }
 
+    override fun onResume() {
+        super.onResume()
+        (application as AetherMeshApplication).isActivityVisible = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        (application as AetherMeshApplication).isActivityVisible = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
