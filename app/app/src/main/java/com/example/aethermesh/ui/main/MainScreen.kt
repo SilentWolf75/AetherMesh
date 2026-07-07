@@ -126,6 +126,28 @@ fun isNodeStale(lastActive: Long): Boolean {
     return System.currentTimeMillis() - lastActive > NODE_STALE_MS
 }
 
+// Minimum firmware BASE version (the "1.2.0" in "1.2.0-abc1234") this app is
+// compatible with. Mixed builds across the mesh are fine — like Meshtastic,
+// nodes on different builds interoperate. Bump this ONLY when the app starts
+// depending on a protocol feature that older firmware lacks.
+const val MIN_COMPATIBLE_FW = "1.2.0"
+
+private fun parseFwBase(version: String): List<Int>? {
+    val m = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(version) ?: return null
+    return m.groupValues.drop(1).map { it.toInt() }
+}
+
+// True when a node's reported firmware base version is older than what this
+// app requires. Unknown/unparseable versions are NOT flagged (no false nags).
+fun isFirmwareTooOld(version: String): Boolean {
+    val v = parseFwBase(version) ?: return false
+    val min = parseFwBase(MIN_COMPATIBLE_FW) ?: return false
+    for (i in 0..2) {
+        if (v[i] != min[i]) return v[i] < min[i]
+    }
+    return false
+}
+
 // Position privacy blur radius choices (meters); 0 = broadcast precise position
 val POSITION_PRECISION_STEPS = listOf(0, 100, 250, 500, 1000, 2000, 5000, 10000)
 
@@ -5477,16 +5499,16 @@ fun ConnectionView(
                         }
                     }
 
-                    // Warn when nodes in the mesh run different firmware builds - the
-                    // usual cause of "node X behaves differently" after a partial reflash.
-                    // Only consider recently-heard nodes: a stored version from a node
-                    // that is offline (or was just reflashed and hasn't sent telemetry
-                    // yet) is stale data, not a live mismatch.
-                    val fwVersions = nodes.filter { !isNodeStale(it.lastActive) }
-                        .map { it.firmwareVersion }
-                        .filter { it.isNotEmpty() }
-                        .distinct()
-                    if (fwVersions.size > 1) {
+                    // Different builds across the mesh are normal (Meshtastic-style);
+                    // only warn when a recently-heard node runs a firmware BASE version
+                    // older than this app supports - that's a real compatibility break,
+                    // not cosmetic build drift.
+                    val outdatedNodes = nodes.filter {
+                        !isNodeStale(it.lastActive) &&
+                            it.firmwareVersion.isNotEmpty() &&
+                            isFirmwareTooOld(it.firmwareVersion)
+                    }
+                    if (outdatedNodes.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier
@@ -5499,7 +5521,9 @@ fun ConnectionView(
                             Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFACC15), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Mixed firmware in mesh: ${fwVersions.joinToString(", ")}. Reflash all nodes to the same build.",
+                                "Firmware too old for this app on: " +
+                                    outdatedNodes.joinToString(", ") { "${it.name} (${it.firmwareVersion})" } +
+                                    ". Update to $MIN_COMPATIBLE_FW or newer.",
                                 color = Color(0xFFFDE68A),
                                 fontSize = 11.sp
                             )
