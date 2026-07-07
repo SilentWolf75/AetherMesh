@@ -12,11 +12,13 @@ def git_hash():
     except Exception:
         return "nogit"
     try:
-        # Compare actual content, not `git diff --quiet` exit codes: --quiet
-        # short-circuits on stat-cache/line-ending churn and can report dirty
-        # for files whose content is unchanged (false '*' on every build).
+        # This script runs with cwd = firmware/, and git pathspecs are relative
+        # to the cwd — a plain ':!app' would exclude firmware/app (nonexistent)
+        # instead of the repo-root app/, so uncommitted app/gradle edits made
+        # every build report dirty. ':(top,...)' anchors to the repo root.
         changed = subprocess.check_output(
-            ["git", "diff", "--name-only", "--", ":!app", ":!docs"],
+            ["git", "diff", "--name-only", "--",
+             ":(top,exclude)app", ":(top,exclude)docs"],
             stderr=subprocess.DEVNULL,
         ).decode().strip()
         if changed:
