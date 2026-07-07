@@ -625,7 +625,7 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0): Boolean {
+    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0, gpsMode: Int = 0): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
@@ -642,6 +642,7 @@ class AetherMeshRepository(private val context: Context) {
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
+            .setGpsMode(gpsMode)
 
         // Build MeshPacket wrapper
         val packet = MeshPacket.newBuilder()
@@ -681,7 +682,8 @@ class AetherMeshRepository(private val context: Context) {
         telemetryInterval: Int = 60,
         screenTimeout: Int = 30,
         powerSaveMode: Boolean = false,
-        positionPrecision: Int = 0
+        positionPrecision: Int = 0,
+        gpsMode: Int = 0
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
@@ -699,6 +701,7 @@ class AetherMeshRepository(private val context: Context) {
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
+            .setGpsMode(gpsMode)
 
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())

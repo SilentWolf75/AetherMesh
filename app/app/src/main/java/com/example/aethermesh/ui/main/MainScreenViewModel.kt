@@ -122,8 +122,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.createChannel(channel)
     }
 
-    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0): Boolean {
-        return repository.sendNodeConfig(name, shortName, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision)
+    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0, gpsMode: Int = 0): Boolean {
+        return repository.sendNodeConfig(name, shortName, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode)
     }
 
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
@@ -142,9 +142,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         telemetryInterval: Int = 60,
         screenTimeout: Int = 30,
         powerSaveMode: Boolean = false,
-        positionPrecision: Int = 0
+        positionPrecision: Int = 0,
+        gpsMode: Int = 0
     ): Boolean {
-        return repository.sendRemoteConfig(nodeId, name, password, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision)
+        return repository.sendRemoteConfig(nodeId, name, password, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode)
     }
 
     fun getAllRangeTestLogs() = repository.getAllRangeTestLogs()

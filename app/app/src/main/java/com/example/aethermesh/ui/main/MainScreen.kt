@@ -2493,6 +2493,7 @@ fun MapViewCompose(
         var remoteRole by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("node_role", 0)) }
         var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
         var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
+        var remoteGpsEnabled by remember(node.nodeId) { mutableStateOf(remotePrefs.getInt("gps_mode", 0) == 0) }
 
         AlertDialog(
             onDismissRequest = { showRemoteConfigDialog = null },
@@ -2623,6 +2624,28 @@ fun MapViewCompose(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Node GPS", color = TextMuted, fontSize = 11.sp)
+                            Text(
+                                "Off saves ~25% battery",
+                                color = TextMuted,
+                                fontSize = 10.sp
+                            )
+                        }
+                        Switch(
+                            checked = remoteGpsEnabled,
+                            onCheckedChange = { remoteGpsEnabled = it },
+                            modifier = Modifier.scale(0.8f)
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -2638,10 +2661,14 @@ fun MapViewCompose(
                             region = remoteRegion,
                             role = remoteRole,
                             telemetryInterval = remoteTelemetryInterval,
-                            positionPrecision = remotePositionPrecision
+                            positionPrecision = remotePositionPrecision,
+                            gpsMode = if (remoteGpsEnabled) 0 else 1
                         )
                         if (success) {
-                            remotePrefs.edit().putInt("position_precision", remotePositionPrecision).apply()
+                            remotePrefs.edit()
+                                .putInt("position_precision", remotePositionPrecision)
+                                .putInt("gps_mode", if (remoteGpsEnabled) 0 else 1)
+                                .apply()
                             android.widget.Toast.makeText(context, "Remote config dispatched!", android.widget.Toast.LENGTH_SHORT).show()
                         } else {
                             android.widget.Toast.makeText(context, "Failed to dispatch config.", android.widget.Toast.LENGTH_SHORT).show()
@@ -2959,6 +2986,7 @@ fun SettingsView(
     var screenTimeoutSecs by remember { mutableIntStateOf(30) }
     var powerSaveModeEnabled by remember { mutableStateOf(false) }
     var positionPrecisionM by remember { mutableIntStateOf(0) }
+    var nodeGpsEnabled by remember { mutableStateOf(true) }
 
     var isExpandedSF by remember { mutableStateOf(false) }
     var isExpandedBW by remember { mutableStateOf(false) }
@@ -3051,6 +3079,7 @@ fun SettingsView(
             screenTimeoutSecs = nodePrefs.getInt("screen_timeout", 30)
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
             positionPrecisionM = nodePrefs.getInt("position_precision", 0)
+            nodeGpsEnabled = nodePrefs.getInt("gps_mode", 0) == 0
         }
     }
 
@@ -3066,7 +3095,8 @@ fun SettingsView(
             telemetryInterval = telemetryIntervalSecs,
             screenTimeout = screenTimeoutSecs,
             powerSaveMode = powerSaveModeEnabled,
-            positionPrecision = positionPrecisionM
+            positionPrecision = positionPrecisionM,
+            gpsMode = if (nodeGpsEnabled) 0 else 1
         )
         if (success) {
             val nodeKey = viewModel.connectedNodeId
@@ -3084,6 +3114,7 @@ fun SettingsView(
                     putInt("screen_timeout", screenTimeoutSecs)
                     putBoolean("power_save_mode", powerSaveModeEnabled)
                     putInt("position_precision", positionPrecisionM)
+                    putInt("gps_mode", if (nodeGpsEnabled) 0 else 1)
                     apply()
                 }
             }
@@ -4129,6 +4160,43 @@ fun SettingsView(
                                     )
                                 }
                             }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Node GPS power toggle (biggest single battery consumer)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = if (appLanguage == "Spanish") "GPS del Nodo" else "Node GPS",
+                                    color = TextLight,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (appLanguage == "Spanish")
+                                        "Apagar ahorra ~25% de batería; la posición usa el GPS del teléfono."
+                                    else
+                                        "Powers the onboard GPS module. Off saves ~25% battery; position falls back to phone GPS sharing.",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Switch(
+                                checked = nodeGpsEnabled,
+                                onCheckedChange = { nodeGpsEnabled = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = DarkBackground,
+                                    checkedTrackColor = AccentMint,
+                                    uncheckedThumbColor = TextMuted,
+                                    uncheckedTrackColor = BorderDark
+                                )
+                            )
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
@@ -6849,7 +6917,8 @@ fun SubPortalView(
                                 telemetryInterval = telemetryIntervalSecs,
                                 screenTimeout = nodePrefs.getInt("screen_timeout", 30),
                                 powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
-                                positionPrecision = nodePrefs.getInt("position_precision", 0)
+                                positionPrecision = nodePrefs.getInt("position_precision", 0),
+                                gpsMode = nodePrefs.getInt("gps_mode", 0)
                             )
                         }
 

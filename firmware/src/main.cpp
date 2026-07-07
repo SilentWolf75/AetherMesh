@@ -28,6 +28,7 @@ struct NodeSettings {
     uint32_t screenTimeoutSecs;
     bool powerSaveMode;
     uint32_t positionPrecisionM;
+    uint32_t gpsMode;
 };
 #endif
 
@@ -211,6 +212,10 @@ bool powerSaveMode = false;
 // Persisted by saveSettings() directly from this global (not a parameter) so a
 // call site can't accidentally reset it by omitting a trailing argument.
 uint32_t positionPrecisionM = 0;
+// GPS power mode: 0 = onboard GNSS powered (default), 1 = off to save power
+// (~25% of total draw; position falls back to phone-shared GPS). Persisted
+// from the global by saveSettings(), same rationale as positionPrecisionM.
+uint32_t gpsMode = 0;
 float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
 bool hasInheritedLocation = false;
@@ -260,6 +265,7 @@ void loadSettings() {
         screenTimeoutSecs = preferences.getUInt("scr_timeout", 30);
         powerSaveMode = preferences.getBool("power_save", false);
         positionPrecisionM = preferences.getUInt("pos_prec", 0);
+        gpsMode = preferences.getUInt("gps_mode", 0);
     } else {
         loraSF = 9;
         loraBW = 125.0f;
@@ -270,6 +276,7 @@ void loadSettings() {
         screenTimeoutSecs = 30;
         powerSaveMode = false;
         positionPrecisionM = 0;
+        gpsMode = 0;
         nodePassword[0] = '\0';
         Serial.println("Radio settings version changed; resetting settings to defaults.");
     }
@@ -291,6 +298,7 @@ void loadSettings() {
     Serial.printf("  Screen Timeout: %u sec\n", screenTimeoutSecs);
     Serial.printf("  Power Save Mode: %s\n", powerSaveMode ? "ON" : "OFF");
     Serial.printf("  Position Precision: %u m\n", positionPrecisionM);
+    Serial.printf("  GPS Mode: %s\n", (gpsMode == 0) ? "ON" : "OFF (power save)");
 #elif defined(RAK4631) || defined(RAK3401_1W)
     InternalFS.begin();
     File file(InternalFS);
@@ -313,6 +321,7 @@ void loadSettings() {
                 screenTimeoutSecs = settings.screenTimeoutSecs;
                 powerSaveMode = settings.powerSaveMode;
                 positionPrecisionM = settings.positionPrecisionM;
+                gpsMode = settings.gpsMode;
                 loaded = true;
             }
         }
@@ -331,6 +340,7 @@ void loadSettings() {
         screenTimeoutSecs = 30;
         powerSaveMode = false;
         positionPrecisionM = 0;
+        gpsMode = 0;
 
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
@@ -377,8 +387,9 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putUInt("tel_interval", telemetryInterval);
     preferences.putUInt("scr_timeout", screenTimeout);
     preferences.putBool("power_save", powerSave);
-    // positionPrecisionM is persisted from the global on purpose (see its decl)
+    // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
     preferences.putUInt("pos_prec", positionPrecisionM);
+    preferences.putUInt("gps_mode", gpsMode);
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
@@ -401,8 +412,9 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         settings.telemetryInterval = telemetryInterval;
         settings.screenTimeoutSecs = screenTimeout;
         settings.powerSaveMode = powerSave;
-        // positionPrecisionM is persisted from the global on purpose (see its decl)
+        // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
         settings.positionPrecisionM = positionPrecisionM;
+        settings.gpsMode = gpsMode;
 
         file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
@@ -619,6 +631,12 @@ void drawGpsPage() {
                      (unsigned long)((millis() - lastInheritedTime) / 1000));
             u8g2.drawStr(0, 56, line);
         }
+    } else if (gpsMode != 0) {
+        u8g2.setFont(u8g2_font_7x14_tf);
+        u8g2.drawStr(0, 32, "GPS DISABLED");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        u8g2.drawStr(0, 47, "Off by config (power)");
+        u8g2.drawStr(0, 58, "Uses phone GPS if shared");
     } else {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, "NO GPS LOCK");
@@ -1099,6 +1117,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             Serial.println("Received local NodeConfig packet from phone via BLE.");
 
             positionPrecisionM = packet.payload.config.position_precision;
+            gpsMode = packet.payload.config.gps_mode;
 
             // Save to NVS
             saveSettings(
@@ -1163,6 +1182,7 @@ void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
         Serial.println("Remote password verified successfully. Applying configuration...");
 
         positionPrecisionM = config.position_precision;
+        gpsMode = config.gps_mode;
 
         saveSettings(
             config.node_name,
@@ -1296,29 +1316,47 @@ void setup() {
     uint32_t splashShownAt = millis();
 #endif
 
-    // 3. Initialize GPS serial port and power toggle
+    // 3. Initialize GPS serial port and power toggle. gps_mode == 1 keeps the
+    // GNSS module UNPOWERED (~25% of total draw saved); position then falls
+    // back to phone-shared GPS automatically.
 #if defined(HELTEC_V4)
-    Serial.println("Initializing GNSS Module (Heltec V4)...");
-    pinMode(34, OUTPUT);
-    digitalWrite(34, LOW);   // Pull GPIO 34 LOW (P-channel MOSFET power enable)
-    
-    pinMode(40, OUTPUT);
-    digitalWrite(40, HIGH);  // Wakeup pin (Active HIGH)
-    
-    pinMode(42, OUTPUT);
-    digitalWrite(42, HIGH);  // Reset pin (Active HIGH to release reset)
-    
-    delay(50);
-    Serial1.begin(9600, SERIAL_8N1, 39, 38); // RX=39, TX=38
+    if (gpsMode == 0) {
+        Serial.println("Initializing GNSS Module (Heltec V4)...");
+        pinMode(34, OUTPUT);
+        digitalWrite(34, LOW);   // Pull GPIO 34 LOW (P-channel MOSFET power enable)
+
+        pinMode(40, OUTPUT);
+        digitalWrite(40, HIGH);  // Wakeup pin (Active HIGH)
+
+        pinMode(42, OUTPUT);
+        digitalWrite(42, HIGH);  // Reset pin (Active HIGH to release reset)
+
+        delay(50);
+        Serial1.begin(9600, SERIAL_8N1, 39, 38); // RX=39, TX=38
+    } else {
+        Serial.println("GNSS disabled by config (gps_mode=1) - module unpowered.");
+        pinMode(34, OUTPUT);
+        digitalWrite(34, HIGH);  // P-MOSFET off -> GNSS unpowered
+        pinMode(40, OUTPUT);
+        digitalWrite(40, LOW);   // Wakeup inactive
+        pinMode(42, OUTPUT);
+        digitalWrite(42, LOW);   // Hold in reset
+    }
 #elif defined(RAK4631) || defined(RAK3401_1W)
     // WisBlock GPS (RAK1910 UART, or RAK12500 in UART mode). Serial1 is mapped to
     // the GPS UART by the RAK BSP; WB_IO2 (pin 34) powers the WisBlock sensor slots.
-    Serial.println("Initializing GNSS Module (RAK WisBlock UART & I2C)...");
-    pinMode(34, OUTPUT);
-    digitalWrite(34, HIGH);   // WB_IO2 HIGH -> power the sensor slot rail (incl. GPS)
-    delay(500);               // give the GNSS module time to boot
-    Serial1.begin(9600);      // NMEA @ 9600 baud, BSP-mapped Serial1 pins
-    Wire.begin();             // Initialize I2C for ZOE-M8Q (RAK12500 I2C mode)
+    if (gpsMode == 0) {
+        Serial.println("Initializing GNSS Module (RAK WisBlock UART & I2C)...");
+        pinMode(34, OUTPUT);
+        digitalWrite(34, HIGH);   // WB_IO2 HIGH -> power the sensor slot rail (incl. GPS)
+        delay(500);               // give the GNSS module time to boot
+        Serial1.begin(9600);      // NMEA @ 9600 baud, BSP-mapped Serial1 pins
+        Wire.begin();             // Initialize I2C for ZOE-M8Q (RAK12500 I2C mode)
+    } else {
+        Serial.println("GNSS disabled by config (gps_mode=1) - sensor rail unpowered.");
+        pinMode(34, OUTPUT);
+        digitalWrite(34, LOW);    // WB_IO2 LOW -> sensor slot rail off
+    }
 #endif
 
     // 4. Initialize Radio Manager
@@ -1466,17 +1504,20 @@ void loop() {
     digitalWrite(LED_BLUE, bleMgr.isDeviceConnected() ? HIGH : LOW);
 #endif
 
-    // Read and parse NMEA stream from GPS
+    // Read and parse NMEA stream from GPS (skipped entirely when the module
+    // is unpowered by gps_mode=1)
 #if defined(HELTEC_V4) || defined(RAK4631) || defined(RAK3401_1W)
-    while (Serial1.available() > 0) {
-        gps.encode(Serial1.read());
+    if (gpsMode == 0) {
+        while (Serial1.available() > 0) {
+            gps.encode(Serial1.read());
+        }
     }
 #endif
 
 #if defined(RAK4631) || defined(RAK3401_1W)
     // Read and parse NMEA stream from I2C for ZOE-M8Q (RAK12500 default I2C address 0x42)
     static uint32_t lastI2CGPSPoll = 0;
-    if (millis() - lastI2CGPSPoll > 100) {
+    if (gpsMode == 0 && millis() - lastI2CGPSPoll > 100) {
         lastI2CGPSPoll = millis();
         Wire.requestFrom((uint8_t)0x42, (uint8_t)32);
         while (Wire.available()) {

@@ -108,6 +108,9 @@ message NodeConfig {
   string config_password = 10;    // Node admin password authorizing a remote (over-LoRa) config change.
                                   // Empty for local BLE config (the BLE session is already authenticated).
   uint32 position_precision = 11; // Privacy blur radius (meters) for broadcast positions; 0 = precise.
+  uint32 gps_mode = 12;           // 0 = onboard GPS powered (default), 1 = GPS off to save power
+                                  // (position falls back to phone-shared GPS). uint32 so the
+                                  // proto3 zero-default means "on" for configs that omit it.
 }
 
 // Authentication request sent by companion app to LoRa node
