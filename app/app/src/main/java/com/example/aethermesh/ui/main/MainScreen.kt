@@ -318,7 +318,7 @@ enum class TabItem {
 }
 
 enum class SettingsCategory {
-    CHANNELS, RADIO, POSITION, SECURITY, PREFERENCES, DEVELOPER
+    CHANNELS, RADIO, POSITION, FIRMWARE, SECURITY, PREFERENCES, DEVELOPER
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3199,6 +3199,7 @@ fun SettingsView(
                 Triple(SettingsCategory.CHANNELS, "Channels", "Manage secondary channels and share/join links"),
                 Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
                 Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure GPS enable, telemetry interval, and view satellite lock status"),
+                Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
                 Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password"),
                 Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, and background alerts"),
                 Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
@@ -3209,6 +3210,7 @@ fun SettingsView(
                     SettingsCategory.CHANNELS -> Icons.Default.Layers
                     SettingsCategory.RADIO -> Icons.Default.Settings
                     SettingsCategory.POSITION -> Icons.Default.Place
+                    SettingsCategory.FIRMWARE -> Icons.Default.SystemUpdate
                     SettingsCategory.SECURITY -> Icons.Default.Lock
                     SettingsCategory.PREFERENCES -> Icons.Default.Palette
                     SettingsCategory.DEVELOPER -> Icons.Default.Terminal
@@ -3217,6 +3219,7 @@ fun SettingsView(
                     SettingsCategory.CHANNELS -> AccentCyan
                     SettingsCategory.RADIO -> AccentMint
                     SettingsCategory.POSITION -> Color(0xFF818CF8)
+                    SettingsCategory.FIRMWARE -> AccentMint
                     SettingsCategory.SECURITY -> Color(0xFFEF4444)
                     SettingsCategory.PREFERENCES -> Color(0xFFFBBF24)
                     SettingsCategory.DEVELOPER -> AccentCyan
@@ -3287,6 +3290,7 @@ fun SettingsView(
                         SettingsCategory.SECURITY -> t("Security & Keys", appLanguage)
                         SettingsCategory.PREFERENCES -> t("App Preferences", appLanguage)
                         SettingsCategory.DEVELOPER -> t("Developer & Diagnostics", appLanguage)
+                        SettingsCategory.FIRMWARE -> t("Firmware Update", appLanguage)
                         else -> ""
                     },
                     color = TextLight,
@@ -4042,173 +4046,6 @@ fun SettingsView(
                 }
             }
 
-            // FIRMWARE UPDATE CARD (BLE OTA - Heltec only for now)
-            val otaState by viewModel.otaState.collectAsStateWithLifecycle()
-            var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
-            var otaFileName by remember { mutableStateOf("") }
-            var showOtaWarning by remember { mutableStateOf(false) }
-            val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-                if (uri != null) {
-                    try {
-                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        if (bytes != null && bytes.isNotEmpty()) {
-                            otaFileBytes = bytes
-                            otaFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware.bin"
-                            viewModel.resetOtaState()
-                        }
-                    } catch (e: Exception) {
-                        android.widget.Toast.makeText(context, "Could not read file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            val otaSupported = connectedNode?.model?.contains("Heltec") == true
-
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = if (appLanguage == "Spanish") "Actualización de Firmware" else "Firmware Update",
-                        color = TextLight,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = (if (appLanguage == "Spanish") "Instalado: " else "Installed: ") +
-                            (connectedNode?.firmwareVersion?.ifEmpty { "unknown" } ?: "—"),
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    if (!isConnected) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Conéctate a un nodo para actualizar su firmware." else "Connect to a node to update its firmware over BLE.",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                    } else if (!otaSupported) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Por ahora solo nodos Heltec." else "Heltec nodes only for now (the RAK needs its DFU path; it stays USB-flashed).",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 12.sp
-                        )
-                    } else if (otaState.active) {
-                        LinearProgressIndicator(
-                            progress = { otaState.progress / 100f },
-                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                            color = AccentCyan,
-                            trackColor = BorderDark
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(otaState.status, color = TextLight, fontSize = 12.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = if (appLanguage == "Spanish") "No cierres la app durante la actualización." else "Keep the app open and the phone near the node.",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Button(
-                            onClick = { viewModel.cancelFirmwareUpdate() },
-                            modifier = Modifier.fillMaxWidth().height(36.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceDark, contentColor = AccentRed),
-                            border = BorderStroke(1.dp, BorderDark)
-                        ) {
-                            Text(if (appLanguage == "Spanish") "Cancelar" else "Cancel Update", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = { otaFilePicker.launch(arrayOf("application/octet-stream", "*/*")) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight)
-                        ) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentCyan)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                if (otaFileName.isEmpty())
-                                    (if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin")
-                                else
-                                    "$otaFileName (${(otaFileBytes?.size ?: 0) / 1024} kB)",
-                                fontSize = 12.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Button(
-                            onClick = { showOtaWarning = true },
-                            enabled = otaFileBytes != null && isDeviceAuthenticated,
-                            modifier = Modifier.fillMaxWidth().height(40.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = AccentMint,
-                                contentColor = DarkBackground,
-                                disabledContainerColor = BorderDark,
-                                disabledContentColor = TextMuted
-                            )
-                        ) {
-                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (appLanguage == "Spanish") "Actualizar por BLE OTA" else "Update via BLE OTA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-                        if (otaState.status.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                otaState.status,
-                                color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (showOtaWarning) {
-                AlertDialog(
-                    onDismissRequest = { showOtaWarning = false },
-                    title = { Text(if (appLanguage == "Spanish") "Advertencia" else "Update Warning", color = TextLight, fontWeight = FontWeight.Bold) },
-                    text = {
-                        Column {
-                            Text(
-                                if (appLanguage == "Spanish")
-                                    "Vas a flashear nuevo firmware por Bluetooth."
-                                else
-                                    "You are about to flash new firmware to $otaFileName over Bluetooth.",
-                                color = TextLight, fontSize = 13.sp
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text("• Make sure the node is charged or on USB.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Keep the node close to your phone.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Do not close the app during the update.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Verify this build matches the hardware (Heltec V4).", color = TextMuted, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                "The image is checksum-verified before the node reboots. If the transfer fails, the node keeps running its current firmware.",
-                                color = TextMuted, fontSize = 11.sp
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            showOtaWarning = false
-                            otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }
-                        }) {
-                            Text("I know what I'm doing.", color = AccentMint, fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showOtaWarning = false }) {
-                            Text(if (appLanguage == "Spanish") "Cancelar" else "Cancel", color = TextMuted)
-                        }
-                    },
-                    containerColor = SurfaceDark
-                )
-            }
-
             // 2. CONFIGURATION CARD
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -4556,6 +4393,185 @@ fun SettingsView(
                         }
                     }
                 }
+            }
+        }
+
+        if (activeCategory == SettingsCategory.FIRMWARE) {
+            // --- FIRMWARE UPDATE VIEW (BLE OTA - Heltec only for now) ---
+            val otaState by viewModel.otaState.collectAsStateWithLifecycle()
+            var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
+            var otaFileName by remember { mutableStateOf("") }
+            var showOtaWarning by remember { mutableStateOf(false) }
+            val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    try {
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            otaFileBytes = bytes
+                            otaFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware.bin"
+                            viewModel.resetOtaState()
+                        }
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(context, "Could not read file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            val otaSupported = connectedNode?.model?.contains("Heltec") == true
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = if (appLanguage == "Spanish") "Actualización de Firmware" else "Firmware Update",
+                        color = TextLight,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = (if (appLanguage == "Spanish") "Instalado: " else "Installed: ") +
+                            (connectedNode?.firmwareVersion?.ifEmpty { "unknown" } ?: "—"),
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (!isConnected) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Conéctate a un nodo para actualizar su firmware." else "Connect to a node to update its firmware over BLE.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    } else if (!otaSupported) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Por ahora solo nodos Heltec." else "Heltec nodes only for now (the RAK needs its DFU path; it stays USB-flashed).",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 12.sp
+                        )
+                    } else if (otaState.active) {
+                        LinearProgressIndicator(
+                            progress = { otaState.progress / 100f },
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                            color = AccentCyan,
+                            trackColor = BorderDark
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(otaState.status, color = TextLight, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (appLanguage == "Spanish") "No cierres la app durante la actualización." else "Keep the app open and the phone near the node.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = { viewModel.cancelFirmwareUpdate() },
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceDark, contentColor = AccentRed),
+                            border = BorderStroke(1.dp, BorderDark)
+                        ) {
+                            Text(if (appLanguage == "Spanish") "Cancelar" else "Cancel Update", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { otaFilePicker.launch(arrayOf("application/octet-stream", "*/*")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight)
+                        ) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentCyan)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                if (otaFileName.isEmpty())
+                                    (if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin")
+                                else
+                                    "$otaFileName (${(otaFileBytes?.size ?: 0) / 1024} kB)",
+                                fontSize = 12.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = { showOtaWarning = true },
+                            enabled = otaFileBytes != null && isDeviceAuthenticated,
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AccentMint,
+                                contentColor = DarkBackground,
+                                disabledContainerColor = BorderDark,
+                                disabledContentColor = TextMuted
+                            )
+                        ) {
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (appLanguage == "Spanish") "Actualizar por BLE OTA" else "Update via BLE OTA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                        if (otaState.status.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                otaState.status,
+                                color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = if (appLanguage == "Spanish")
+                    "El primer firmware con OTA debe instalarse por USB. Después, las actualizaciones son inalámbricas. El RAK se actualiza por USB por ahora."
+                else
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. The image is verified before reboot — a failed transfer leaves the node on its current firmware. RAK stays USB-flashed for now.",
+                color = TextMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+            )
+
+            if (showOtaWarning) {
+                AlertDialog(
+                    onDismissRequest = { showOtaWarning = false },
+                    title = { Text(if (appLanguage == "Spanish") "Advertencia" else "Update Warning", color = TextLight, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "Vas a flashear nuevo firmware por Bluetooth."
+                                else
+                                    "You are about to flash new firmware to $otaFileName over Bluetooth.",
+                                color = TextLight, fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("• Make sure the node is charged or on USB.", color = TextMuted, fontSize = 12.sp)
+                            Text("• Keep the node close to your phone.", color = TextMuted, fontSize = 12.sp)
+                            Text("• Do not close the app during the update.", color = TextMuted, fontSize = 12.sp)
+                            Text("• Verify this build matches the hardware (Heltec V4).", color = TextMuted, fontSize = 12.sp)
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                "The image is checksum-verified before the node reboots. If the transfer fails, the node keeps running its current firmware.",
+                                color = TextMuted, fontSize = 11.sp
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showOtaWarning = false
+                            otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }
+                        }) {
+                            Text("I know what I'm doing.", color = AccentMint, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showOtaWarning = false }) {
+                            Text(if (appLanguage == "Spanish") "Cancelar" else "Cancel", color = TextMuted)
+                        }
+                    },
+                    containerColor = SurfaceDark
+                )
             }
         }
 
