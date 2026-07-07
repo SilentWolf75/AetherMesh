@@ -11,9 +11,9 @@ android {
     namespace = "com.example.aethermesh"
     compileSdk = 36
     defaultConfig {
-        // Distinct from the original project's com.example.aethermesh so both
-        // apps can be installed side by side for comparison.
-        applicationId = "com.example.aethermesh.c"
+        // This tree is the main AetherMesh build (the ".c" comparison suffix
+        // was retired when the original project was abandoned).
+        applicationId = "com.example.aethermesh"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
