@@ -180,15 +180,40 @@ void updateChargingState(float voltage) {
     bool rising = (filteredVoltage - minV) > riseThreshold;
     bool high = filteredVoltage >= 4.15f;
 
-    if (rising || high) {
+    // Slow-charge detection: a trickle charge on a big pack rises only
+    // ~50-100mV per HOUR - invisible to the 80mV/4min quick trigger above
+    // (which is why a genuinely charging Heltec never showed the bolt).
+    // Track a long window (16 samples x 2 min = 32 min) of the filtered
+    // voltage and flag charging while the level climbs across it. Post-TX
+    // load rebound can't trip this: the window minimum predates the sag.
+    static float slowRing[16];
+    static int slowIdx = 0;
+    static int slowCount = 0;
+    static uint32_t lastSlowSampleMs = 0;
+    if (millis() - lastSlowSampleMs >= 120000UL) {
+        lastSlowSampleMs = millis();
+        slowRing[slowIdx] = filteredVoltage;
+        slowIdx = (slowIdx + 1) % 16;
+        if (slowCount < 16) slowCount++;
+    }
+    bool slowRising = false;
+    if (slowCount >= 8) { // engage once we have >=16 min of history
+        float slowMin = filteredVoltage;
+        for (int i = 0; i < slowCount; i++) {
+            if (slowRing[i] < slowMin) slowMin = slowRing[i];
+        }
+        slowRising = (filteredVoltage - slowMin) > 0.045f;
+    }
+
+    if (rising || high || slowRising) {
         batteryCharging = true;
         chargingHoldUntil = millis() + 180000; // hold 3 min after last trigger
     } else if ((int32_t)(millis() - chargingHoldUntil) >= 0) {
         batteryCharging = false;
     }
 
-    Serial.printf("Charge detect: V=%.3f floor=%.3f rise=%d high=%d vbus=%d -> charging=%d\n",
-                  filteredVoltage, minV, rising, high, externalPowerPresent(), batteryCharging);
+    Serial.printf("Charge detect: V=%.3f floor=%.3f rise=%d high=%d slow=%d -> charging=%d\n",
+                  filteredVoltage, minV, rising, high, slowRising, batteryCharging);
 }
 
 // Node Settings and NVS Configuration

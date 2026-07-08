@@ -1135,7 +1135,7 @@ fun NodesView(
                     Text(node.name, color = TextLight, fontWeight = FontWeight.Bold)
                     if (node.isCharging) {
                         Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Default.WbSunny, contentDescription = "Charging", tint = Color(0xFFFACC15), modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Bolt, contentDescription = "Charging", tint = Color(0xFFFACC15), modifier = Modifier.size(16.dp))
                     }
                 }
             },
@@ -1475,8 +1475,8 @@ fun NodeItem(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (node.isCharging) {
                     Icon(
-                        imageVector = Icons.Default.WbSunny,
-                        contentDescription = "Solar charging",
+                        imageVector = Icons.Default.Bolt,
+                        contentDescription = "Charging",
                         tint = Color(0xFFFACC15),
                         modifier = Modifier.size(15.dp)
                     )
@@ -5735,8 +5735,23 @@ fun ConnectionView(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("PWR ${batteryVal}%", color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (connectedNode?.isCharging == true) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Bolt,
+                                    contentDescription = "Charging",
+                                    tint = Color(0xFFFACC15),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
                         }
-                        Text("RSSI -78 dBm", color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        // Pack voltage (real data - this used to be a hardcoded RSSI string)
+                        if ((connectedNode?.voltage ?: 0f) > 0f) {
+                            Text(
+                                "%.2f V".format(connectedNode!!.voltage),
+                                color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
