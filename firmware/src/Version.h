@@ -15,3 +15,4 @@
 #endif
 
 #define AETHERMESH_FW_VERSION AETHERMESH_FW_BASE "-" FW_GIT_HASH
+// (OTA fast-profile confirmation build marker.)
