@@ -320,19 +320,54 @@ class BleConnectionManager(private val context: Context) {
         }
     }
 
-    // Write packet to TX characteristic. Synchronized: the OTA chunk stream and
-    // periodic sends (GPS share, telemetry) run on different threads, and the
-    // characteristic's value is shared mutable state - unsynchronized calls can
-    // clobber each other's payload before the write is dispatched.
-    @Synchronized
-    fun sendPacket(packetBytes: ByteArray): Boolean {
+    // Write flow control: even WRITE_TYPE_NO_RESPONSE writes must wait for
+    // onCharacteristicWrite before the stack accepts the next one. Blind
+    // retry-with-sleep throttled OTA to a crawl; gating on the callback lets
+    // writes stream at the radio's actual pace. The lock also protects the
+    // characteristic's shared value from concurrent senders (OTA stream vs
+    // periodic telemetry/GPS pushes).
+    private val writeLock = Object()
+
+    @Volatile
+    private var writeInFlight = false
+
+    fun sendPacket(packetBytes: ByteArray, timeoutMs: Long = 1000): Boolean {
         val gatt = bluetoothGatt ?: return false
         val char = txCharacteristic ?: return false
 
-        char.value = packetBytes
-        char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        synchronized(writeLock) {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (writeInFlight) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) {
+                    // Callback never came (stack hiccup / disconnect race) -
+                    // recover instead of deadlocking
+                    Log.w(TAG, "sendPacket: write-complete callback timeout; forcing gate open")
+                    writeInFlight = false
+                    break
+                }
+                try {
+                    writeLock.wait(left)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
 
-        return gatt.writeCharacteristic(char)
+            char.value = packetBytes
+            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+
+            val ok = gatt.writeCharacteristic(char)
+            if (ok) writeInFlight = true
+            return ok
+        }
+    }
+
+    internal fun onWriteCompleted() {
+        synchronized(writeLock) {
+            writeInFlight = false
+            writeLock.notifyAll()
+        }
     }
 
     // GATT Callbacks
@@ -458,6 +493,15 @@ class BleConnectionManager(private val context: Context) {
                 Log.e(TAG, "Service discovery failed: $status")
                 disconnect()
             }
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            // Stack is ready for the next write - release the send gate
+            onWriteCompleted()
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {

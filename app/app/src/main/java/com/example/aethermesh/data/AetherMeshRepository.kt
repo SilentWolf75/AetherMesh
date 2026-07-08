@@ -811,13 +811,15 @@ class AetherMeshRepository(private val context: Context) {
                             .setOtaData(chunk)
                             .build()
                             .toByteArray()
+                        // sendPacket now gates on the stack's write-complete
+                        // callback internally, so writes stream at the radio's
+                        // real pace - no artificial delays needed
                         var tries = 0
                         while (!bleManager.sendPacket(pkt)) {
-                            if (++tries > 100) throw Exception("BLE write failed repeatedly")
-                            delay(15)
+                            if (++tries > 20) throw Exception("BLE write failed repeatedly")
+                            delay(20)
                         }
                         windowEndOffset += len
-                        delay(3) // pace no-response writes
                     }
 
                     // Consume progress acks until the node confirms this window
