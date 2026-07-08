@@ -1049,6 +1049,10 @@ uint32_t otaTotalSize = 0;
 uint32_t otaLastChunkMs = 0;
 uint32_t otaChunksSinceAck = 0;
 static const uint32_t OTA_WINDOW = 8;          // chunks per ack (BLE rx ring holds 16)
+static const uint32_t OTA_MAX_CHUNK = 224;     // advertised in READY.next_offset so the
+                                               // app can pick fast params; firmware that
+                                               // predates this sends 0 -> app uses the
+                                               // legacy 192-byte/window-4 profile
 static const uint32_t OTA_TIMEOUT_MS = 30000;  // abort if the phone goes silent
 
 // (OTA round-trip test marker #2: distinct hash for a clean confirmation run.)
@@ -1142,7 +1146,8 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             otaChunksSinceAck = 0;
             Serial.printf("OTA begin: %u bytes, md5=%s\n", ctl.total_size, ctl.md5);
             drawOtaProgress(0, "receiving");
-            sendOtaStatus(aethermesh_OtaStatus_State_READY, 0, "");
+            // READY.next_offset advertises our max chunk size (capability hint)
+            sendOtaStatus(aethermesh_OtaStatus_State_READY, OTA_MAX_CHUNK, "");
             break;
         }
         case aethermesh_OtaControl_Op_END: {

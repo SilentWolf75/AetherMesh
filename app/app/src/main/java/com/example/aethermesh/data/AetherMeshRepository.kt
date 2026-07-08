@@ -743,8 +743,14 @@ class AetherMeshRepository(private val context: Context) {
     // OTA_WINDOW chunks per node ack (the node's BLE rx ring holds 8, and our
     // writes are WRITE_TYPE_NO_RESPONSE, so flow control is on us). The node
     // MD5-verifies the complete image before it reboots into it.
-    private val OTA_CHUNK = 224  // fills the 256-byte MTU minus packet overhead
-    private val OTA_WINDOW = 8   // node's BLE rx ring holds 16
+    // Fast profile - only used when the node's READY reply advertises support
+    // (READY.next_offset >= 224). Older firmware can't decode 224-byte chunks
+    // (its nanopb field cap is 192) and its 8-slot rx ring can't absorb
+    // 8-chunk bursts, so unknown/old nodes get the proven legacy profile.
+    private val OTA_CHUNK_FAST = 224
+    private val OTA_WINDOW_FAST = 8
+    private val OTA_CHUNK_LEGACY = 192
+    private val OTA_WINDOW_LEGACY = 4
 
     fun startFirmwareUpdate(firmware: ByteArray) {
         if (_otaState.value.active) return
@@ -768,12 +774,11 @@ class AetherMeshRepository(private val context: Context) {
                 // READY, which can take 10-20s; and if it just rebooted from a
                 // prior update the BLE session may still be re-authenticating.
                 // So allow a generous window and retry BEGIN once.
-                var beganOk = false
+                var chunkHint = -1
                 for (attempt in 1..2) {
                     sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5)
                     try {
-                        awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 25_000, "start acknowledgment")
-                        beganOk = true
+                        chunkHint = awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 25_000, "start acknowledgment")
                         break
                     } catch (e: Exception) {
                         if (attempt == 2) throw e
@@ -782,15 +787,20 @@ class AetherMeshRepository(private val context: Context) {
                         while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
                     }
                 }
-                if (!beganOk) throw Exception("Node never became ready")
+                if (chunkHint < 0) throw Exception("Node never became ready")
+
+                // Negotiate transfer profile from the node's capability hint
+                val chunkSize = if (chunkHint >= OTA_CHUNK_FAST) OTA_CHUNK_FAST else OTA_CHUNK_LEGACY
+                val window = if (chunkHint >= OTA_CHUNK_FAST) OTA_WINDOW_FAST else OTA_WINDOW_LEGACY
+                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window (node hint $chunkHint)")
 
                 _otaState.value = OtaState(active = true, status = "Uploading...")
                 var offset = 0
                 while (offset < firmware.size) {
                     var windowEndOffset = offset
-                    for (w in 0 until OTA_WINDOW) {
+                    for (w in 0 until window) {
                         if (windowEndOffset >= firmware.size) break
-                        val len = minOf(OTA_CHUNK, firmware.size - windowEndOffset)
+                        val len = minOf(chunkSize, firmware.size - windowEndOffset)
                         val chunk = com.example.aethermesh.proto.OtaData.newBuilder()
                             .setOffset(windowEndOffset)
                             .setData(com.google.protobuf.ByteString.copyFrom(firmware, windowEndOffset, len))
@@ -966,23 +976,28 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    // Wait for a specific terminal state; ERROR from the node always throws.
+    // Wait for a specific state and return its next_offset (READY uses it as a
+    // capability hint). ERROR from the node always throws.
     private suspend fun awaitOtaState(
         wanted: com.example.aethermesh.proto.OtaStatus.State,
         timeoutMs: Long,
         what: String
-    ) {
-        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-            while (true) {
+    ): Int {
+        val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            var value = -1
+            var got = false
+            while (!got) {
                 val st = otaStatusChannel.receive()
                 when (st.state) {
-                    wanted -> return@withTimeoutOrNull
+                    wanted -> { value = st.nextOffset; got = true }
                     com.example.aethermesh.proto.OtaStatus.State.ERROR ->
                         throw Exception(st.message.ifEmpty { "node reported error" })
                     else -> { /* keep waiting */ }
                 }
             }
-        } ?: throw Exception("Timed out waiting for $what")
+            value
+        }
+        return result ?: throw Exception("Timed out waiting for $what")
     }
 
     // Wait for the next IN_PROGRESS ack and return the node's flashed offset.
