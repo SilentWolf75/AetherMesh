@@ -874,11 +874,36 @@ class AetherMeshRepository(private val context: Context) {
     // firmware - nothing is lost.
     private var dfuController: no.nordicsemi.android.dfu.DfuServiceController? = null
 
+    // Set by any DFU listener callback; a watchdog uses it to detect a DFU
+    // service that silently never engaged (e.g. bootloader not found).
+    @Volatile
+    private var dfuSawActivity = false
+
     private val dfuProgressListener = object : no.nordicsemi.android.dfu.DfuProgressListenerAdapter() {
+        override fun onDeviceConnecting(deviceAddress: String) {
+            dfuSawActivity = true
+            _otaState.value = OtaState(active = true, status = "DFU: connecting to bootloader...")
+        }
+
+        override fun onDfuProcessStarting(deviceAddress: String) {
+            dfuSawActivity = true
+            _otaState.value = OtaState(active = true, status = "DFU: starting transfer...")
+        }
+
+        override fun onFirmwareValidating(deviceAddress: String) {
+            dfuSawActivity = true
+            _otaState.value = OtaState(active = true, progress = 100, status = "DFU: validating firmware...")
+        }
+
+        override fun onDeviceDisconnecting(deviceAddress: String?) {
+            dfuSawActivity = true
+        }
+
         override fun onProgressChanged(
             deviceAddress: String, percent: Int, speed: Float, avgSpeed: Float,
             currentPart: Int, partsTotal: Int
         ) {
+            dfuSawActivity = true
             _otaState.value = OtaState(active = true, progress = percent, status = "DFU uploading... $percent%")
         }
 
@@ -908,6 +933,49 @@ class AetherMeshRepository(private val context: Context) {
         no.nordicsemi.android.dfu.DfuServiceListenerHelper.registerProgressListener(context, dfuProgressListener)
     }
 
+    // Scan for a device advertising a Nordic DFU service (legacy or secure).
+    // Returns its address, or null if none appears within the timeout.
+    private suspend fun findDfuDevice(timeoutMs: Long): String? {
+        val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+        val scanner = btManager?.adapter?.bluetoothLeScanner ?: return null
+
+        val legacyDfu = android.os.ParcelUuid.fromString("00001530-1212-EFDE-1523-785FEABCD123")
+        val secureDfu = android.os.ParcelUuid.fromString("0000FE59-0000-1000-8000-00805F9B34FB")
+        val filters = listOf(
+            android.bluetooth.le.ScanFilter.Builder().setServiceUuid(legacyDfu).build(),
+            android.bluetooth.le.ScanFilter.Builder().setServiceUuid(secureDfu).build()
+        )
+        val settings = android.bluetooth.le.ScanSettings.Builder()
+            .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        val found = kotlinx.coroutines.CompletableDeferred<String?>()
+        val callback = object : android.bluetooth.le.ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+                Log.d(TAG, "DFU scan hit: ${result.device.address} (${result.device.name ?: "?"})")
+                found.complete(result.device.address)
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.e(TAG, "DFU scan failed: $errorCode")
+                found.complete(null)
+            }
+        }
+
+        return try {
+            scanner.startScan(filters, settings, callback)
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { found.await() }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "DFU scan permission error: ${e.message}")
+            null
+        } finally {
+            try {
+                scanner.stopScan(callback)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun startRakDfuUpdate(zipUri: android.net.Uri) {
         if (_otaState.value.active) return
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
@@ -935,16 +1003,33 @@ class AetherMeshRepository(private val context: Context) {
                 bleManager.detachForDfu()
                 delay(3000) // bootloader boot + advertising settle
 
+                // Nordic-family bootloaders often advertise on a DIFFERENT
+                // address (MAC+1) and name in DFU mode, so scan for the DFU
+                // service instead of assuming the application's address.
+                _otaState.value = OtaState(active = true, status = "Searching for DFU bootloader...")
+                val dfuMac = findDfuDevice(15_000)
+                    ?: throw Exception("DFU bootloader not advertising (node may need a newer bootloader)")
+                Log.d(TAG, "DFU bootloader found at $dfuMac (app was at $mac)")
+
+                dfuSawActivity = false
                 _otaState.value = OtaState(active = true, status = "Starting DFU transfer...")
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
                     no.nordicsemi.android.dfu.DfuServiceInitiator.createDfuNotificationChannel(context)
-                    dfuController = no.nordicsemi.android.dfu.DfuServiceInitiator(mac)
+                    dfuController = no.nordicsemi.android.dfu.DfuServiceInitiator(dfuMac)
                         .setDeviceName(deviceName)
                         .setKeepBond(false)
                         .setZip(zipUri)
                         .setForeground(true)
                         .setDisableNotification(false)
                         .start(context, com.example.aethermesh.ble.DfuService::class.java)
+                }
+
+                // Watchdog: if the DFU service shows no life at all, surface an
+                // error instead of leaving the bar stuck forever.
+                delay(45_000)
+                if (!dfuSawActivity && _otaState.value.active) {
+                    dfuController?.abort()
+                    throw Exception("DFU service never engaged the bootloader")
                 }
                 // From here the DfuProgressListener drives otaState.
             } catch (e: Exception) {
