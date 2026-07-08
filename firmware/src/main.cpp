@@ -1464,6 +1464,7 @@ void setup() {
     }
     
     Serial.println("\n=== AETHERMESH NODE STARTING ===");
+    Serial.printf("Firmware: %s\n", AETHERMESH_FW_VERSION);
     
     // Check boot button for factory reset before loading settings
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0

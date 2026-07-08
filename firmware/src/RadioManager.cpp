@@ -1,4 +1,5 @@
 #include "RadioManager.h"
+#include "Version.h"
 #include <SPI.h>
 
 // Volatile flag for ISR
@@ -175,7 +176,8 @@ void RadioManager::loop() {
     // when no packets are arriving (diagnosing "node stopped receiving" reports).
     if (millis() - lastHealthLogTime > 30000) {
         lastHealthLogTime = millis();
-        Serial.printf("Radio health: mode=%s | cfg %.3fMHz SF%u BW%d %ddBm | IRQ=0x%04X | last RX activity %lus ago | ambient RSSI %.1f dBm\n",
+        Serial.printf("Radio health: fw %s | mode=%s | cfg %.3fMHz SF%u BW%d %ddBm | IRQ=0x%04X | last RX activity %lus ago | ambient RSSI %.1f dBm\n",
+                      AETHERMESH_FW_VERSION,
                       isTransmitting ? "TX" : "RX",
                       frequency, (unsigned)spreadingFactor, (int)bandwidth, (int)txPower,
                       radio->getIrqStatus(),
