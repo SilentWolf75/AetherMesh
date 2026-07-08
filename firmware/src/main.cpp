@@ -132,16 +132,11 @@ void updateChargingState(float voltage) {
     }
     batteryVoltage = voltage;
 
-#if defined(RAK4631) || defined(RAK3401_1W)
-    // VBUSDETECT is definitive on nRF52 (USB and the solar connector share the
-    // VBUS rail), so it alone decides. The voltage-rise heuristic must NOT run
-    // here: the battery's rebound after each LoRa TX burst exceeds any usable
-    // rise threshold, which kept flagging phantom "charging" on an unplugged
-    // node (rising + 3-min hold re-triggered forever).
-    batteryCharging = externalPowerPresent();
-    return;
-#endif
-
+    // VBUSDETECT (nRF52) catches USB power instantly and definitively. It does
+    // NOT see the solar connector - field-tested 2026-07-07: the RAK19007's
+    // solar input feeds only the battery charger, not the VBUS rail the chip
+    // senses - so when VBUS is absent we still fall through to the voltage
+    // heuristics below to catch solar charging.
     if (externalPowerPresent()) {
         batteryCharging = true;
         return;
@@ -174,8 +169,9 @@ void updateChargingState(float voltage) {
 
     // Rising above the recent floor => charge current present. The absolute
     // 4.15V catch handles the near-full charging plateau where the rise stalls.
-    // (ESP32/Heltec only - the nRF52 boards return on VBUSDETECT above.)
-    const float riseThreshold = 0.080f; // High threshold (80mV) to completely block noise/load transient triggers
+    // 80mV threshold on ALL boards: the old nRF52-specific 8mV threshold was
+    // below post-TX voltage rebound and caused phantom "charging" forever.
+    const float riseThreshold = 0.080f;
 
     bool rising = (filteredVoltage - minV) > riseThreshold;
     bool high = filteredVoltage >= 4.15f;
