@@ -4446,19 +4446,12 @@ fun SettingsView(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    if (!isConnected) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Conéctate a un nodo para actualizar su firmware." else "Connect to a node to update its firmware over BLE.",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                    } else if (!otaSupported) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Este modelo de nodo no soporta OTA." else "This node model doesn't support OTA updates.",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 12.sp
-                        )
-                    } else if (otaState.active) {
+                    // An active transfer ALWAYS owns this card. This must be the
+                    // first branch: the RAK DFU flow deliberately disconnects our
+                    // BLE link so the bootloader can take over, and the old
+                    // !isConnected-first ordering swapped to the "connect to a
+                    // node" prompt mid-flash - hiding the DFU progress entirely.
+                    if (otaState.active) {
                         LinearProgressIndicator(
                             progress = { otaState.progress / 100f },
                             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
@@ -4483,6 +4476,28 @@ fun SettingsView(
                         ) {
                             Text(if (appLanguage == "Spanish") "Cancelar" else "Cancel Update", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
+                    } else if (!isConnected) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Conéctate a un nodo para actualizar su firmware." else "Connect to a node to update its firmware over BLE.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                        // A finished/failed update's result stays visible even
+                        // though the node is still reconnecting
+                        if (otaState.status.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                otaState.status,
+                                color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                    } else if (!otaSupported) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Este modelo de nodo no soporta OTA." else "This node model doesn't support OTA updates.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 12.sp
+                        )
                     } else {
                         OutlinedButton(
                             onClick = { otaFilePicker.launch(arrayOf("application/octet-stream", "*/*")) },
