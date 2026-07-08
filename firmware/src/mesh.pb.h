@@ -13,7 +13,8 @@
 typedef enum _aethermesh_OtaControl_Op {
     aethermesh_OtaControl_Op_BEGIN = 0,
     aethermesh_OtaControl_Op_END = 1,
-    aethermesh_OtaControl_Op_ABORT = 2
+    aethermesh_OtaControl_Op_ABORT = 2,
+    aethermesh_OtaControl_Op_ENTER_DFU = 3 /* nRF52/RAK: reboot into the Adafruit/Nordic DFU bootloader; */
 } aethermesh_OtaControl_Op;
 
 typedef enum _aethermesh_OtaStatus_State {
@@ -50,7 +51,7 @@ typedef struct _aethermesh_OtaControl {
     char md5[33]; /* hex MD5 of the full image (BEGIN) */
 } aethermesh_OtaControl;
 
-typedef PB_BYTES_ARRAY_T(192) aethermesh_OtaData_data_t;
+typedef PB_BYTES_ARRAY_T(224) aethermesh_OtaData_data_t;
 typedef struct _aethermesh_OtaData {
     uint32_t offset; /* byte offset of this chunk; must be sequential */
     aethermesh_OtaData_data_t data; /* chunk payload (max 192 bytes, see mesh.options) */
@@ -173,8 +174,8 @@ extern "C" {
 
 /* Helper constants for enums */
 #define _aethermesh_OtaControl_Op_MIN aethermesh_OtaControl_Op_BEGIN
-#define _aethermesh_OtaControl_Op_MAX aethermesh_OtaControl_Op_ABORT
-#define _aethermesh_OtaControl_Op_ARRAYSIZE ((aethermesh_OtaControl_Op)(aethermesh_OtaControl_Op_ABORT+1))
+#define _aethermesh_OtaControl_Op_MAX aethermesh_OtaControl_Op_ENTER_DFU
+#define _aethermesh_OtaControl_Op_ARRAYSIZE ((aethermesh_OtaControl_Op)(aethermesh_OtaControl_Op_ENTER_DFU+1))
 
 #define _aethermesh_OtaStatus_State_MIN aethermesh_OtaStatus_State_IDLE
 #define _aethermesh_OtaStatus_State_MAX aethermesh_OtaStatus_State_ERROR
@@ -471,10 +472,10 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
-#define aethermesh_MeshPacket_size               257
+#define aethermesh_MeshPacket_size               286
 #define aethermesh_NodeConfig_size               112
 #define aethermesh_OtaControl_size               42
-#define aethermesh_OtaData_size                  201
+#define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                100

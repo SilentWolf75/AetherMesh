@@ -118,4 +118,6 @@ dependencies {
   implementation(libs.protobuf.kotlin.lite)
   implementation(libs.osmdroid.android)
   implementation("androidx.compose.material:material-icons-extended")
+  // Nordic DFU: streams .zip firmware packages to the nRF52 (RAK) bootloader
+  implementation("no.nordicsemi.android:dfu:2.5.0")
 }

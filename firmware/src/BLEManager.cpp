@@ -5,7 +5,7 @@
 // bursts faster than one loop pass, and the old single-slot buffer dropped
 // everything after the first.
 static constexpr size_t BLE_RX_BUFFER_SIZE = 256;
-static constexpr size_t BLE_RX_RING_SLOTS = 8;
+static constexpr size_t BLE_RX_RING_SLOTS = 16; // absorbs OTA bursts across flash-erase stalls
 struct BleRxSlot {
     uint8_t data[BLE_RX_BUFFER_SIZE];
     size_t len;

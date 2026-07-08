@@ -153,6 +153,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     // BLE firmware update (OTA)
     val otaState = repository.otaState
     fun startFirmwareUpdate(firmware: ByteArray) = repository.startFirmwareUpdate(firmware)
+    fun startRakDfuUpdate(zipUri: android.net.Uri) = repository.startRakDfuUpdate(zipUri)
     fun cancelFirmwareUpdate() = repository.cancelFirmwareUpdate()
     fun resetOtaState() = repository.resetOtaState()
 

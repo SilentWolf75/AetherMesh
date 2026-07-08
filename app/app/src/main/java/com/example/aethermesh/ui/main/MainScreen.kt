@@ -4397,9 +4397,13 @@ fun SettingsView(
         }
 
         if (activeCategory == SettingsCategory.FIRMWARE) {
-            // --- FIRMWARE UPDATE VIEW (BLE OTA - Heltec only for now) ---
+            // --- FIRMWARE UPDATE VIEW ---
+            // Heltec/ESP32: our in-app chunked OTA of a .bin into the inactive slot.
+            // RAK/nRF52: node reboots into its DFU bootloader and the Nordic DFU
+            // library streams the .zip package to it (Meshtastic-style).
             val otaState by viewModel.otaState.collectAsStateWithLifecycle()
             var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
+            var otaFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
             var otaFileName by remember { mutableStateOf("") }
             var showOtaWarning by remember { mutableStateOf(false) }
             val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -4408,7 +4412,8 @@ fun SettingsView(
                         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         if (bytes != null && bytes.isNotEmpty()) {
                             otaFileBytes = bytes
-                            otaFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware.bin"
+                            otaFileUri = uri
+                            otaFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
                             viewModel.resetOtaState()
                         }
                     } catch (e: Exception) {
@@ -4416,7 +4421,9 @@ fun SettingsView(
                     }
                 }
             }
-            val otaSupported = connectedNode?.model?.contains("Heltec") == true
+            val isHeltecNode = connectedNode?.model?.contains("Heltec", ignoreCase = true) == true
+            val isRakNode = connectedNode?.model?.contains("RAK", ignoreCase = true) == true
+            val otaSupported = isHeltecNode || isRakNode
 
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -4447,7 +4454,7 @@ fun SettingsView(
                         )
                     } else if (!otaSupported) {
                         Text(
-                            text = if (appLanguage == "Spanish") "Por ahora solo nodos Heltec." else "Heltec nodes only for now (the RAK needs its DFU path; it stays USB-flashed).",
+                            text = if (appLanguage == "Spanish") "Este modelo de nodo no soporta OTA." else "This node model doesn't support OTA updates.",
                             color = Color(0xFFFBBF24),
                             fontSize = 12.sp
                         )
@@ -4486,10 +4493,14 @@ fun SettingsView(
                             Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentCyan)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                if (otaFileName.isEmpty())
-                                    (if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin")
-                                else
-                                    "$otaFileName (${(otaFileBytes?.size ?: 0) / 1024} kB)",
+                                if (otaFileName.isEmpty()) {
+                                    if (isRakNode)
+                                        (if (appLanguage == "Spanish") "Elegir paquete .zip (DFU)" else "Choose firmware .zip (DFU package)")
+                                    else
+                                        (if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin")
+                                } else {
+                                    "$otaFileName (${(otaFileBytes?.size ?: 0) / 1024} kB)"
+                                },
                                 fontSize = 12.sp
                             )
                         }
@@ -4524,9 +4535,9 @@ fun SettingsView(
 
             Text(
                 text = if (appLanguage == "Spanish")
-                    "El primer firmware con OTA debe instalarse por USB. Después, las actualizaciones son inalámbricas. El RAK se actualiza por USB por ahora."
+                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec usa .bin; RAK usa el paquete .zip (DFU del bootloader)."
                 else
-                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. The image is verified before reboot — a failed transfer leaves the node on its current firmware. RAK stays USB-flashed for now.",
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec takes the .bin (verified before reboot); RAK takes the .zip DFU package (streamed to its bootloader). A failed transfer leaves the node on its current firmware.",
                 color = TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
@@ -4560,7 +4571,11 @@ fun SettingsView(
                     confirmButton = {
                         TextButton(onClick = {
                             showOtaWarning = false
-                            otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }
+                            if (isRakNode) {
+                                otaFileUri?.let { viewModel.startRakDfuUpdate(it) }
+                            } else {
+                                otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }
+                            }
                         }) {
                             Text("I know what I'm doing.", color = AccentMint, fontWeight = FontWeight.Bold)
                         }

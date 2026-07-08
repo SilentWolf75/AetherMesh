@@ -46,6 +46,12 @@
             android:foregroundServiceType="connectedDevice|location"
             android:exported="false" />
 
+        <!-- Nordic DFU transfer service for RAK/nRF52 bootloader firmware updates -->
+        <service
+            android:name=".ble.DfuService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
+
         <!-- Shares exported CSV files (range test logs) with other apps -->
         <provider
             android:name="androidx.core.content.FileProvider"

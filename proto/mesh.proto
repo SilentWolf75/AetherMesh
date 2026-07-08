@@ -43,6 +43,9 @@ message OtaControl {
     BEGIN = 0;
     END = 1;
     ABORT = 2;
+    ENTER_DFU = 3;  // nRF52/RAK: reboot into the Adafruit/Nordic DFU bootloader;
+                    // the phone then streams the .zip DFU package to the
+                    // bootloader itself (Nordic DFU protocol), not this app code.
   }
   Op op = 1;
   uint32 total_size = 2;   // firmware image size in bytes (BEGIN)

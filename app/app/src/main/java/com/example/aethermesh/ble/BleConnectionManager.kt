@@ -240,6 +240,39 @@ class BleConnectionManager(private val context: Context) {
         bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
+    // Set during a bootloader DFU update: our auto-reconnect must not fight the
+    // Nordic DFU library for the device. Unlike disconnect(), this keeps the
+    // paired MAC so normal reconnection resumes afterward.
+    @Volatile
+    var suppressReconnect = false
+
+    fun detachForDfu() {
+        suppressReconnect = true
+        reconnectRunnable?.let {
+            handler.removeCallbacks(it)
+            reconnectRunnable = null
+        }
+        bluetoothGatt?.disconnect()
+        bluetoothGatt?.close()
+        bluetoothGatt = null
+        isConnected = false
+        connectedDeviceName = null
+        onConnectionStateChanged?.invoke(false)
+    }
+
+    fun resumeAfterDfu() {
+        suppressReconnect = false
+        val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+        if (savedMac != null && !isConnected) {
+            // Give the freshly flashed node a moment to boot before connecting
+            handler.postDelayed({
+                if (!isConnected && !userWantsDisconnect) {
+                    connect(savedMac)
+                }
+            }, 4000)
+        }
+    }
+
     fun disconnect() {
         userWantsDisconnect = true
         
@@ -351,8 +384,9 @@ class BleConnectionManager(private val context: Context) {
                 
                 handler.post { onConnectionStateChanged?.invoke(false) }
 
-                // Auto-reconnect if it's not a user-initiated disconnect
-                if (!userWantsDisconnect) {
+                // Auto-reconnect if it's not a user-initiated disconnect (and not
+                // suspended for a bootloader DFU transfer)
+                if (!userWantsDisconnect && !suppressReconnect) {
                     val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
                     if (savedMac != null) {
                         Log.d(TAG, "Unexpected disconnect. Retrying connection in 5 seconds...")

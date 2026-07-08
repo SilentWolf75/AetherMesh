@@ -1048,7 +1048,7 @@ uint32_t otaExpectedOffset = 0;
 uint32_t otaTotalSize = 0;
 uint32_t otaLastChunkMs = 0;
 uint32_t otaChunksSinceAck = 0;
-static const uint32_t OTA_WINDOW = 4;          // chunks per ack (ring holds 8)
+static const uint32_t OTA_WINDOW = 8;          // chunks per ack (BLE rx ring holds 16)
 static const uint32_t OTA_TIMEOUT_MS = 30000;  // abort if the phone goes silent
 
 // (OTA round-trip test marker #2: distinct hash for a clean confirmation run.)
@@ -1100,6 +1100,23 @@ void otaAbort(const char* reason) {
 }
 
 void handleOtaControl(const aethermesh_OtaControl& ctl) {
+    // nRF52/RAK path: firmware updates go through the Adafruit/Nordic DFU
+    // bootloader, not this application code. ENTER_DFU reboots into the
+    // bootloader; the phone (Nordic DFU library) streams the .zip package to
+    // it directly. If the transfer never starts, the bootloader times out
+    // back into the current app - nothing is lost.
+    if (ctl.op == aethermesh_OtaControl_Op_ENTER_DFU) {
+#if defined(RAK4631) || defined(RAK3401_1W)
+        Serial.println("Rebooting into OTA DFU bootloader (phone streams the update)...");
+        sendOtaStatus(aethermesh_OtaStatus_State_READY, 0, "Entering DFU bootloader");
+        delay(600); // let the BLE notify flush before we tear the stack down
+        enterOTADfu();
+#else
+        sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "ENTER_DFU is for RAK/nRF52 boards");
+#endif
+        return;
+    }
+
 #if defined(HELTEC_V4)
     switch (ctl.op) {
         case aethermesh_OtaControl_Op_BEGIN: {
@@ -1156,7 +1173,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
     }
 #else
     (void)ctl;
-    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "OTA not supported on this board");
+    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "Use DFU mode on this board");
 #endif
 }
 

@@ -6,7 +6,7 @@
 #error Regenerate this file with the current version of nanopb generator.
 #endif
 
-PB_BIND(aethermesh_MeshPacket, aethermesh_MeshPacket, AUTO)
+PB_BIND(aethermesh_MeshPacket, aethermesh_MeshPacket, 2)
 
 
 PB_BIND(aethermesh_OtaControl, aethermesh_OtaControl, AUTO)

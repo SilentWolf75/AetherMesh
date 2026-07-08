@@ -743,8 +743,8 @@ class AetherMeshRepository(private val context: Context) {
     // OTA_WINDOW chunks per node ack (the node's BLE rx ring holds 8, and our
     // writes are WRITE_TYPE_NO_RESPONSE, so flow control is on us). The node
     // MD5-verifies the complete image before it reboots into it.
-    private val OTA_CHUNK = 192
-    private val OTA_WINDOW = 4
+    private val OTA_CHUNK = 224  // fills the 256-byte MTU minus packet overhead
+    private val OTA_WINDOW = 8   // node's BLE rx ring holds 16
 
     fun startFirmwareUpdate(firmware: ByteArray) {
         if (_otaState.value.active) return
@@ -807,12 +807,17 @@ class AetherMeshRepository(private val context: Context) {
                             delay(15)
                         }
                         windowEndOffset += len
-                        delay(8) // pace no-response writes
+                        delay(3) // pace no-response writes
                     }
 
-                    val ack = awaitOtaProgress(10_000)
-                    if (ack != windowEndOffset) {
-                        throw Exception("Node acked $ack, expected $windowEndOffset")
+                    // Consume progress acks until the node confirms this window
+                    // (tolerant of the node acking at a different cadence).
+                    var acked = 0
+                    while (acked < windowEndOffset) {
+                        acked = awaitOtaProgress(10_000)
+                        if (acked > windowEndOffset) {
+                            throw Exception("Node acked $acked past window end $windowEndOffset")
+                        }
                     }
                     offset = windowEndOffset
                     _otaState.value = OtaState(
@@ -848,6 +853,96 @@ class AetherMeshRepository(private val context: Context) {
 
     fun cancelFirmwareUpdate() {
         otaJob?.cancel()
+        dfuController?.abort()
+    }
+
+    // --- RAK/nRF52 firmware update via the Nordic DFU bootloader ---
+    // ENTER_DFU reboots the node into its Adafruit/Nordic bootloader; the
+    // Nordic DFU library then streams the .zip package to the bootloader
+    // directly (same mechanism Meshtastic uses on the RAK4631). If the
+    // transfer never starts, the bootloader times out back into the current
+    // firmware - nothing is lost.
+    private var dfuController: no.nordicsemi.android.dfu.DfuServiceController? = null
+
+    private val dfuProgressListener = object : no.nordicsemi.android.dfu.DfuProgressListenerAdapter() {
+        override fun onProgressChanged(
+            deviceAddress: String, percent: Int, speed: Float, avgSpeed: Float,
+            currentPart: Int, partsTotal: Int
+        ) {
+            _otaState.value = OtaState(active = true, progress = percent, status = "DFU uploading... $percent%")
+        }
+
+        override fun onDfuCompleted(deviceAddress: String) {
+            _otaState.value = OtaState(
+                progress = 100, done = true,
+                status = "DFU complete - node rebooting into the new firmware"
+            )
+            dfuController = null
+            bleManager.resumeAfterDfu()
+        }
+
+        override fun onDfuAborted(deviceAddress: String) {
+            _otaState.value = OtaState(error = true, status = "DFU cancelled")
+            dfuController = null
+            bleManager.resumeAfterDfu()
+        }
+
+        override fun onError(deviceAddress: String, error: Int, errorType: Int, message: String?) {
+            _otaState.value = OtaState(error = true, status = "DFU failed: ${message ?: "error $error"}")
+            dfuController = null
+            bleManager.resumeAfterDfu()
+        }
+    }
+
+    init {
+        no.nordicsemi.android.dfu.DfuServiceListenerHelper.registerProgressListener(context, dfuProgressListener)
+    }
+
+    fun startRakDfuUpdate(zipUri: android.net.Uri) {
+        if (_otaState.value.active) return
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
+            _otaState.value = OtaState(error = true, status = "Not connected/authenticated")
+            return
+        }
+        val mac = bleManager.getConnectedDeviceAddress()
+        if (mac == null) {
+            _otaState.value = OtaState(error = true, status = "No device address")
+            return
+        }
+        val deviceName = bleManager.connectedDeviceName ?: "AetherMesh"
+        val nodeId = bleManager.connectedNodeId
+
+        otaJob = repositoryScope.launch(Dispatchers.IO) {
+            try {
+                _otaState.value = OtaState(active = true, status = "Rebooting node into DFU bootloader...")
+                while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
+
+                sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.ENTER_DFU, 0, "")
+                awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 10_000, "DFU mode acknowledgment")
+
+                // The node is rebooting into its bootloader; release our GATT and
+                // pause auto-reconnect so the DFU library owns the connection.
+                bleManager.detachForDfu()
+                delay(3000) // bootloader boot + advertising settle
+
+                _otaState.value = OtaState(active = true, status = "Starting DFU transfer...")
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    no.nordicsemi.android.dfu.DfuServiceInitiator.createDfuNotificationChannel(context)
+                    dfuController = no.nordicsemi.android.dfu.DfuServiceInitiator(mac)
+                        .setDeviceName(deviceName)
+                        .setKeepBond(false)
+                        .setZip(zipUri)
+                        .setForeground(true)
+                        .setDisableNotification(false)
+                        .start(context, com.example.aethermesh.ble.DfuService::class.java)
+                }
+                // From here the DfuProgressListener drives otaState.
+            } catch (e: Exception) {
+                Log.e(TAG, "DFU start failed: ${e.message}")
+                _otaState.value = OtaState(error = true, status = "DFU failed: ${e.message}")
+                bleManager.resumeAfterDfu()
+            }
+        }
     }
 
     fun resetOtaState() {
