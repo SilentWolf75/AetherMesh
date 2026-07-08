@@ -142,6 +142,18 @@ void updateChargingState(float voltage) {
         return;
     }
 
+    // Plug/unplug step detection (instant): connecting a charger steps the
+    // terminal voltage UP by ~60-200mV within one sample; disconnecting steps
+    // it DOWN the same way. Each sample is already a 32-read average taken
+    // ~30s apart, so a 60mV jump between consecutive samples is a strong
+    // charger signature - detected immediately, long before the windowed rise
+    // detectors below can confirm.
+    static float prevRawVoltage = -1.0f;
+    float rawStep = (prevRawVoltage > 0.0f) ? (voltage - prevRawVoltage) : 0.0f;
+    prevRawVoltage = voltage;
+    bool plugStep = rawStep > 0.060f;
+    bool unplugStep = rawStep < -0.060f;
+
     // Apply an Exponential Moving Average (EMA) filter to smooth out ADC noise and load transients
     static float filteredVoltage = -1.0f;
     static const int WIN = 8;          // 8 samples x ~30s = ~4 min window
@@ -201,15 +213,20 @@ void updateChargingState(float voltage) {
         slowRising = (filteredVoltage - slowMin) > 0.045f;
     }
 
-    if (rising || high || slowRising) {
+    if (unplugStep) {
+        // Sharp drop = charger removed; clear immediately instead of letting
+        // the hold linger for minutes after unplugging
+        batteryCharging = false;
+        chargingHoldUntil = 0;
+    } else if (rising || high || slowRising || plugStep) {
         batteryCharging = true;
         chargingHoldUntil = millis() + 180000; // hold 3 min after last trigger
     } else if ((int32_t)(millis() - chargingHoldUntil) >= 0) {
         batteryCharging = false;
     }
 
-    Serial.printf("Charge detect: V=%.3f floor=%.3f rise=%d high=%d slow=%d -> charging=%d\n",
-                  filteredVoltage, minV, rising, high, slowRising, batteryCharging);
+    Serial.printf("Charge detect: V=%.3f floor=%.3f rise=%d high=%d slow=%d step=%.0fmV -> charging=%d\n",
+                  filteredVoltage, minV, rising, high, slowRising, rawStep * 1000.0f, batteryCharging);
 }
 
 // Node Settings and NVS Configuration
