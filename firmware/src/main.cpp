@@ -1676,9 +1676,17 @@ void setup() {
     localNodeId = getHardwareNodeId();
     randomSeed(localNodeId);
     
-    // 2. Initialize display if Heltec V4 — show the boot splash while the
+    // 2. Initialize display if Heltec V4, V3, or LILYGO T-Deck — show the boot splash while the
     // radio/BLE/GPS bring-up below runs
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(LILYGO_T_DECK)
+    // Pull board peripheral power enable HIGH (GPIO 10) to power display/keyboard
+    pinMode(10, OUTPUT);
+    digitalWrite(10, HIGH);
+    delay(20);
+    // Pull backlight enable HIGH (GPIO 42)
+    pinMode(42, OUTPUT);
+    digitalWrite(42, HIGH);
+#elif defined(HELTEC_V4) || defined(HELTEC_V3)
     u8g2.begin();
     drawBootSplash(0);
     uint32_t splashShownAt = millis();
