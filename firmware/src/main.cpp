@@ -259,6 +259,10 @@ float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
 bool hasInheritedLocation = false;
 uint32_t lastInheritedTime = 0;
+bool hasOnboardGps = true;
+uint32_t totalGpsBytesReceived = 0;
+bool gpsChecked = false;
+static constexpr uint32_t GPS_DETECT_TIMEOUT_MS = 15000;
 static const uint32_t SETTINGS_VERSION = 8;
 
 // OLED message popup state
@@ -682,6 +686,12 @@ void drawGpsPage() {
                      (unsigned long)((millis() - lastInheritedTime) / 1000));
             u8g2.drawStr(0, 56, line);
         }
+    } else if (!hasOnboardGps) {
+        u8g2.setFont(u8g2_font_7x14_tf);
+        u8g2.drawStr(0, 32, "NO ONBOARD GPS");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        u8g2.drawStr(0, 47, "Onboard module absent");
+        u8g2.drawStr(0, 58, "Share phone GPS in app");
     } else if (gpsMode != 0) {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, "GPS DISABLED");
@@ -1669,6 +1679,19 @@ void setup() {
 }
 
 void loop() {
+    // Check if onboard GPS is present (run once after GPS_DETECT_TIMEOUT_MS)
+    if (!gpsChecked && millis() > GPS_DETECT_TIMEOUT_MS) {
+        gpsChecked = true;
+        if (gpsMode == 0 && totalGpsBytesReceived == 0) {
+            hasOnboardGps = false;
+            Serial.println("GPS Check: No serial or I2C bytes received from GNSS module. Concluding onboard GPS is absent.");
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
+            // Power off the unpopulated GPS divider/power rail to save power
+            digitalWrite(34, LOW); 
+#endif
+        }
+    }
+
     static uint32_t lastBleActiveTime = millis();
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
     static bool lastButtonState = HIGH;
@@ -1763,9 +1786,10 @@ void loop() {
     // Read and parse NMEA stream from GPS (skipped entirely when the module
     // is unpowered by gps_mode=1)
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W)
-    if (gpsMode == 0) {
+    if (gpsMode == 0 && hasOnboardGps) {
         while (Serial1.available() > 0) {
             gps.encode(Serial1.read());
+            totalGpsBytesReceived++;
         }
     }
 #endif
@@ -1773,13 +1797,14 @@ void loop() {
 #if defined(RAK4631) || defined(RAK3401_1W)
     // Read and parse NMEA stream from I2C for ZOE-M8Q (RAK12500 default I2C address 0x42)
     static uint32_t lastI2CGPSPoll = 0;
-    if (gpsMode == 0 && millis() - lastI2CGPSPoll > 100) {
+    if (gpsMode == 0 && hasOnboardGps && millis() - lastI2CGPSPoll > 100) {
         lastI2CGPSPoll = millis();
         Wire.requestFrom((uint8_t)0x42, (uint8_t)32);
         while (Wire.available()) {
             char c = Wire.read();
             if (c != (char)0xFF) {
                 gps.encode(c);
+                totalGpsBytesReceived++;
             }
         }
     }
