@@ -604,9 +604,9 @@ fun HeaderBar(
             )
         }
 
-        // Initials badge on the right if connected
+        // Short name badge on the right if connected
         if (isConnected && !connectedNodeName.isNullOrBlank()) {
-            val initials = getInitials(connectedNodeName)
+            val shortName = getShortName(connectedNodeName, 0L)
             val badgeColor = getBadgeColor(connectedNodeName)
             Box(
                 modifier = Modifier
@@ -616,7 +616,7 @@ fun HeaderBar(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = initials,
+                    text = shortName,
                     color = Color.Black,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp
@@ -735,7 +735,7 @@ fun ChatView(
                 ) {
                     items(nodes) { node ->
                         val isSelected = activeChatId == node.nodeId
-                        val initials = getInitials(node.name)
+                        val shortName = getShortName(node.name, node.nodeId)
                         val badgeColor = getBadgeColor(node.name)
                         
                         Column(
@@ -746,21 +746,21 @@ fun ChatView(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(46.dp)
-                                    .clip(CircleShape)
+                                    .size(width = 54.dp, height = 40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
                                     .background(badgeColor)
                                     .border(
                                         width = if (isSelected) 2.dp else 0.dp,
                                         color = if (isSelected) AccentCyan else Color.Transparent,
-                                        shape = CircleShape
+                                        shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = initials,
+                                    text = shortName,
                                     color = Color.Black,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
+                                    fontSize = 11.sp
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1355,7 +1355,7 @@ fun NodeItem(
     onRenameClick: () -> Unit,
     isConnectedNode: Boolean = false
 ) {
-    val initials = getInitials(node.name)
+    val shortName = getShortName(node.name, node.nodeId)
     val badgeColor = getBadgeColor(node.name)
     val stale = isNodeStale(node.lastActive)
     val primaryText = if (stale) TextMuted else TextLight
@@ -1370,19 +1370,19 @@ fun NodeItem(
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Initials badge on left
+        // Short name badge on left
         Box(
             modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
+                .size(width = 48.dp, height = 34.dp)
+                .clip(RoundedCornerShape(8.dp))
                 .background(if (stale) badgeColor.copy(alpha = 0.45f) else badgeColor),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = initials,
+                text = shortName,
                 color = Color.Black,
                 fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
+                fontSize = 11.sp
             )
         }
         
@@ -1982,12 +1982,12 @@ fun MapViewCompose(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(18.dp)
-                                                .clip(CircleShape)
+                                                .size(width = 24.dp, height = 18.dp)
+                                                .clip(RoundedCornerShape(4.dp))
                                                 .background(getBadgeColor(node.name)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Text(getInitials(node.name), color = Color.Black, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                            Text(getShortName(node.name, node.nodeId), color = Color.Black, fontSize = 7.sp, fontWeight = FontWeight.Bold)
                                         }
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
@@ -2181,8 +2181,8 @@ fun MapViewCompose(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(CircleShape)
+                                        .size(width = 44.dp, height = 30.dp)
+                                        .clip(RoundedCornerShape(8.dp))
                                         .background(getBadgeColor(node.name)),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -5713,7 +5713,7 @@ fun ConnectionView(
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
     val displayName = connectedNode?.name ?: viewModel.connectedDeviceName ?: "Wolf Base"
-    val initials = getInitials(displayName)
+    val shortName = getShortName(displayName, viewModel.connectedNodeId ?: 0L)
     val badgeColor = getBadgeColor(displayName)
     val batteryVal = connectedNode?.battery ?: 98
     
@@ -5771,19 +5771,19 @@ fun ConnectionView(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Initials Badge and Name/Info
+                    // Short Name Badge and Name/Info
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(width = 54.dp, height = 36.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(badgeColor),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(initials, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(shortName, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
