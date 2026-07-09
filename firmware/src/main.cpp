@@ -8,7 +8,7 @@
 #include "pb_encode.h"
 #include <TinyGPS++.h>
 
-#if defined(RAK4631) || defined(RAK3401_1W)
+#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
 #include <bluefruit.h>
 #include <nrf_nvic.h>
 #include <Adafruit_LittleFS.h>
@@ -108,7 +108,7 @@ uint8_t countActivePeers() {
 // The ESP32-S3 (Heltec) has no equivalent without extra wiring, so it relies
 // on the voltage heuristic below.
 bool externalPowerPresent() {
-#if defined(RAK4631) || defined(RAK3401_1W)
+#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     uint8_t sd_enabled = 0;
     if (sd_softdevice_is_enabled(&sd_enabled) == 0 && sd_enabled) {
         uint32_t usb_reg = 0;
@@ -359,7 +359,7 @@ void loadSettings() {
     Serial.printf("  Position Precision: %u m\n", positionPrecisionM);
     Serial.printf("  GPS Mode: %s\n", (gpsMode == 0) ? "ON" : "OFF (power save)");
     Serial.printf("  Fixed Position: %s (Lat=%.6f, Lon=%.6f, Alt=%d)\n", fixedPosition ? "YES" : "NO", fixedLat, fixedLon, fixedAlt);
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     InternalFS.begin();
     File file(InternalFS);
     NodeSettings settings;
@@ -468,7 +468,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     InternalFS.begin();
     InternalFS.remove("/settings.bin"); // Overwrite by deleting first
     File file(InternalFS);
@@ -506,10 +506,10 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
 
 // Helper to retrieve unique node ID based on hardware
 uint32_t getHardwareNodeId() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     uint64_t mac = ESP.getEfuseMac();
     return (uint32_t)(mac & 0xFFFFFFFF);
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     return NRF_FICR->DEVICEID[0];
 #else
     return 0xDEADBEEF; // Fallback
@@ -579,6 +579,52 @@ uint8_t readBatteryLevel() {
 
     Serial.printf("Battery: pin %.0fmV | %.3f V | %u%%\n",
                   pinMv, voltage, lipoPercentFromVoltage(voltage));
+
+    cachedLevel = lipoPercentFromVoltage(voltage);
+    haveSample = true;
+    lastSampleTime = millis();
+    return cachedLevel;
+#elif defined(LILYGO_T_DECK)
+    static uint32_t lastSampleTime = 0;
+    static uint8_t cachedLevel = 0;
+    static bool haveSample = false;
+
+    if (haveSample && (millis() - lastSampleTime < 30000)) {
+        return cachedLevel;
+    }
+
+    float pinMv = analogReadMilliVolts(4);
+    float voltage = (pinMv / 1000.0f) * 2.00f; // 2x multiplier
+    updateChargingState(voltage);
+
+    Serial.printf("Battery (T-Deck): pin %.0fmV | %.3f V | %u%%\n",
+                  pinMv, voltage, lipoPercentFromVoltage(voltage));
+
+    cachedLevel = lipoPercentFromVoltage(voltage);
+    haveSample = true;
+    lastSampleTime = millis();
+    return cachedLevel;
+#elif defined(LILYGO_T_ECHO)
+    static uint32_t lastSampleTime = 0;
+    static uint8_t cachedLevel = 0;
+    static bool haveSample = false;
+
+    if (haveSample && (millis() - lastSampleTime < 30000)) {
+        return cachedLevel;
+    }
+
+    analogReference(AR_INTERNAL_3_0);
+    analogReadResolution(12);
+    delay(2);
+    // Average 32 reads
+    uint32_t adcSum = 0;
+    for (int i = 0; i < 32; i++) adcSum += analogRead(4);
+    float raw = adcSum / 32.0f;
+    float voltage = (raw / 4096.0f) * 3.0f * 2.00f; // 2.0x multiplier
+    updateChargingState(voltage);
+
+    Serial.printf("Battery (T-Echo): raw %.0f | %.3f V | %u%%\n",
+                  raw, voltage, lipoPercentFromVoltage(voltage));
 
     cachedLevel = lipoPercentFromVoltage(voltage);
     haveSample = true;
@@ -1573,6 +1619,10 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 #endif
 
 void setup() {
+#if defined(LILYGO_T_DECK)
+    pinMode(10, OUTPUT);
+    digitalWrite(10, HIGH);
+#endif
     Serial.begin(115200);
     // Wait up to 3 seconds for Serial port to open on PC, but don't block forever if running on battery
     uint32_t startWait = millis();
@@ -1660,6 +1710,22 @@ void setup() {
         pinMode(42, OUTPUT);
         digitalWrite(42, LOW);   // Hold in reset
     }
+#elif defined(LILYGO_T_ECHO)
+    if (gpsMode == 0) {
+        Serial.println("Initializing GNSS Module (Lilygo T-Echo L76K)...");
+        pinMode(37, OUTPUT); // GPS_RESET
+        pinMode(34, OUTPUT); // GPS_WAKEUP
+        digitalWrite(37, HIGH);
+        digitalWrite(34, HIGH);
+        delay(100);
+        Serial1.begin(9600); // 9600 baud, default pins P1.8/P1.9 via variant
+    } else {
+        Serial.println("GNSS disabled by config (gps_mode=1) - module unpowered.");
+        pinMode(37, OUTPUT);
+        pinMode(34, OUTPUT);
+        digitalWrite(37, LOW);
+        digitalWrite(34, LOW);
+    }
 #elif defined(RAK4631) || defined(RAK3401_1W)
     // WisBlock GPS (RAK1910 UART, or RAK12500 in UART mode). Serial1 is mapped to
     // the GPS UART by the RAK BSP; WB_IO2 (pin 34) powers the WisBlock sensor slots.
@@ -1745,6 +1811,9 @@ void loop() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3)
             // Power off the unpopulated GPS divider/power rail to save power
             digitalWrite(34, LOW); 
+#elif defined(LILYGO_T_ECHO)
+            digitalWrite(34, LOW); 
+            digitalWrite(37, LOW); 
 #endif
         }
     }
@@ -1842,7 +1911,7 @@ void loop() {
 
     // Read and parse NMEA stream from GPS (skipped entirely when the module
     // is unpowered by gps_mode=1)
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     if (gpsMode == 0 && hasOnboardGps) {
         while (Serial1.available() > 0) {
             gps.encode(Serial1.read());
@@ -1986,6 +2055,10 @@ void loop() {
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V4");
 #elif defined(HELTEC_V3)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V3");
+#elif defined(LILYGO_T_DECK)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Deck");
+#elif defined(LILYGO_T_ECHO)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
 #elif defined(RAK4631)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK4631");
 #elif defined(RAK3401_1W)

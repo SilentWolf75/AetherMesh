@@ -38,12 +38,14 @@ jobs:
       - name: Install PlatformIO + esptool
         run: pip install --upgrade platformio esptool
 
-      - name: Build Heltec V4/V3 + RAK4631 firmware
+      - name: Build Heltec V4/V3 + RAK4631 + LILYGO firmware
         working-directory: firmware
         run: |
           pio run -e heltec_v4
           pio run -e heltec_v3
           pio run -e rak4631
+          pio run -e lilygo_t_echo
+          pio run -e lilygo_t_deck
 
       - name: Build Android App (APK)
         working-directory: app
@@ -76,6 +78,15 @@ jobs:
             0xe000 "$BOOT_APP0" \
             0x10000 "$BUILD_V3/firmware.bin"
             
+          # Merge Lilygo T-Deck
+          BUILD_T_DECK=firmware/.pio/build/lilygo_t_deck
+          NAME_T_DECK="aethermesh-t-deck-${HASH}-usb.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME_T_DECK" \
+            0x0    "$BUILD_T_DECK/bootloader.bin" \
+            0x8000 "$BUILD_T_DECK/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD_T_DECK/firmware.bin"
+            
           # RAK4631 (nRF52): convert the built .hex into a UF2 for the Adafruit
           # bootloader (drag-and-drop). Family ID 0xADA52840 = Nordic nRF52840.
           BUILD_RAK=firmware/.pio/build/rak4631
@@ -84,10 +95,19 @@ jobs:
           curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
           python /tmp/uf2conv.py "$BUILD_RAK/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK"
 
-          # Write manifest listing all three builds
-          printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"},\n  {"name":"RAK4631 — %s (latest)","file":"%s"}\n]\n' \
-            "$HASH" "$NAME_V4" "$HASH" "$NAME_V3" "$HASH" "$NAME_RAK" > "$OUT/manifest.json"
-          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK"
+          # Lilygo T-Echo (nRF52): convert the built .hex to UF2 as well
+          BUILD_T_ECHO=firmware/.pio/build/lilygo_t_echo
+          NAME_T_ECHO="aethermesh-t-echo-${HASH}.uf2"
+          python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
+
+          # Write manifest listing all five builds
+          printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"},\n  {"name":"RAK4631 — %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo — %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck — %s (latest)","file":"%s"}\n]\n' \
+            "$HASH" "$NAME_V4" \
+            "$HASH" "$NAME_V3" \
+            "$HASH" "$NAME_RAK" \
+            "$HASH" "$NAME_T_ECHO" \
+            "$HASH" "$NAME_T_DECK" > "$OUT/manifest.json"
+          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_T_ECHO, $NAME_T_DECK"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

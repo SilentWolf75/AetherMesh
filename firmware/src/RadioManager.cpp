@@ -49,6 +49,18 @@ RadioManager::RadioManager() {
     pinBusy = 13;
     pinDio1 = 14;
     txPower = 20; // Default to standard safe power
+#elif defined(LILYGO_T_DECK)
+    pinNss = 9;
+    pinRst = 17;
+    pinBusy = 13;
+    pinDio1 = 45;
+    txPower = 20;
+#elif defined(LILYGO_T_ECHO)
+    pinNss = 24;  // P0.24
+    pinRst = 25;  // P0.25
+    pinBusy = 17; // P0.17
+    pinDio1 = 20; // P0.20
+    txPower = 20;
 #elif defined(RAK4631) || defined(RAK3401_1W)
     // Predefined pins in RAK Arduino BSP
     pinNss = 42;  // PIN_LORA_NSS
@@ -97,6 +109,16 @@ bool RadioManager::init() {
     pinMode(5, OUTPUT);  digitalWrite(5, LOW);    // RX LNA select (V4.3 LOW = LNA enabled)
 
     SPI.begin(9, 11, 10, 8); // SCK, MISO, MOSI, SS
+#elif defined(LILYGO_T_DECK)
+    Serial.println("Lilygo T-Deck: Enabling Board Power (GPIO 10)...");
+    pinMode(10, OUTPUT);
+    digitalWrite(10, HIGH);
+    delay(100);
+    SPI.begin(40, 39, 41, 9); // SCK, MISO, MOSI, SS
+#elif defined(LILYGO_T_ECHO)
+    Serial.println("Lilygo T-Echo: Setting up SPI pins (23, 19, 22)...");
+    SPI.setPins(23, 19, 22); // MISO=23, SCK=19, MOSI=22
+    SPI.begin();
 #elif defined(RAK4631) || defined(RAK3401_1W)
     Serial.println("RAK WisBlock: Enabling all power rails (Pins 17, 34, 37)...");
     pinMode(17, OUTPUT);
@@ -115,9 +137,9 @@ bool RadioManager::init() {
     radio = new SX1262(mod);
     
     // 3. Begin radio with default params
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.6, false);
 #else
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);

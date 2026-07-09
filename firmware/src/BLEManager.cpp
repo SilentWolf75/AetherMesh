@@ -35,7 +35,7 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
     bleRxHead = next;
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -68,7 +68,7 @@ class EspCharCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
 #include <bluefruit.h>
 
 // Nordic Static Pointers
@@ -117,7 +117,7 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     Serial.print("Initializing BLE Advertising name: ");
     Serial.println(localName);
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     espBLEInstance = this;
     BLEDevice::init(localName);
     BLEDevice::setMTU(256);
@@ -154,7 +154,7 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     Serial.println("ESP32 BLE Service started.");
     return true;
 
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     nrfBLEInstance = this;
     
     // Configure BLE stack for maximum bandwidth to support larger MTU (256 bytes)
@@ -226,13 +226,13 @@ bool BLEManager::sendToPhone(uint8_t* data, size_t len) {
         return false;
     }
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     if (espRxChar) {
         espRxChar->setValue(data, len);
         espRxChar->notify();
         return true;
     }
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     if (nrfRxChar.notify(data, len)) {
         return true;
     }
@@ -245,9 +245,9 @@ void BLEManager::onReceivedFromPhone(void (*callback)(uint8_t* data, size_t len)
 }
 
 void BLEManager::stopAdvertising() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     BLEDevice::getAdvertising()->stop();
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     Bluefruit.Advertising.stop();
 #endif
     isAdvertising = false;
@@ -255,9 +255,9 @@ void BLEManager::stopAdvertising() {
 }
 
 void BLEManager::startAdvertising() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     BLEDevice::startAdvertising();
-#elif defined(RAK4631) || defined(RAK3401_1W)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     Bluefruit.Advertising.start(0);
 #endif
     isAdvertising = true;

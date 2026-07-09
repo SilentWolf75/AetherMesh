@@ -298,6 +298,120 @@
 
   .field + .field { margin-top: 18px; }
 
+  /* Hardware Grid & Card Selector */
+  .hardware-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+    margin-bottom: 8px;
+  }
+
+  .hardware-card {
+    background: rgba(13, 20, 38, 0.3);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .hardware-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(6, 182, 212, 0.1));
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    z-index: 0;
+  }
+
+  .hardware-card:hover {
+    border-color: rgba(99, 102, 241, 0.4);
+    transform: translateY(-2px);
+    background: rgba(18, 29, 54, 0.4);
+    box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+  }
+
+  .hardware-card:hover::before {
+    opacity: 1;
+  }
+
+  .hardware-card.selected {
+    border-color: var(--cyan);
+    background: rgba(6, 182, 212, 0.08);
+    box-shadow: 
+      0 0 15px -3px rgba(6, 182, 212, 0.25),
+      inset 0 0 10px -2px rgba(6, 182, 212, 0.1);
+  }
+
+  .hardware-card.selected::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0;
+    width: 24px; height: 24px;
+    background: var(--cyan);
+    clip-path: polygon(100% 0, 0 0, 100% 100%);
+    z-index: 1;
+  }
+
+  .hardware-card.selected::before {
+    content: '✓';
+    position: absolute;
+    top: 2px; right: 4px;
+    font-size: 10px;
+    font-weight: bold;
+    color: #03060c;
+    z-index: 2;
+  }
+
+  .hardware-card-brand {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    z-index: 1;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.03);
+  }
+  
+  .hardware-card.selected .hardware-card-brand {
+    color: var(--cyan);
+    border-color: rgba(6, 182, 212, 0.2);
+    background: rgba(6, 182, 212, 0.05);
+  }
+
+  .hardware-card-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    z-index: 1;
+    line-height: 1.25;
+  }
+
+  .hardware-card-cpu {
+    font-size: 11px;
+    color: var(--muted);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .hardware-card-cpu::before {
+    content: '⚡';
+    font-size: 10px;
+  }
+
   /* Drag & Drop Zone */
   .upload-zone {
     border: 2px dashed rgba(255, 255, 255, 0.12);
@@ -973,12 +1087,42 @@
           <span class="num">1</span>
           <h2>Select target</h2>
         </div>
-        <label for="target">Device Hardware</label>
-        <select id="target">
-          <option value="heltec-v4">Heltec V4 / ESP32-S3</option>
+        <label>Device Hardware</label>
+        <select id="target" style="display: none;">
+          <option value="heltec-v4" selected>Heltec V4 / ESP32-S3</option>
           <option value="heltec-v3">Heltec V3 / ESP32-S3</option>
           <option value="rak4631">RAK WisBlock RAK4631 (nRF52)</option>
+          <option value="lilygo-t-echo">LILYGO T-Echo (nRF52)</option>
+          <option value="lilygo-t-deck">LILYGO T-Deck / ESP32-S3</option>
         </select>
+
+        <div class="hardware-grid" id="hardware-grid">
+          <div class="hardware-card selected" data-val="heltec-v4">
+            <span class="hardware-card-brand">Heltec</span>
+            <span class="hardware-card-name">WiFi LoRa 32 V4</span>
+            <span class="hardware-card-cpu">ESP32-S3 (OLED)</span>
+          </div>
+          <div class="hardware-card" data-val="heltec-v3">
+            <span class="hardware-card-brand">Heltec</span>
+            <span class="hardware-card-name">WiFi LoRa 32 V3</span>
+            <span class="hardware-card-cpu">ESP32-S3 (OLED)</span>
+          </div>
+          <div class="hardware-card" data-val="rak4631">
+            <span class="hardware-card-brand">RAK Wireless</span>
+            <span class="hardware-card-name">WisBlock 4631</span>
+            <span class="hardware-card-cpu">nRF52840 (Modular)</span>
+          </div>
+          <div class="hardware-card" data-val="lilygo-t-echo">
+            <span class="hardware-card-brand">LILYGO</span>
+            <span class="hardware-card-name">T-Echo</span>
+            <span class="hardware-card-cpu">nRF52840 (E-Paper)</span>
+          </div>
+          <div class="hardware-card" data-val="lilygo-t-deck">
+            <span class="hardware-card-brand">LILYGO</span>
+            <span class="hardware-card-name">T-Deck</span>
+            <span class="hardware-card-cpu">ESP32-S3 (Keyboard)</span>
+          </div>
+        </div>
         <p class="hint">Connect one board at a time using a micro-USB/USB-C data cable.</p>
       </div>
 
@@ -1295,6 +1439,8 @@
       filtered = filtered.filter(m => m.name.toLowerCase().includes("v4") || m.file.toLowerCase().includes("v4"));
     } else if (target === "heltec-v3") {
       filtered = filtered.filter(m => m.name.toLowerCase().includes("v3") || m.file.toLowerCase().includes("v3"));
+    } else if (target === "lilygo-t-deck") {
+      filtered = filtered.filter(m => m.name.toLowerCase().includes("t-deck") || m.file.toLowerCase().includes("t-deck"));
     }
     
     if (filtered.length === 0) {
@@ -1418,11 +1564,23 @@
   // Target Hardware Selection Handler
   targetSelect.onchange = () => {
     const val = targetSelect.value;
-    if (val === "rak4631") {
+    if (val === "rak4631" || val === "lilygo-t-echo") {
       card2.style.display = "none";
       card3.style.display = "none";
       $("uf2-guide").style.display = "block";
-      setStatus("RAK4631 selected. Follow the UF2 guide below.", "info");
+      
+      const isEcho = val === "lilygo-t-echo";
+      const boardName = isEcho ? "T-Echo" : "RAK4631";
+      const driveName = isEcho ? "T-ECHO" : "RAK4631/NORDIC";
+      
+      document.querySelector("#uf2-guide h3").textContent = `${boardName} Bootloader Flow`;
+      document.querySelector("#uf2-guide p").innerHTML = 
+        `The ${boardName} uses a USB Mass Storage bootloader. Double-tap <code>RST</code> to enter bootloader mode, then drag and drop the firmware:`;
+      document.querySelector("#uf2-guide ol li:nth-child(2)").innerHTML = 
+        `A USB folder named <strong>${driveName}</strong> will mount on your computer.`;
+      
+      $("download-uf2-btn").innerHTML = `<span>⬇</span> Download ${boardName} UF2 Firmware`;
+      setStatus(`${boardName} selected. Follow the UF2 guide below.`, "info");
     } else {
       card2.style.display = "block";
       card3.style.display = "block";
@@ -1442,11 +1600,24 @@
     }
   };
 
-  // Download RAK4631 UF2 Firmware Action
+  // Visual Hardware Card Selector click binding
+  document.querySelectorAll(".hardware-card").forEach(card => {
+    card.onclick = () => {
+      document.querySelectorAll(".hardware-card").forEach(c => c.classList.remove("selected"));
+      card.classList.add("selected");
+      targetSelect.value = card.getAttribute("data-val");
+      targetSelect.onchange(); // trigger logic directly
+    };
+  });
+
+  // Download RAK4631 / T-Echo UF2 Firmware Action
   $("download-uf2-btn").onclick = () => {
-    // Download the AetherMesh RAK4631 UF2 bundled with this site (built from
-    // source by the deploy workflow), NOT some other project's firmware.
-    const uf2 = manifest.find(m => m.file && m.file.toLowerCase().endsWith(".uf2"));
+    const val = targetSelect.value;
+    const uf2 = manifest.find(m => {
+      if (!m.file || !m.file.toLowerCase().endsWith(".uf2")) return false;
+      if (val === "lilygo-t-echo") return m.file.toLowerCase().includes("t-echo");
+      return m.file.toLowerCase().includes("rak4631");
+    });
     if (uf2) {
       const a = document.createElement("a");
       a.href = "./firmware/" + uf2.file;
@@ -1454,9 +1625,11 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setStatus("Downloading " + uf2.file + " — drag it onto the RAK4631 drive.", "info");
+      const boardName = val === "lilygo-t-echo" ? "T-Echo" : "RAK4631";
+      setStatus("Downloading " + uf2.file + " — drag it onto the " + boardName + " drive.", "info");
     } else {
-      setStatus("No RAK4631 UF2 build is available on this site yet.", "err");
+      const boardName = val === "lilygo-t-echo" ? "T-Echo" : "RAK4631";
+      setStatus("No " + boardName + " UF2 build is available on this site yet.", "err");
     }
   };
 
