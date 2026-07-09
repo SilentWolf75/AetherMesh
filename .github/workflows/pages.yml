@@ -31,27 +31,42 @@ jobs:
       - name: Install PlatformIO + esptool
         run: pip install --upgrade platformio esptool
 
-      - name: Build Heltec V4 firmware
+      - name: Build Heltec V4 and V3 firmware
         working-directory: firmware
-        run: pio run -e heltec_v4
+        run: |
+          pio run -e heltec_v4
+          pio run -e heltec_v3
 
-      - name: Merge complete USB image + write manifest
+      - name: Merge complete USB images + write manifest
         run: |
           set -e
           HASH=$(git rev-parse --short=7 HEAD)
           OUT=web-flasher/firmware
           mkdir -p "$OUT"
-          BUILD=firmware/.pio/build/heltec_v4
           # boot_app0.bin ships with the arduino-esp32 framework package
           BOOT_APP0=$(find ~/.platformio/packages -path '*tools/partitions/boot_app0.bin' | head -n1)
-          NAME="aethermesh-heltec-${HASH}-usb.bin"
-          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME" \
-            0x0    "$BUILD/bootloader.bin" \
-            0x8000 "$BUILD/partitions.bin" \
+          
+          # Merge Heltec V4
+          BUILD_V4=firmware/.pio/build/heltec_v4
+          NAME_V4="aethermesh-heltec-v4-${HASH}-usb.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME_V4" \
+            0x0    "$BUILD_V4/bootloader.bin" \
+            0x8000 "$BUILD_V4/partitions.bin" \
             0xe000 "$BOOT_APP0" \
-            0x10000 "$BUILD/firmware.bin"
-          printf '[{"name":"Heltec V4 — %s (latest)","file":"%s"}]\n' "$HASH" "$NAME" > "$OUT/manifest.json"
-          echo "Bundled $NAME"
+            0x10000 "$BUILD_V4/firmware.bin"
+            
+          # Merge Heltec V3
+          BUILD_V3=firmware/.pio/build/heltec_v3
+          NAME_V3="aethermesh-heltec-v3-${HASH}-usb.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME_V3" \
+            0x0    "$BUILD_V3/bootloader.bin" \
+            0x8000 "$BUILD_V3/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD_V3/firmware.bin"
+            
+          # Write manifest listing both builds
+          printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"}\n]\n' "$HASH" "$NAME_V4" "$HASH" "$NAME_V3" > "$OUT/manifest.json"
+          echo "Bundled $NAME_V4 and $NAME_V3"
           ls -la "$OUT"
 
       - uses: actions/upload-pages-artifact@v3

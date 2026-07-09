@@ -14,6 +14,8 @@ static void setHeltecV4TransmitEnable(bool txOn) {
     digitalWrite(46, txOn ? HIGH : LOW); // CPS - PA mode select (V4.2 GC1109)
     digitalWrite(5, txOn ? HIGH : LOW);  // RX LNA select (V4.3 KCT8103L - LOW enables LNA)
 }
+#else
+#define setHeltecV4TransmitEnable(txOn) ((void)0)
 #endif
 
 #if defined(ESP32) || defined(ESP8266)
@@ -41,12 +43,12 @@ RadioManager::RadioManager() {
     bandwidth = 125.0f;
     codingRate = 5; // 4/5
     
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     pinNss = 8;
     pinRst = 12;
     pinBusy = 13;
     pinDio1 = 14;
-    txPower = 22; // Default to standard safe power, V4 can go to 28
+    txPower = 20; // Default to standard safe power
 #elif defined(RAK4631) || defined(RAK3401_1W)
     // Predefined pins in RAK Arduino BSP
     pinNss = 42;  // PIN_LORA_NSS
@@ -113,9 +115,8 @@ bool RadioManager::init() {
     radio = new SX1262(mod);
     
     // 3. Begin radio with default params
-#if defined(HELTEC_V4)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8,
-                             HELTEC_V4_TCXO_VOLTAGE, false);
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);
 #elif defined(RAK4631) || defined(RAK3401_1W)
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.6, false);
 #else

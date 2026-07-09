@@ -39,7 +39,7 @@ Preferences preferences;
 #endif
 
 // Conditional OLED display inclusion for Heltec V4
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
 #include <U8g2lib.h>
 // SSD1306 128x64 display connection
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ 21, /* clock=*/ 18, /* data=*/ 17);
@@ -466,7 +466,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
 
 // Helper to retrieve unique node ID based on hardware
 uint32_t getHardwareNodeId() {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     uint64_t mac = ESP.getEfuseMac();
     return (uint32_t)(mac & 0xFFFFFFFF);
 #elif defined(RAK4631) || defined(RAK3401_1W)
@@ -500,7 +500,7 @@ uint8_t lipoPercentFromVoltage(float v) {
 // GPIO and blocks 10ms, and callers (display refresh) run every second, so the
 // result is cached for 30s.
 uint8_t readBatteryLevel() {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     static uint32_t lastSampleTime = 0;
     static uint8_t cachedLevel = 0;
     static bool haveSample = false;
@@ -519,12 +519,20 @@ uint8_t readBatteryLevel() {
     static const float BATT_CAL = 1.005f; // trim: node read 4.101V vs 4.12V measured
 
     pinMode(37, OUTPUT);
-    digitalWrite(37, HIGH);
+#if defined(HELTEC_V3)
+    digitalWrite(37, LOW); // Active-low on V3 to enable divider
+#else
+    digitalWrite(37, HIGH); // Active-high on V4 to enable divider
+#endif
     delay(10); // let the divider settle
     uint32_t mvSum = 0;
     for (int i = 0; i < 32; i++) mvSum += analogReadMilliVolts(1); // calibrated pin mV
     float pinMv = mvSum / 32.0f;
-    digitalWrite(37, LOW); // disable divider to save power
+#if defined(HELTEC_V3)
+    digitalWrite(37, HIGH); // Pull HIGH to disable divider and save power on V3
+#else
+    digitalWrite(37, LOW); // Pull LOW to disable divider and save power on V4
+#endif
 
     float voltage = (pinMv / 1000.0f) * BATT_DIVIDER * BATT_CAL;
     updateChargingState(voltage);
@@ -572,7 +580,7 @@ uint8_t readBatteryLevel() {
 #endif
 }
 
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
 // Boot splash: mesh glyph + wordmark + firmware version. wavePhase pulses the
 // radio arcs while setup runs.
 void drawBootSplash(uint8_t wavePhase) {
@@ -799,7 +807,7 @@ extern bool otaActive;
 
 // Update the OLED display screen
 void updateDisplay() {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     if (otaActive) {
         return; // drawOtaProgress() renders during firmware updates
     }
@@ -1117,7 +1125,7 @@ void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const 
     }
 }
 
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
 void drawOtaProgress(uint8_t pct, const char* label) {
     u8g2.setPowerSave(0);
     u8g2.clearBuffer();
@@ -1134,7 +1142,7 @@ void drawOtaProgress(uint8_t pct, const char* label) {
 #endif
 
 void otaAbort(const char* reason) {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     if (otaActive) {
         Update.abort();
     }
@@ -1163,7 +1171,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
         return;
     }
 
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     switch (ctl.op) {
         case aethermesh_OtaControl_Op_BEGIN: {
             if (otaActive) {
@@ -1225,7 +1233,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
 }
 
 void handleOtaData(const aethermesh_OtaData& od) {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     if (!otaActive) {
         sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
         return;
@@ -1487,7 +1495,7 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     updateDisplay();
 }
 
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
 #define USER_BUTTON_PIN 0
 #elif defined(PIN_BUTTON1)
 #define USER_BUTTON_PIN PIN_BUTTON1
@@ -1518,7 +1526,7 @@ void setup() {
         nodePassword[0] = '\0';
         loraSF = 9;
         loraBW = 125.0f;
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
         loraTxPower = 22;
 #else
         loraTxPower = 20;
@@ -1553,7 +1561,7 @@ void setup() {
     
     // 2. Initialize display if Heltec V4 — show the boot splash while the
     // radio/BLE/GPS bring-up below runs
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     u8g2.begin();
     drawBootSplash(0);
     uint32_t splashShownAt = millis();
@@ -1562,7 +1570,7 @@ void setup() {
     // 3. Initialize GPS serial port and power toggle. gps_mode == 1 keeps the
     // GNSS module UNPOWERED (~25% of total draw saved); position then falls
     // back to phone-shared GPS automatically.
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     if (gpsMode == 0) {
         Serial.println("Initializing GNSS Module (Heltec V4)...");
         pinMode(34, OUTPUT);
@@ -1644,7 +1652,7 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
     // Hold the splash ~2.5s total, pulsing the radio waves. The radio is already
     // live at this point (receive callback armed), so nothing is missed.
     uint8_t splashPhase = 1;
@@ -1666,7 +1674,7 @@ void loop() {
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
     if (currentButtonState == LOW && lastButtonState == HIGH) {
-#if defined(HELTEC_V4)
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
         // Button behavior: dismiss a visible message popup first; otherwise
         // advance the page carousel while the screen is on. Pressing while the
         // screen is off just wakes it (updateDisplay lands on HOME).
@@ -1754,7 +1762,7 @@ void loop() {
 
     // Read and parse NMEA stream from GPS (skipped entirely when the module
     // is unpowered by gps_mode=1)
-#if defined(HELTEC_V4) || defined(RAK4631) || defined(RAK3401_1W)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W)
     if (gpsMode == 0) {
         while (Serial1.available() > 0) {
             gps.encode(Serial1.read());
@@ -1886,6 +1894,8 @@ void loop() {
 
 #if defined(HELTEC_V4)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V4");
+#elif defined(HELTEC_V3)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V3");
 #elif defined(RAK4631)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK4631");
 #elif defined(RAK3401_1W)
