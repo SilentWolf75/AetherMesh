@@ -61,3 +61,10 @@ bootloader.)
 - Firmware version is printed on the boot splash (Heltec), in the serial boot
   banner, in every 30 s "Radio health" serial line, and on each node card in
   the app.
+
+## Web flasher (Heltec, no install)
+https://silentwolf75.github.io/AetherMesh/ — flashes a Heltec V4 over USB from
+desktop Chrome/Edge/Opera (Web Serial + esptool-js). Put the board in download
+mode (hold PRG, tap RST), pick the bundled "latest" build (or a local
+-usb.bin), Connect & Flash. Rebuilt and redeployed automatically by pages.yml
+on firmware changes. RAK/nRF52 not yet supported there — use OTA or USB DFU.
