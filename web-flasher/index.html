@@ -3,164 +3,1432 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Flash AetherMesh firmware directly to your LoRa node from your browser, or monitor telemetry in real-time using the interactive Web Serial monitor." />
+<meta property="og:title" content="AetherMesh Web Flasher" />
+<meta property="og:description" content="Flash AetherMesh firmware directly to your LoRa node from your browser, or monitor telemetry in real-time using the interactive Web Serial monitor." />
+<meta property="og:type" content="website" />
 <title>AetherMesh Web Flasher</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0f172a; --surface: #1e293b; --border: #334155;
-    --text: #f8fafc; --muted: #94a3b8; --cyan: #22d3ee; --mint: #34d399; --red: #ef4444; --amber: #fbbf24;
+    color-scheme: dark;
+    --page: #050811;
+    --panel: rgba(13, 20, 38, 0.45);
+    --panel-hover: rgba(18, 29, 54, 0.55);
+    --panel-solid: #0b1021;
+    --panel-dark: #03060c;
+    --line: rgba(255, 255, 255, 0.05);
+    --line-focus: rgba(6, 182, 212, 0.4);
+    --text: #f3f4f6;
+    --muted: #9ca3af;
+    --cyan: #06b6d4;
+    --indigo: #6366f1;
+    --purple: #8b5cf6;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
   }
+
   * { box-sizing: border-box; }
+
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--page);
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.09) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(6, 182, 212, 0.09) 0px, transparent 50%),
+      linear-gradient(180deg, #050811 0%, #0a0f21 50%, #03050a 100%);
+    color: var(--text);
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
     line-height: 1.5;
+    position: relative;
+    overflow-x: hidden;
   }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
-  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-  header svg { width: 34px; height: 34px; }
-  h1 { font-size: 22px; margin: 0; }
-  .cyan { color: var(--cyan); }
-  .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 14px; padding: 20px; margin-bottom: 18px;
+
+  /* Global Network Background Grid */
+  body::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: 
+      linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+    background-size: 36px 36px;
+    pointer-events: none;
+    z-index: -1;
   }
-  .card h2 { font-size: 15px; margin: 0 0 12px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-  select, input[type=file] {
-    width: 100%; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 14px;
+
+  /* Ambient Glow Blurs */
+  .bg-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(120px);
+    z-index: -1;
+    opacity: 0.14;
+    pointer-events: none;
   }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .glow-cyan {
+    top: 5%;
+    left: 10%;
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, var(--cyan), transparent 70%);
+    animation: pulse-glow 15s infinite alternate;
+  }
+  .glow-indigo {
+    bottom: 5%;
+    right: 10%;
+    width: 450px;
+    height: 450px;
+    background: radial-gradient(circle, var(--indigo), transparent 70%);
+    animation: pulse-glow 20s infinite alternate-reverse;
+  }
+  @keyframes pulse-glow {
+    0% { transform: scale(1) translate(0, 0); opacity: 0.1; }
+    50% { transform: scale(1.15) translate(40px, -30px); opacity: 0.18; }
+    100% { transform: scale(0.9) translate(-20px, 30px); opacity: 0.1; }
+  }
+
+  .wrap {
+    width: min(1140px, 100%);
+    margin: 0 auto;
+    padding: 36px 20px 72px;
+  }
+
+  .hero {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    padding: 10px 0 36px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 28px;
+  }
+
+  /* Brand Logo & Animations */
+  .brand-logo-wrapper {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .brand-mark {
+    width: 115px;
+    height: 115px;
+    filter: drop-shadow(0 4px 15px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 12px rgba(6, 182, 212, 0.15));
+    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.4s;
+  }
+  .brand-mark:hover {
+    transform: scale(1.04) rotate(1deg);
+    filter: drop-shadow(0 8px 25px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 20px rgba(6, 182, 212, 0.35));
+  }
+
+  /* SVG Logo Wave Signal Animations */
+  @keyframes signal-pulse-inner {
+    0% {
+      opacity: 0.15;
+      stroke-width: 3px;
+      stroke: #0088cc;
+    }
+    30% {
+      opacity: 1;
+      stroke-width: 4.5px;
+      stroke: #00d5ff;
+      filter: drop-shadow(0 0 4px rgba(0, 213, 255, 0.6));
+    }
+    60%, 100% {
+      opacity: 0.15;
+      stroke-width: 3px;
+      stroke: #0088cc;
+    }
+  }
+  
+  @keyframes signal-pulse-outer {
+    0%, 30% {
+      opacity: 0.15;
+      stroke-width: 3.5px;
+      stroke: #0088cc;
+    }
+    60% {
+      opacity: 1;
+      stroke-width: 5px;
+      stroke: #00ffff;
+      filter: drop-shadow(0 0 5px rgba(0, 255, 255, 0.8));
+    }
+    90%, 100% {
+      opacity: 0.15;
+      stroke-width: 3.5px;
+      stroke: #0088cc;
+    }
+  }
+
+  .logo-wave-inner {
+    animation: signal-pulse-inner 2.4s infinite ease-in-out;
+  }
+  
+  .logo-wave-outer {
+    animation: signal-pulse-outer 2.4s infinite ease-in-out;
+  }
+
+  .hero-content {
+    flex: 1 1 auto;
+    text-align: left;
+  }
+
+  h1 {
+    font-family: 'Outfit', sans-serif;
+    margin: 0;
+    font-size: clamp(32px, 4.5vw, 44px);
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, var(--text) 30%, var(--cyan) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .sub {
+    color: var(--muted);
+    font-size: 16px;
+    margin: 8px 0 0;
+    max-width: 700px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) 1fr;
+    gap: 26px;
+    align-items: start;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    transition: border-color 0.3s, box-shadow 0.3s, background-color 0.3s;
+  }
+  .panel:hover {
+    background: var(--panel-hover);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  }
+
+  .step-card {
+    border-left: 3px solid transparent;
+  }
+  .step-card.active {
+    border-left-color: var(--cyan);
+    box-shadow: inset 4px 0 16px rgba(6, 182, 212, 0.03), 0 12px 30px rgba(0, 0, 0, 0.25);
+  }
+  .step-card.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  .panel + .panel { margin-top: 18px; }
+
+  .step-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+
+  .num {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--indigo), var(--cyan));
+    color: #040c16;
+    font-size: 13px;
+    font-weight: 800;
+    box-shadow: 0 0 12px rgba(6, 182, 212, 0.3);
+  }
+
+  h2 {
+    font-family: 'Outfit', sans-serif;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #fff;
+  }
+
+  label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    margin: 0 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  select {
+    width: 100%;
+    min-height: 46px;
+    background: var(--panel-dark);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  select:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
+  }
+
+  .field + .field { margin-top: 18px; }
+
+  /* Drag & Drop Zone */
+  .upload-zone {
+    border: 2px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    padding: 24px 18px;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--cyan);
+    background: rgba(6, 182, 212, 0.03);
+    box-shadow: 0 0 16px rgba(6, 182, 212, 0.05);
+  }
+  .upload-zone-icon {
+    font-size: 32px;
+    color: var(--muted);
+    transition: color 0.2s, transform 0.2s;
+  }
+  .upload-zone:hover .upload-zone-icon {
+    color: var(--cyan);
+    transform: translateY(-2px);
+  }
+  .upload-zone-text {
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .upload-zone-text span {
+    color: var(--cyan);
+    text-decoration: underline;
+    font-weight: 600;
+  }
+  .upload-zone-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* File chip style when loaded */
+  .file-chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(6, 182, 212, 0.08);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+  .file-chip-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+  }
+  .file-chip-name {
+    font-weight: 600;
+    color: #fff;
+    word-break: break-all;
+  }
+  .file-chip-size {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .file-chip-remove {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 6px;
+    line-height: 1;
+    transition: color 0.2s, transform 0.2s;
+  }
+  .file-chip-remove:hover {
+    color: var(--red);
+    transform: scale(1.1);
+  }
+
+  .or-divider {
+    display: flex;
+    align-items: center;
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin: 14px 0;
+  }
+  .or-divider::before,
+  .or-divider::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid var(--line);
+  }
+  .or-divider:not(:empty)::before { margin-right: 12px; }
+  .or-divider:not(:empty)::after { margin-left: 12px; }
+
+  .hint {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  code {
+    color: var(--amber);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.18);
+    border-radius: 5px;
+    padding: 1px 5px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  /* Custom Checkbox styles */
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+    margin-top: 10px;
+  }
+  .checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--cyan);
+    cursor: pointer;
+    margin: 0;
+  }
+
+  /* Advanced Settings accordion */
+  .settings-accordion {
+    margin-top: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+  }
+  .settings-summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+    transition: color 0.2s;
+  }
+  .settings-summary::-webkit-details-marker { display: none; }
+  .settings-summary:hover {
+    color: var(--text);
+  }
+  .settings-summary::before {
+    content: '▶';
+    font-size: 9px;
+    display: inline-block;
+    transition: transform 0.2s;
+  }
+  details[open] .settings-summary::before {
+    transform: rotate(90deg);
+  }
+  .settings-content {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 14px;
+    padding: 14px 4px 4px;
+  }
+  .settings-content input[type="text"] {
+    width: 100%;
+    min-height: 46px;
+    background: var(--panel-dark);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .settings-content input[type="text"]:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
   button {
-    background: var(--mint); color: var(--bg); border: 0; border-radius: 8px;
-    padding: 12px 18px; font-size: 14px; font-weight: 700; cursor: pointer;
+    min-height: 46px;
+    border: 0;
+    border-radius: 10px;
+    padding: 0 16px;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    user-select: none;
   }
-  button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .bar-wrap { height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; margin-top: 14px; display: none; }
-  .bar { height: 100%; width: 0; background: var(--cyan); transition: width .2s; }
-  #status { margin-top: 12px; font-size: 14px; min-height: 20px; }
-  #log {
-    background: #0b1220; border: 1px solid var(--border); border-radius: 8px;
-    padding: 12px; font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
-    font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word;
-    max-height: 240px; overflow-y: auto; margin-top: 12px; display: none;
+
+  button.primary {
+    background: linear-gradient(135deg, var(--green), var(--cyan));
+    color: #040c16;
+    box-shadow: 0 4px 15px rgba(6, 182, 212, 0.2);
   }
-  ol { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); }
-  ol li { margin-bottom: 6px; }
-  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; color: var(--amber); }
+  button.primary:hover:not(:disabled) {
+    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.35);
+    transform: translateY(-1px);
+  }
+  button.primary:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  button.secondary {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+    border: 1px solid var(--line);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+    transform: translateY(-1px);
+  }
+  button.secondary:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    box-shadow: none !important;
+    transform: none !important;
+  }
+
+  /* Progress Bar Glow */
+  .bar-wrap {
+    height: 10px;
+    background: var(--panel-dark);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 18px;
+    display: none;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+  }
+
+  .bar {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--green), var(--cyan), var(--indigo));
+    border-radius: 999px;
+    transition: width 0.1s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .bar::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; bottom: 0; right: 0;
+    background-image: linear-gradient(
+      -45deg, 
+      rgba(255, 255, 255, 0.15) 25%, 
+      transparent 25%, 
+      transparent 50%, 
+      rgba(255, 255, 255, 0.15) 50%, 
+      rgba(255, 255, 255, 0.15) 75%, 
+      transparent 75%, 
+      transparent
+    );
+    background-size: 20px 20px;
+    animation: shimmer-progress 2s linear infinite;
+  }
+  @keyframes shimmer-progress {
+    0% { background-position: 0 0; }
+    100% { background-position: 20px 0; }
+  }
+
+  #status {
+    margin-top: 14px;
+    font-size: 14px;
+    font-weight: 500;
+    min-height: 22px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* Diagnostics Telemetry Grid */
+  .telemetry-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 18px;
+    background: rgba(6, 182, 212, 0.03);
+    border: 1px dashed rgba(6, 182, 212, 0.18);
+    border-radius: 12px;
+    padding: 16px;
+    animation: fade-in 0.3s ease-out;
+  }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .telemetry-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+  }
+  .telemetry-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .telemetry-val {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--cyan);
+    font-family: 'JetBrains Mono', monospace;
+    word-break: break-all;
+  }
+
+  /* Simulated Terminal Console */
+  .terminal-wrapper {
+    background: var(--panel-dark);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+  }
+  .terminal-header {
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+  }
+  .terminal-left-group {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .terminal-dots {
+    display: flex;
+    gap: 6px;
+  }
+  .terminal-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .terminal-dot.close { background: var(--red); }
+  .terminal-dot.minimize { background: var(--amber); }
+  .terminal-dot.maximize { background: var(--green); }
+  
+  /* Tabs Layout */
+  .terminal-tabs {
+    display: flex;
+    gap: 4px;
+  }
+  .terminal-tab-btn {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .terminal-tab-btn.active {
+    background: rgba(6, 182, 212, 0.12);
+    color: var(--cyan);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+  }
+  .terminal-tab-btn:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+  }
+
+  .terminal-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  
+  /* Header Autoscroll toggle style */
+  .autoscroll-header-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0;
+    text-transform: none;
+    cursor: pointer;
+    user-select: none;
+  }
+  .autoscroll-header-label input {
+    accent-color: var(--cyan);
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .terminal-action-btn {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .terminal-action-btn:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+  }
+  .terminal-action-btn.connected {
+    color: var(--red);
+    font-weight: 700;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    background: rgba(239, 68, 68, 0.05);
+  }
+  .terminal-action-btn.connected:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--red);
+  }
+
+  .terminal-body {
+    background: #03050a;
+    padding: 16px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: rgba(243, 244, 246, 0.85);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 320px;
+    min-height: 180px;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+  }
+
+  /* Command input bar for interactive mode */
+  .console-input-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #020306;
+    border-top: 1px solid var(--line);
+    padding: 10px 16px;
+    animation: fade-in 0.2s ease-out;
+  }
+  .prompt-symbol {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--cyan);
+    font-weight: 700;
+    user-select: none;
+  }
+  .console-input-bar input {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+  }
+  .console-send-btn {
+    min-height: auto;
+    height: 28px;
+    padding: 0 12px;
+    background: var(--cyan);
+    color: #03060c;
+    font-size: 11px;
+    border-radius: 6px;
+    font-weight: 700;
+    border: 0;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .console-send-btn:hover {
+    background: #00d5ff;
+    box-shadow: 0 0 8px rgba(6, 182, 212, 0.35);
+  }
+
+  .cmd-sent {
+    color: var(--cyan);
+    font-weight: 700;
+  }
+  .info {
+    color: var(--indigo);
+  }
+
+  .aside {
+    position: sticky;
+    top: 20px;
+  }
+
+  .compact-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 14px;
+  }
+
+  .compact-list li {
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 13.5px;
+    align-items: flex-start;
+  }
+
+  .dot {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: rgba(6, 182, 212, 0.1);
+    color: var(--cyan);
+    font-weight: 800;
+    font-size: 12px;
+  }
+
+  /* Compatibility banner style */
+  .compatibility-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    border-radius: 12px;
+    font-size: 13.5px;
+    font-weight: 500;
+    margin-bottom: 18px;
+    animation: fade-in 0.3s ease-out;
+  }
+  .compatibility-card.compatible {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    color: #d1fae5;
+  }
+  .compatibility-card.uncompatible {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: #fee2e2;
+  }
+  .compatibility-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  details.faq-details {
+    border-top: 1px solid var(--line);
+    margin-top: 16px;
+    padding-top: 14px;
+  }
+
+  summary.faq-summary {
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 13px;
+    user-select: none;
+    outline: none;
+  }
+  summary.faq-summary:hover {
+    color: var(--cyan);
+  }
+
   .warn { color: var(--amber); }
   .err { color: var(--red); }
-  .ok { color: var(--mint); }
-  a { color: var(--cyan); }
-  .unsupported { display: none; background: #3b0d0d; border: 1px solid var(--red); color: #fecaca; }
+  .ok { color: var(--green); }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .aside { position: static; }
+  }
+
+  @media (max-width: 620px) {
+    .hero { flex-direction: column; text-align: center; gap: 14px; padding-bottom: 24px; }
+    .hero-content { text-align: center; }
+    .brand-mark { width: 95px; height: 95px; }
+    .row { grid-template-columns: 1fr; }
+    .settings-content { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <circle cx="24" cy="12" r="4" fill="#22d3ee"/>
-      <circle cx="12" cy="34" r="3" fill="#34d399"/>
-      <circle cx="36" cy="34" r="3" fill="#34d399"/>
-      <path d="M24 12 L12 34 M24 12 L36 34 M12 34 L36 34" stroke="#334155" stroke-width="2" fill="none"/>
-    </svg>
-    <h1>AetherMesh <span class="cyan">Web Flasher</span></h1>
+<div class="bg-glow glow-cyan"></div>
+<div class="bg-glow glow-indigo"></div>
+
+<main class="wrap">
+  <header class="hero" aria-labelledby="title">
+    <div class="brand-logo-wrapper">
+      <svg class="brand-mark" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="brandBg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#070C14"/>
+            <stop offset="0.5" stop-color="#142136"/>
+            <stop offset="1" stop-color="#1A2D4A"/>
+          </linearGradient>
+          <linearGradient id="brandPeak" x1="32" y1="34" x2="76" y2="76" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#00E5FF"/>
+            <stop offset="1" stop-color="#0072FF"/>
+          </linearGradient>
+        </defs>
+        <rect width="108" height="108" rx="18" fill="none"/>
+        <path d="M18 0v108M36 0v108M54 0v108M72 0v108M90 0v108M0 18h108M0 36h108M0 54h108M0 72h108M0 90h108" fill="none" stroke="#FFFFFF" stroke-opacity="0.095" stroke-width="0.4"/>
+        <path d="M0 0l108 108M108 0L0 108" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="0.3"/>
+        <path class="logo-wave-outer" d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#00E5FF" stroke-width="3.5" stroke-linecap="round"/>
+        <path class="logo-wave-inner" d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#00B0FF" stroke-width="3" stroke-linecap="round"/>
+        <path d="M32 76L54 34L76 76" fill="none" stroke="url(#brandPeak)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M40 62H68" fill="none" stroke="#00B0FF" stroke-width="4" stroke-linecap="round"/>
+        <path d="M54 34V62" fill="none" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
+        <circle cx="54" cy="34" r="5" fill="#FFFFFF"/>
+        <circle cx="32" cy="76" r="5" fill="#00E5FF"/>
+        <circle cx="76" cy="76" r="5" fill="#00E5FF"/>
+        <circle cx="54" cy="62" r="4" fill="#FFFFFF"/>
+      </svg>
+    </div>
+    <div class="hero-content">
+      <h1 id="title">AetherMesh <span class="gradient-text">Web Flasher</span></h1>
+      <p class="sub">Flash firmware over USB from your browser, or monitor your node telemetry using the real-time interactive console.</p>
+    </div>
   </header>
-  <p class="sub">Flash a Heltec V4 node over USB, straight from your browser — no install needed.</p>
 
-  <div class="card unsupported" id="unsupported">
-    <strong>This browser can't flash over USB.</strong><br>
-    The Web Serial API is only available in <strong>desktop Chrome, Edge, or Opera</strong>.
-    Please open this page in one of those. (Firefox, Safari, and most mobile browsers aren't supported.)
+  <div id="compat-banner"></div>
+
+  <div class="layout">
+    <section aria-label="Flashing workflow">
+      <!-- STEP 1 -->
+      <div class="panel step-card active" id="step-1-card">
+        <div class="step-title">
+          <span class="num">1</span>
+          <h2>Select target</h2>
+        </div>
+        <label for="target">Device Hardware</label>
+        <select id="target">
+          <option value="heltec-v4">Heltec V4 / ESP32-S3</option>
+          <option value="rak4631">RAK WisBlock RAK4631 (nRF52)</option>
+        </select>
+        <p class="hint">Connect one board at a time using a micro-USB/USB-C data cable.</p>
+      </div>
+
+      <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
+      <div class="panel uf2-guide-card" id="uf2-guide" style="display: none; background: rgba(99, 102, 241, 0.04); border: 1px dashed rgba(99, 102, 241, 0.25);">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+          <span style="font-size: 20px;">💡</span>
+          <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--indigo); text-transform: uppercase; letter-spacing: 0.5px;">nRF52 Bootloader Flow</h3>
+        </div>
+        <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.45;">
+          The RAK4631 uses a USB Mass Storage bootloader. Double-tap <code>RST</code> to enter bootloader mode, then drag and drop the firmware:
+        </p>
+        <ol style="font-size: 13px; color: var(--text); padding-left: 20px; margin: 0 0 16px; display: grid; gap: 8px;">
+          <li>Double-tap the board's <strong>RST</strong> button quickly.</li>
+          <li>A USB folder named <strong>RAK4631</strong> or <strong>NORDIC</strong> will mount on your computer.</li>
+          <li>Download the latest firmware binary using the link below.</li>
+          <li>Drag and drop the downloaded <code>.uf2</code> file onto the mounted folder.</li>
+        </ol>
+        <button class="secondary" id="download-uf2-btn" style="width: 100%; min-height: 42px; font-size: 13px;">
+          <span>⬇</span> Download RAK4631 UF2 Firmware
+        </button>
+      </div>
+
+      <!-- STEP 2 -->
+      <div class="panel step-card" id="step-2-card">
+        <div class="step-title">
+          <span class="num">2</span>
+          <h2>Select firmware</h2>
+        </div>
+        
+        <div class="field" style="display: flex; gap: 10px; align-items: flex-end;">
+          <div style="flex: 1;">
+            <label for="fw">Bundled build</label>
+            <select id="fw">
+              <option value="">Loading builds...</option>
+            </select>
+          </div>
+          <button id="download-fw" class="secondary" style="min-height: 46px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;" title="Download selected firmware binary">
+            <span>⬇</span> Download
+          </button>
+        </div>
+
+        <div class="or-divider">OR</div>
+
+        <div class="field">
+          <label>Local firmware file</label>
+          <div class="upload-zone" id="dropzone">
+            <div class="upload-zone-icon">⇪</div>
+            <div class="upload-zone-text"><span>Click to browse</span> or drag &amp; drop file</div>
+            <div class="upload-zone-sub">Firmware binary (.bin)</div>
+          </div>
+          <input type="file" id="file" accept=".bin" style="display: none;" />
+          
+          <div class="file-chip" id="file-chip" style="display: none;">
+            <div class="file-chip-info">
+              <span class="file-chip-name" id="file-chip-name">firmware.bin</span>
+              <span class="file-chip-size" id="file-chip-size">0 KB</span>
+            </div>
+            <button class="file-chip-remove" id="file-chip-remove" type="button" aria-label="Remove file">&times;</button>
+          </div>
+        </div>
+        <p class="hint">Use a <code>-usb.bin</code> image for USB flashing. Do not use the <code>-ota.bin</code> image here.</p>
+
+        <!-- Advanced settings inside Step 2 -->
+        <details class="settings-accordion">
+          <summary class="settings-summary">Advanced Settings</summary>
+          <div class="settings-content">
+            <div>
+              <label for="baudrate">Flashing Baud Rate</label>
+              <select id="baudrate">
+                <option value="921600" selected>921600 (Fast)</option>
+                <option value="460800">460800</option>
+                <option value="230400">230400</option>
+                <option value="115200">115200 (Safe)</option>
+              </select>
+            </div>
+            <div>
+              <label for="offset">Flash Offset</label>
+              <input type="text" id="offset" value="0x0" placeholder="0x0" />
+            </div>
+          </div>
+          
+          <!-- Wipe toggle added here -->
+          <label class="checkbox-label" for="erase-flash">
+            <input type="checkbox" id="erase-flash" />
+            <span>Erase Flash (Full Wipe before install)</span>
+          </label>
+        </details>
+      </div>
+
+      <!-- STEP 3 -->
+      <div class="panel step-card" id="step-3-card">
+        <div class="step-title">
+          <span class="num">3</span>
+          <h2>Flashing &amp; Utilities</h2>
+        </div>
+        <div class="row">
+          <button id="flash" class="primary">
+            <span>⚡</span> Connect &amp; Flash
+          </button>
+          <button id="read-info" class="secondary">
+            <span>ℹ</span> Read Device Info
+          </button>
+        </div>
+        <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
+        
+        <div id="status"></div>
+
+        <!-- Telemetry Card (Shown when info is read) -->
+        <div class="telemetry-grid" id="telemetry" style="display: none;">
+          <div class="telemetry-item">
+            <span class="telemetry-label">Chip Target</span>
+            <span class="telemetry-val" id="telemetry-chip">-</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">MAC Address</span>
+            <span class="telemetry-val" id="telemetry-mac">-</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Flash Size</span>
+            <span class="telemetry-val" id="telemetry-flash">-</span>
+          </div>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Features</span>
+            <span class="telemetry-val" id="telemetry-features">-</span>
+          </div>
+        </div>
+
+        <p class="hint">After flashing finishes, tap <code>RST</code> once to boot the new firmware.</p>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: TERMINAL CONSOLE & QUICK CHECKS -->
+    <aside class="panel aside" aria-label="Quick help and Terminal">
+      <!-- Custom Terminal Simulator with Logs vs Serial Monitor Tabs -->
+      <div class="terminal-wrapper">
+        <div class="terminal-header">
+          <div class="terminal-left-group">
+            <div class="terminal-dots">
+              <span class="terminal-dot close"></span>
+              <span class="terminal-dot minimize"></span>
+              <span class="terminal-dot maximize"></span>
+            </div>
+            <div class="terminal-tabs">
+              <button class="terminal-tab-btn active" id="tab-logs-btn">Logs</button>
+              <button class="terminal-tab-btn" id="tab-monitor-btn">Serial Monitor</button>
+            </div>
+          </div>
+          <div class="terminal-actions">
+            <!-- Autoscroll checkbox toggle -->
+            <label class="autoscroll-header-label" for="autoscroll-chk">
+              <input type="checkbox" id="autoscroll-chk" checked />
+              <span>Auto-scroll</span>
+            </label>
+            <button class="terminal-action-btn" id="monitor-connect-btn" style="display: none;">Connect Monitor</button>
+            <button class="terminal-action-btn" id="copy-logs" title="Copy logs to clipboard">Copy</button>
+            <button class="terminal-action-btn" id="clear-logs" title="Clear console">Clear</button>
+          </div>
+        </div>
+        <div class="terminal-body" id="log" style="display: none;"></div>
+        
+        <!-- Command Input bar for Serial Monitor -->
+        <div class="console-input-bar" id="consoleInputBar" style="display: none;">
+          <span class="prompt-symbol">&gt;</span>
+          <input type="text" id="consoleInput" placeholder="Send serial command to node (press Enter)..." autocomplete="off" />
+          <button class="console-send-btn" id="consoleSendBtn">Send</button>
+        </div>
+      </div>
+
+      <div style="height: 18px;"></div>
+
+      <h2>Quick checks</h2>
+      <ul class="compact-list" style="margin-top: 12px;">
+        <li><span class="dot">1</span><span>Use Chrome, Edge, or Opera on desktop.</span></li>
+        <li><span class="dot">2</span><span>Use a USB cable that carries data.</span></li>
+        <li><span class="dot">3</span><span>Close other serial monitors (e.g. Arduino IDE) before flashing.</span></li>
+      </ul>
+      <details class="faq-details">
+        <summary class="faq-summary">Connection trouble?</summary>
+        <p class="hint">Put the board in download mode only if connection fails: hold <code>PRG</code>, tap <code>RST</code>, release <code>PRG</code>, then try again.</p>
+      </details>
+    </aside>
   </div>
-
-  <div class="card">
-    <h2>1. Choose firmware</h2>
-    <label for="fw">Bundled build</label>
-    <select id="fw"></select>
-    <div style="margin-top:14px">
-      <label for="file">…or pick a <code>-usb.bin</code> file from your computer</label>
-      <input type="file" id="file" accept=".bin" />
-    </div>
-    <p class="sub" style="margin:12px 0 0">
-      Use the <code>aethermesh-heltec-&lt;hash&gt;-usb.bin</code> image (the complete USB build with
-      bootloader), <em>not</em> the <code>-ota.bin</code>.
-    </p>
-  </div>
-
-  <div class="card">
-    <h2>2. Put the Heltec in download mode</h2>
-    <ol>
-      <li><strong>Hold</strong> the <code>PRG</code> (BOOT) button.</li>
-      <li>While holding it, briefly press and release <code>RST</code>.</li>
-      <li>Release <code>PRG</code>. The screen stays blank — that's correct.</li>
-    </ol>
-    <p class="sub" style="margin:10px 0 0">This avoids a mid-flash USB disconnect these boards are prone to.</p>
-  </div>
-
-  <div class="card">
-    <h2>3. Flash</h2>
-    <div class="row">
-      <button id="flash">Connect &amp; Flash</button>
-      <button id="clear" class="secondary" type="button">Clear log</button>
-    </div>
-    <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
-    <div id="status"></div>
-    <div id="log"></div>
-    <p class="sub" style="margin:14px 0 0">
-      After a successful flash, tap <code>RST</code> once and the node boots the new firmware.
-      Nothing here is destructive to your other nodes — this only touches the one board you connect.
-    </p>
-  </div>
-
-  <p class="sub">
-    Prefer no cable at all? Once a node runs OTA-capable firmware, use the app's
-    <strong>Settings → Firmware Update</strong> to flash over Bluetooth. This web flasher is for the
-    first-time USB bootstrap and recovery.
-  </p>
-</div>
+</main>
 
 <script type="module">
   import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.js";
 
   const $ = (id) => document.getElementById(id);
-  const logEl = $("log"), statusEl = $("status"), bar = $("bar"), barWrap = $("barWrap");
-  const flashBtn = $("flash"), fileInput = $("file"), fwSelect = $("fw");
+  const logEl = $("log");
+  const statusEl = $("status");
+  const bar = $("bar");
+  const barWrap = $("barWrap");
+  const flashBtn = $("flash");
+  const readInfoBtn = $("read-info");
+  const fileInput = $("file");
+  const dropzone = $("dropzone");
+  const fileChip = $("file-chip");
+  const fileChipName = $("file-chip-name");
+  const fileChipSize = $("file-chip-size");
+  const fileChipRemove = $("file-chip-remove");
+  const fwSelect = $("fw");
+  const targetSelect = $("target");
+  const baudrateSelect = $("baudrate");
+  const offsetInput = $("offset");
+  const copyLogsBtn = $("copy-logs");
+  const clearLogsBtn = $("clear-logs");
+  const compatBanner = $("compat-banner");
 
-  // Bundled builds live alongside this page under ./firmware/. The manifest
-  // lists what's available; if it's missing, only the local-file path is shown.
+  const telemetryGrid = $("telemetry");
+  const telChip = $("telemetry-chip");
+  const telMac = $("telemetry-mac");
+  const telFlash = $("telemetry-flash");
+  const telFeatures = $("telemetry-features");
+
+  const card1 = $("step-1-card");
+  const card2 = $("step-2-card");
+  const card3 = $("step-3-card");
+
+  // Tab Elements
+  const tabLogsBtn = $("tab-logs-btn");
+  const tabMonitorBtn = $("tab-monitor-btn");
+  const monitorConnectBtn = $("monitor-connect-btn");
+  const consoleInputBar = $("consoleInputBar");
+  const consoleInput = $("consoleInput");
+  const consoleSendBtn = $("consoleSendBtn");
+  const downloadFwBtn = $("download-fw");
+  const eraseFlashChk = $("erase-flash");
+  const autoscrollChk = $("autoscroll-chk");
+
   let manifest = [];
+  let telemetryData = { chip: '', mac: '', flash: '', features: '' };
+  
+  // Serial Monitor variables
+  let activeTab = 'logs'; // 'logs' | 'monitor'
+  let monitorPort = null;
+  let monitorReader = null;
+  let isMonitorConnected = false;
+  let logBufferLogs = "";
+  let logBufferMonitor = "";
+
+  // Set initial step highlights
+  function setStepActive(stepNum) {
+    [card1, card2, card3].forEach((c, idx) => {
+      if (idx + 1 === stepNum) {
+        c.classList.add("active");
+      } else {
+        c.classList.remove("active");
+      }
+    });
+  }
+
+  // System compatibility check
+  const isCompatible = "serial" in navigator;
+  if (isCompatible) {
+    compatBanner.innerHTML = `
+      <div class="compatibility-card compatible">
+        <span class="compatibility-icon">✓</span>
+        <span>Your browser is compatible. Web Serial API is fully supported.</span>
+      </div>
+    `;
+    setStepActive(2); // Enable step 2 selection
+  } else {
+    compatBanner.innerHTML = `
+      <div class="compatibility-card uncompatible">
+        <span class="compatibility-icon">⚠</span>
+        <span>This browser does not support Web Serial. Use desktop Chrome, Edge, or Opera with a USB data cable.</span>
+      </div>
+    `;
+    flashBtn.disabled = true;
+    readInfoBtn.disabled = true;
+    [card1, card2, card3].forEach(c => c.classList.add("disabled"));
+  }
+
+  // Dynamic Serial Connection Events
+  if (isCompatible) {
+    navigator.serial.addEventListener("connect", (e) => {
+      setStatus("USB serial device plugged in. Ready.", "ok");
+      log("[System] USB Serial Port connected.", "ok");
+    });
+    navigator.serial.addEventListener("disconnect", (e) => {
+      setStatus("USB serial device unplugged.", "err");
+      log("[System] USB Serial Port disconnected.", "err");
+      if (isMonitorConnected) {
+        disconnectMonitor();
+      }
+    });
+  }
+
+  // Load manifest firmware
   fetch("./firmware/manifest.json")
-    .then(r => r.ok ? r.json() : [])
-    .then(list => {
-      manifest = list || [];
+    .then((r) => r.ok ? r.json() : [])
+    .then((list) => {
+      manifest = Array.isArray(list) ? list : [];
       if (manifest.length === 0) {
-        fwSelect.innerHTML = '<option value="">(no bundled builds — pick a file below)</option>';
+        fwSelect.innerHTML = '<option value="">No bundled builds found - drag a file below</option>';
         return;
       }
-      fwSelect.innerHTML = manifest.map((m, i) =>
-        `<option value="${i}">${m.name}</option>`).join("");
+      fwSelect.innerHTML = manifest
+        .map((m, i) => `<option value="${i}">${m.name || m.file}</option>`)
+        .join("");
+      
+      // Highlight step 3 once options are available
+      if (isCompatible) setStepActive(3);
     })
-    .catch(() => { fwSelect.innerHTML = '<option value="">(pick a file below)</option>'; });
+    .catch(() => {
+      fwSelect.innerHTML = '<option value="">Choose a file below</option>';
+    });
 
+  // Log outputs to terminal simulated window
   function log(msg, cls) {
     logEl.style.display = "block";
     const line = document.createElement("div");
     if (cls) line.className = cls;
     line.textContent = msg;
     logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
+    
+    // Auto-scroll logic
+    if (autoscrollChk.checked) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
 
-  if (!("serial" in navigator)) {
-    $("unsupported").style.display = "block";
-    flashBtn.disabled = true;
+    // Buffer logs depending on active mode
+    if (activeTab === 'logs') {
+      logBufferLogs += msg + "\n";
+    } else {
+      logBufferMonitor += msg + "\n";
+    }
+
+    // Parse device telemetry output as it is logged
+    parseTelemetry(msg);
   }
 
-  $("clear").onclick = () => { logEl.innerHTML = ""; logEl.style.display = "none"; };
+  function setStatus(msg, cls) {
+    let icon = "⚙";
+    if (cls === "ok") icon = "✓";
+    if (cls === "err") icon = "⚠";
+    statusEl.innerHTML = `<span class="${cls || ''}">${icon}</span> <span>${msg}</span>`;
+  }
+
+  function resetProgress() {
+    bar.style.width = "0";
+    barWrap.style.display = "none";
+  }
+
+  function resetTelemetry() {
+    telemetryData = { chip: '', mac: '', flash: '', features: '' };
+    telChip.textContent = "-";
+    telMac.textContent = "-";
+    telFlash.textContent = "-";
+    telFeatures.textContent = "-";
+    telemetryGrid.style.display = "none";
+  }
+
+  function parseTelemetry(msg) {
+    let matched = false;
+
+    // Detect Chip Name
+    const chipMatch = msg.match(/Chip is\s*([^\n]+)/i);
+    if (chipMatch) {
+      telemetryData.chip = chipMatch[1].trim();
+      telChip.textContent = telemetryData.chip;
+      matched = true;
+    }
+
+    // Detect MAC Address
+    const macMatch = msg.match(/MAC:\s*([a-fA-F0-9:]{17})/i);
+    if (macMatch) {
+      telemetryData.mac = macMatch[1].trim();
+      telMac.textContent = telemetryData.mac;
+      matched = true;
+    }
+
+    // Detect Flash Size
+    const flashMatch = msg.match(/(?:Detected flash size|Flash size):\s*([^\n]+)/i);
+    if (flashMatch) {
+      telemetryData.flash = flashMatch[1].trim();
+      telFlash.textContent = telemetryData.flash;
+      matched = true;
+    }
+
+    // Detect Features
+    const featuresMatch = msg.match(/Features:\s*([^\n]+)/i);
+    if (featuresMatch) {
+      telemetryData.features = featuresMatch[1].trim();
+      telFeatures.textContent = telemetryData.features;
+      matched = true;
+    }
+
+    // Show telemetry if we got any details
+    if (matched && (telemetryData.chip || telemetryData.mac || telemetryData.flash)) {
+      telemetryGrid.style.display = "grid";
+    }
+  }
+
+  // Target Hardware Selection Handler
+  targetSelect.onchange = () => {
+    const val = targetSelect.value;
+    if (val === "rak4631") {
+      card2.style.display = "none";
+      card3.style.display = "none";
+      $("uf2-guide").style.display = "block";
+      setStatus("RAK4631 selected. Follow the UF2 guide below.", "info");
+    } else {
+      card2.style.display = "block";
+      card3.style.display = "block";
+      $("uf2-guide").style.display = "none";
+      setStatus("Ready.", "info");
+      
+      // Update steps status
+      if (isCompatible) {
+        setStepActive(2);
+        if (fwSelect.value !== "" || fileInput.files.length > 0) {
+          setStepActive(3);
+        }
+      }
+    }
+  };
+
+  // Download RAK4631 UF2 Firmware Action
+  $("download-uf2-btn").onclick = () => {
+    window.open("https://github.com/meshcore-dev/MeshCore/releases/latest", "_blank");
+  };
+
+  // Clear Logs
+  clearLogsBtn.onclick = () => {
+    logEl.innerHTML = "";
+    logEl.style.display = "none";
+    if (activeTab === 'logs') {
+      logBufferLogs = "";
+      setStatus("");
+      resetProgress();
+      resetTelemetry();
+    } else {
+      logBufferMonitor = "";
+    }
+  };
+
+  // Copy Logs
+  copyLogsBtn.onclick = () => {
+    const text = logEl.innerText || logEl.textContent;
+    if (text) {
+      navigator.clipboard.writeText(text)
+        .then(() => {
+          const oldText = copyLogsBtn.textContent;
+          copyLogsBtn.textContent = "Copied!";
+          setTimeout(() => copyLogsBtn.textContent = oldText, 1500);
+        })
+        .catch((err) => console.error("Could not copy logs: ", err));
+    }
+  };
 
   const espTerminal = {
     clean() { logEl.innerHTML = ""; },
@@ -168,73 +1436,410 @@
     write(data) { log(data); },
   };
 
-  // File (bundled URL or local pick) -> binary string esptool-js expects
+  // Drag & drop handlers
+  dropzone.onclick = () => fileInput.click();
+
+  dropzone.ondragover = (e) => {
+    e.preventDefault();
+    dropzone.classList.add("dragover");
+  };
+
+  dropzone.ondragleave = () => {
+    dropzone.classList.remove("dragover");
+  };
+
+  dropzone.ondrop = (e) => {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileSelection(e.dataTransfer.files[0]);
+    }
+  };
+
+  fileInput.onchange = () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      handleFileSelection(fileInput.files[0]);
+    }
+  };
+
+  function handleFileSelection(file) {
+    if (!file.name.endsWith(".bin")) {
+      setStatus("Selected file must be a .bin firmware binary.", "err");
+      return;
+    }
+    
+    // Select local option in dropdown
+    fwSelect.value = "";
+    
+    // UI changes
+    fileChipName.textContent = file.name;
+    fileChipSize.textContent = (file.size / 1024).toFixed(1) + " KB";
+    fileChip.style.display = "flex";
+    dropzone.style.display = "none";
+    
+    setStatus(`Loaded local file: ${file.name}`, "ok");
+    setStepActive(3);
+  }
+
+  fileChipRemove.onclick = (e) => {
+    e.stopPropagation();
+    fileInput.value = "";
+    fileChip.style.display = "none";
+    dropzone.style.display = "flex";
+    
+    // Re-highlight step 2 / 3
+    if (fwSelect.value === "") {
+      setStatus("No firmware file selected.", "err");
+    } else {
+      setStatus("Ready to flash bundled build.", "ok");
+    }
+  };
+
+  fwSelect.onchange = () => {
+    if (fwSelect.value !== "") {
+      // Clear file upload selection
+      fileInput.value = "";
+      fileChip.style.display = "none";
+      dropzone.style.display = "flex";
+      setStatus(`Bundled build selected.`, "ok");
+      setStepActive(3);
+    }
+  };
+
+  // Download Bundled Build Action
+  downloadFwBtn.onclick = () => {
+    const idx = fwSelect.value;
+    if (idx === "" || !manifest[idx]) {
+      setStatus("Select a bundled build from the dropdown first.", "err");
+      return;
+    }
+    const file = manifest[idx].file;
+    const url = "./firmware/" + file;
+    
+    // Trigger download
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setStatus(`Downloaded ${file} successfully.`, "ok");
+  };
+
   async function loadFirmwareBinary() {
     if (fileInput.files && fileInput.files.length > 0) {
-      const buf = await fileInput.files[0].arrayBuffer();
-      return { name: fileInput.files[0].name, data: toBinaryString(new Uint8Array(buf)) };
+      const file = fileInput.files[0];
+      const buf = await file.arrayBuffer();
+      return { name: file.name, data: toBinaryString(new Uint8Array(buf)) };
     }
+
     const idx = fwSelect.value;
-    if (idx === "" || !manifest[idx]) throw new Error("Choose a bundled build or pick a .bin file first.");
+    if (idx === "" || !manifest[idx]) {
+      throw new Error("Choose a bundled build or upload a .bin file first.");
+    }
+
     const url = "./firmware/" + manifest[idx].file;
     const resp = await fetch(url);
-    if (!resp.ok) throw new Error("Couldn't download " + manifest[idx].file);
+    if (!resp.ok) {
+      throw new Error("Could not download " + manifest[idx].file);
+    }
     const buf = await resp.arrayBuffer();
     return { name: manifest[idx].file, data: toBinaryString(new Uint8Array(buf)) };
   }
+
   function toBinaryString(bytes) {
     let s = "";
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
     return s;
   }
 
+  // FLASH ACTION
   flashBtn.onclick = async () => {
     let transport;
     try {
       flashBtn.disabled = true;
-      setStatus("Loading firmware…");
+      readInfoBtn.disabled = true;
+      resetProgress();
+      resetTelemetry();
+      
+      setStatus("Preparing firmware...");
       const fw = await loadFirmwareBinary();
-      log("Firmware: " + fw.name + " (" + fw.data.length + " bytes)", "");
+      log("Loaded Firmware: " + fw.name + " (" + fw.data.length + " bytes)");
 
-      setStatus("Select the Heltec's serial port in the browser prompt…");
+      setStatus("Select the ESP32 port from browser window...");
       const port = await navigator.serial.requestPort();
       transport = new Transport(port, true);
 
+      const targetBaudrate = parseInt(baudrateSelect.value) || 921600;
+      const targetOffset = parseInt(offsetInput.value, 16) || 0;
+      const shouldErase = eraseFlashChk.checked;
+
       const esploader = new ESPLoader({
-        transport, baudrate: 921600, romBaudrate: 115200, terminal: espTerminal,
+        transport,
+        baudrate: targetBaudrate,
+        romBaudrate: 115200,
+        terminal: espTerminal,
       });
 
-      setStatus("Connecting to the chip…");
+      setStatus("Establishing connection...");
       const chip = await esploader.main();
-      log("Detected: " + chip, "ok");
+      log("Detected Target: " + chip, "ok");
 
       barWrap.style.display = "block";
-      setStatus("Flashing… do not unplug.");
+      setStatus("Flashing device, do not unplug...");
       await esploader.writeFlash({
-        fileArray: [{ data: fw.data, address: 0 }],
-        flashSize: "keep", flashMode: "keep", flashFreq: "keep",
-        eraseAll: false, compress: true,
-        reportProgress: (i, written, total) => {
+        fileArray: [{ data: fw.data, address: targetOffset }],
+        flashSize: "keep",
+        flashMode: "keep",
+        flashFreq: "keep",
+        eraseAll: shouldErase,
+        compress: true,
+        reportProgress: (_fileIndex, written, total) => {
           const pct = Math.round((written / total) * 100);
           bar.style.width = pct + "%";
-          setStatus("Flashing… " + pct + "%");
+          setStatus("Flashing... " + pct + "%");
         },
       });
 
-      setStatus("Done! Tap RST on the Heltec to boot the new firmware.", "ok");
-      log("Flash complete.", "ok");
-      await esploader.after(); // hard reset
+      setStatus("Done. Tap RST to boot the new firmware.", "ok");
+      log("Flash operation complete.", "ok");
+      await esploader.after();
     } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
       console.error(e);
-      setStatus("Failed: " + (e.message || e), "err");
-      log("ERROR: " + (e.message || e), "err");
-      log("Tips: make sure the board is in download mode (hold PRG, tap RST), the cable carries data, and no other program (Arduino/PlatformIO monitor) holds the port.", "warn");
+      setStatus("Failed: " + msg, "err");
+      log("ERROR: " + msg, "err");
+      log("If connection fails, hold PRG, tap RST, release PRG, and try again.", "warn");
     } finally {
-      try { if (transport) await transport.disconnect(); } catch (_) {}
+      try {
+        if (transport) await transport.disconnect();
+      } catch (_) {}
       flashBtn.disabled = false;
+      readInfoBtn.disabled = false;
+    }
+  };
+
+  // READ INFO ACTION
+  readInfoBtn.onclick = async () => {
+    let transport;
+    try {
+      flashBtn.disabled = true;
+      readInfoBtn.disabled = true;
+      resetProgress();
+      resetTelemetry();
+
+      setStatus("Select the ESP32 port from browser window...");
+      const port = await navigator.serial.requestPort();
+      transport = new Transport(port, true);
+
+      const targetBaudrate = parseInt(baudrateSelect.value) || 921600;
+
+      const esploader = new ESPLoader({
+        transport,
+        baudrate: targetBaudrate,
+        romBaudrate: 115200,
+        terminal: espTerminal,
+      });
+
+      setStatus("Connecting to device...");
+      const chip = await esploader.main();
+      
+      // Wait briefly for details to be printed by stub
+      setStatus("Querying device info...");
+      await new Promise(r => setTimeout(r, 1200));
+
+      setStatus("Device information parsed successfully.", "ok");
+      await esploader.after();
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      console.error(e);
+      setStatus("Failed: " + msg, "err");
+      log("ERROR: " + msg, "err");
+    } finally {
+      try {
+        if (transport) await transport.disconnect();
+      } catch (_) {}
+      flashBtn.disabled = false;
+      readInfoBtn.disabled = false;
+    }
+  };
+
+  // ==========================================
+  // SERIAL MONITOR INTERACTIVE LOGIC
+  // ==========================================
+
+  // Tab switching
+  tabLogsBtn.onclick = () => {
+    if (activeTab === 'logs') return;
+    activeTab = 'logs';
+    tabLogsBtn.classList.add("active");
+    tabMonitorBtn.classList.remove("active");
+    
+    // Hide monitor components
+    monitorConnectBtn.style.display = "none";
+    consoleInputBar.style.display = "none";
+    
+    // If monitor was connected, disconnect it to avoid clashes
+    if (isMonitorConnected) {
+      disconnectMonitor();
+    }
+    
+    // Restore logs view
+    logEl.style.display = logBufferLogs ? "block" : "none";
+    logEl.innerHTML = logBufferLogs;
+    logEl.scrollTop = logEl.scrollHeight;
+    
+    setStatus("Ready.", "info");
+  };
+
+  tabMonitorBtn.onclick = () => {
+    if (activeTab === 'monitor') return;
+    activeTab = 'monitor';
+    tabMonitorBtn.classList.add("active");
+    tabLogsBtn.classList.remove("active");
+    
+    // Show monitor Connect button
+    monitorConnectBtn.style.display = "inline-flex";
+    
+    // Set view to monitor buffers
+    logEl.style.display = "block";
+    logEl.innerHTML = logBufferMonitor || '<div class="info">[Serial Monitor Mode. Select baud rate in Step 2, then click "Connect Monitor" above.]</div>';
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  monitorConnectBtn.onclick = () => {
+    toggleMonitor();
+  };
+
+  async function toggleMonitor() {
+    if (isMonitorConnected) {
+      await disconnectMonitor();
+    } else {
+      await connectMonitor();
+    }
+  }
+
+  async function connectMonitor() {
+    try {
+      setStatus("Requesting serial port...", "info");
+      monitorPort = await navigator.serial.requestPort();
+      
+      const baudRate = parseInt(baudrateSelect.value) || 115200;
+      setStatus(`Connecting at ${baudRate} baud...`, "info");
+      
+      await monitorPort.open({ baudRate });
+      isMonitorConnected = true;
+      
+      monitorConnectBtn.textContent = "Disconnect";
+      monitorConnectBtn.classList.add("connected");
+      consoleInputBar.style.display = "flex";
+      
+      logEl.innerHTML = "";
+      logBufferMonitor = "";
+      log(`--- Serial Monitor Connected at ${baudRate} baud ---\n`, "ok");
+      setStatus("Connected to device console.", "ok");
+      
+      // Disable flashing buttons while active to prevent port locks
+      flashBtn.disabled = true;
+      readInfoBtn.disabled = true;
+      
+      // Listen to incoming data stream
+      readMonitorLoop();
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      console.error(err);
+      setStatus("Monitor Failed: " + msg, "err");
+      log("\n[Connection Error: " + msg + "]\n", "err");
+      await disconnectMonitor();
+    }
+  }
+
+  async function disconnectMonitor() {
+    isMonitorConnected = false;
+    monitorConnectBtn.textContent = "Connect Monitor";
+    monitorConnectBtn.classList.remove("connected");
+    consoleInputBar.style.display = "none";
+    
+    if (monitorReader) {
+      try {
+        await monitorReader.cancel();
+      } catch (_) {}
+    }
+    
+    if (monitorPort) {
+      try {
+        await monitorPort.close();
+      } catch (_) {}
+    }
+    
+    monitorPort = null;
+    monitorReader = null;
+    
+    log("\n--- Serial Monitor Disconnected ---\n", "info");
+    setStatus("Monitor disconnected.", "info");
+    
+    // Restore flashing actions if browser compatible
+    if (isCompatible) {
+      flashBtn.disabled = false;
+      readInfoBtn.disabled = false;
+    }
+  }
+
+  async function readMonitorLoop() {
+    while (monitorPort && monitorPort.readable && isMonitorConnected) {
+      try {
+        monitorReader = monitorPort.readable.getReader();
+        while (isMonitorConnected) {
+          const { value, done } = await monitorReader.read();
+          if (done) break;
+          const text = new TextDecoder().decode(value);
+          log(text);
+        }
+      } catch (err) {
+        console.error(err);
+        if (isMonitorConnected) {
+          log("\n[Serial connection lost: " + err.message + "]\n", "err");
+          break;
+        }
+      } finally {
+        if (monitorReader) {
+          monitorReader.releaseLock();
+          monitorReader = null;
+        }
+      }
+    }
+    if (isMonitorConnected) {
+      await disconnectMonitor();
+    }
+  }
+
+  async function sendMonitorCommand() {
+    const cmd = consoleInput.value;
+    if (!cmd || !monitorPort || !monitorPort.writable) return;
+    
+    try {
+      const writer = monitorPort.writable.getWriter();
+      const encoder = new TextEncoder();
+      // Send command string + carriage return
+      await writer.write(encoder.encode(cmd + "\r\n"));
+      writer.releaseLock();
+      
+      // Display typed command inside monitor terminal log
+      log(`\n> ${cmd}\n`, "cmd-sent");
+      consoleInput.value = "";
+    } catch (err) {
+      log("\n[Failed to transmit command: " + err.message + "]\n", "err");
+    }
+  }
+
+  consoleSendBtn.onclick = sendMonitorCommand;
+  consoleInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendMonitorCommand();
     }
   };
 </script>
