@@ -1620,8 +1620,17 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 
 void setup() {
 #if defined(LILYGO_T_DECK)
+    // Power on board peripherals and screen backlight on boot (pins 10, 42, 45, 4, 6)
     pinMode(10, OUTPUT);
     digitalWrite(10, HIGH);
+    pinMode(42, OUTPUT);
+    digitalWrite(42, HIGH);
+    pinMode(45, OUTPUT);
+    digitalWrite(45, HIGH);
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+    pinMode(6, OUTPUT);
+    digitalWrite(6, HIGH); // Release screen reset pin
 #endif
     Serial.begin(115200);
     // Wait up to 3 seconds for Serial port to open on PC, but don't block forever if running on battery
@@ -1683,9 +1692,15 @@ void setup() {
     pinMode(10, OUTPUT);
     digitalWrite(10, HIGH);
     delay(20);
-    // Pull backlight enable HIGH (GPIO 42)
+    // Pull backlight enable pins HIGH (GPIO 42, 45, 4) to support various board revisions
     pinMode(42, OUTPUT);
     digitalWrite(42, HIGH);
+    pinMode(45, OUTPUT);
+    digitalWrite(45, HIGH);
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+    pinMode(6, OUTPUT);
+    digitalWrite(6, HIGH); // Release screen reset pin
 #elif defined(HELTEC_V4) || defined(HELTEC_V3)
     u8g2.begin();
     drawBootSplash(0);
