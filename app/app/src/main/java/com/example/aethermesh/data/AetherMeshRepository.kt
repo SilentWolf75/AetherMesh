@@ -514,6 +514,7 @@ class AetherMeshRepository(private val context: Context) {
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
+                notifyLowBattery(senderId, telemetry.batteryLevel, telemetry.isCharging)
                 retryQueuedDirectMessages(senderId)
                 refreshData()
             }
@@ -1103,6 +1104,74 @@ class AetherMeshRepository(private val context: Context) {
             acked
         }
         return result ?: throw Exception("Timed out waiting for chunk ack")
+    }
+
+    // Per-node battery-alert state: the lowest threshold we've already warned
+    // about (0 = none). Cleared when a node recharges above RECOVER, so a
+    // charge/drain cycle re-arms the alerts. Prevents re-notifying every 60s
+    // telemetry while a node sits below a threshold.
+    private val batteryAlertLevel = mutableMapOf<Long, Int>()
+    private val BATT_ALERT_CRITICAL = 10
+    private val BATT_ALERT_LOW = 20
+    private val BATT_ALERT_RECOVER = 25
+
+    private fun notifyLowBattery(nodeId: Long, level: Int, isCharging: Boolean) {
+        if (nodeId == 0L) return
+        // A charging node, or one that has recovered, re-arms future alerts
+        if (isCharging || level >= BATT_ALERT_RECOVER) {
+            batteryAlertLevel.remove(nodeId)
+            return
+        }
+        val already = batteryAlertLevel[nodeId] ?: 0
+        val threshold = when {
+            level <= BATT_ALERT_CRITICAL -> BATT_ALERT_CRITICAL
+            level <= BATT_ALERT_LOW -> BATT_ALERT_LOW
+            else -> return
+        }
+        // Only alert on first crossing of each threshold (already tracks the
+        // lowest threshold hit; a smaller threshold number = more severe)
+        if (already != 0 && threshold >= already) return
+        batteryAlertLevel[nodeId] = threshold
+
+        val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("bg_alerts_enabled", true)) return
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val chanId = "aethermesh_battery"
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    chanId, "Battery Alerts", android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply { description = "Warns when a mesh node's battery runs low" }
+            )
+        }
+        val name = dbHelper.getNodes().find { it.nodeId == nodeId }?.name
+            ?: "Node %04X".format(nodeId and 0xFFFF)
+        val critical = threshold == BATT_ALERT_CRITICAL
+        val title = if (critical) "⚠ $name battery critical" else "$name battery low"
+        val body = "$level% remaining" + if (critical) " — charge it now" else ""
+
+        val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pi = android.app.PendingIntent.getActivity(
+            context, "batt$nodeId".hashCode(), tapIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = androidx.core.app.NotificationCompat.Builder(context, chanId)
+            .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        // Stable per-node id so a critical alert replaces the earlier low one
+        nm.notify("batt$nodeId".hashCode(), notif)
     }
 
     // Post a system notification for an incoming chat message, Meshtastic-style:
