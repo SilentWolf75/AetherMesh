@@ -476,16 +476,18 @@ uint32_t getHardwareNodeId() {
 #endif
 }
 
-// LiPo state-of-charge from voltage. A LiPo discharge curve is far from
-// linear: the top sags from 4.2V to ~4.0V almost immediately under load
-// (only a few % of real capacity), while most of the capacity lives on the
-// flat 3.6-3.8V plateau. The old linear 3.3-4.2V mapping exaggerated drain
-// at the top and doom at the bottom.
+// LiPo state-of-charge from RESTING (open-circuit) voltage. Two things make a
+// naive 4.2V=100% curve read low: (1) a LiPo only sits at 4.2V while ON the
+// charger - a full pack settles to ~4.13-4.15V within minutes of unplugging
+// (multimeter-confirmed: a "full" pack read 4.12V); (2) the discharge curve is
+// very nonlinear - it sags off the top fast, then holds a long 3.7-3.9V
+// plateau. So 100% is anchored at 4.15V (resting-full), not 4.20V.
 uint8_t lipoPercentFromVoltage(float v) {
-    static const float ocv[] = {4.20f, 4.10f, 4.00f, 3.92f, 3.85f, 3.79f, 3.74f, 3.68f, 3.60f, 3.45f, 3.30f};
-    static const uint8_t pct[] = {100,   90,   80,   70,   60,   50,   40,   30,   20,   10,    0};
+    static const float ocv[] = {4.15f, 4.10f, 4.05f, 4.00f, 3.92f, 3.85f, 3.80f, 3.77f, 3.74f, 3.70f, 3.65f, 3.55f, 3.45f};
+    static const uint8_t pct[] = {100,   96,   90,   82,   72,   62,   52,   42,   32,   22,   14,    6,    0};
+    const int N = 13;
     if (v >= ocv[0]) return 100;
-    for (int i = 1; i < 11; i++) {
+    for (int i = 1; i < N; i++) {
         if (v >= ocv[i]) {
             float f = (v - ocv[i]) / (ocv[i - 1] - ocv[i]);
             return (uint8_t)(pct[i] + f * (pct[i - 1] - pct[i]) + 0.5f);
@@ -507,26 +509,28 @@ uint8_t readBatteryLevel() {
         return cachedLevel;
     }
 
-    // GPIO 37 controls the voltage divider (pull HIGH to enable)
+    // Heltec V4 battery sense: VBAT through a 390k/100k divider into GPIO1
+    // (physical ratio ~4.9), gated by GPIO37. Use analogReadMilliVolts(), which
+    // applies the ESP32-S3's factory ADC calibration curve - raw analogRead()
+    // scaled by hand under-reads badly at the top of the range (a full pack read
+    // ~4.0V), which is what the old 1.045 fudge tried and failed to patch.
+    // BATT_DIVIDER is fine-tuned against a multimeter (see calibration note).
+    static const float BATT_DIVIDER = 4.90f;
+    static const float BATT_CAL = 1.005f; // trim: node read 4.101V vs 4.12V measured
+
     pinMode(37, OUTPUT);
     digitalWrite(37, HIGH);
-    delay(10); // Wait for stabilizer
-    // Average many reads so ADC noise stays below the charge-detection threshold
-    uint32_t adcSum = 0;
-    for (int i = 0; i < 32; i++) adcSum += analogRead(1); // GPIO 1 is battery voltage input
-    int rawValue = adcSum / 32;
-    digitalWrite(37, LOW); // Disable divider to save power
+    delay(10); // let the divider settle
+    uint32_t mvSum = 0;
+    for (int i = 0; i < 32; i++) mvSum += analogReadMilliVolts(1); // calibrated pin mV
+    float pinMv = mvSum / 32.0f;
+    digitalWrite(37, LOW); // disable divider to save power
 
-    // Calculate battery voltage
-    // 3.3V ADC full range, 12-bit (4096 steps). Voltage divider multiplier is ~4.9 * 1.045 on V4
-    float voltage = (float)rawValue * (3.3f / 4096.0f) * 4.9f * 1.045f;
+    float voltage = (pinMv / 1000.0f) * BATT_DIVIDER * BATT_CAL;
     updateChargingState(voltage);
 
-    Serial.print("Battery ADC: ");
-    Serial.print(rawValue);
-    Serial.print(" | Calc Voltage: ");
-    Serial.print(voltage);
-    Serial.println(" V");
+    Serial.printf("Battery: pin %.0fmV | %.3f V | %u%%\n",
+                  pinMv, voltage, lipoPercentFromVoltage(voltage));
 
     cachedLevel = lipoPercentFromVoltage(voltage);
     haveSample = true;
