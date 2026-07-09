@@ -37,11 +37,12 @@ jobs:
       - name: Install PlatformIO + esptool
         run: pip install --upgrade platformio esptool
 
-      - name: Build Heltec V4 and V3 firmware
+      - name: Build Heltec V4/V3 + RAK4631 firmware
         working-directory: firmware
         run: |
           pio run -e heltec_v4
           pio run -e heltec_v3
+          pio run -e rak4631
 
       - name: Build Android App (APK)
         working-directory: app
@@ -74,9 +75,18 @@ jobs:
             0xe000 "$BOOT_APP0" \
             0x10000 "$BUILD_V3/firmware.bin"
             
-          # Write manifest listing both builds
-          printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"}\n]\n' "$HASH" "$NAME_V4" "$HASH" "$NAME_V3" > "$OUT/manifest.json"
-          echo "Bundled $NAME_V4 and $NAME_V3"
+          # RAK4631 (nRF52): convert the built .hex into a UF2 for the Adafruit
+          # bootloader (drag-and-drop). Family ID 0xADA52840 = Nordic nRF52840.
+          BUILD_RAK=firmware/.pio/build/rak4631
+          NAME_RAK="aethermesh-rak4631-${HASH}.uf2"
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o /tmp/uf2conv.py
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
+          python /tmp/uf2conv.py "$BUILD_RAK/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK"
+
+          # Write manifest listing all three builds
+          printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"},\n  {"name":"RAK4631 — %s (latest)","file":"%s"}\n]\n' \
+            "$HASH" "$NAME_V4" "$HASH" "$NAME_V3" "$HASH" "$NAME_RAK" > "$OUT/manifest.json"
+          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

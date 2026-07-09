@@ -1435,7 +1435,20 @@
 
   // Download RAK4631 UF2 Firmware Action
   $("download-uf2-btn").onclick = () => {
-    window.open("https://github.com/meshcore-dev/MeshCore/releases/latest", "_blank");
+    // Download the AetherMesh RAK4631 UF2 bundled with this site (built from
+    // source by the deploy workflow), NOT some other project's firmware.
+    const uf2 = manifest.find(m => m.file && m.file.toLowerCase().endsWith(".uf2"));
+    if (uf2) {
+      const a = document.createElement("a");
+      a.href = "./firmware/" + uf2.file;
+      a.download = uf2.file;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus("Downloading " + uf2.file + " — drag it onto the RAK4631 drive.", "info");
+    } else {
+      setStatus("No RAK4631 UF2 build is available on this site yet.", "err");
+    }
   };
 
   // Clear Logs
