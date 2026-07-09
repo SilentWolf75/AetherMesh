@@ -379,6 +379,64 @@ fun MainScreen(
         Configuration.getInstance().userAgentValue = context.packageName
     }
 
+    // Global location update listener to share location whenever connected
+    DisposableEffect(isConnected) {
+        if (isConnected) {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            val listener = object : android.location.LocationListener {
+                override fun onLocationChanged(location: android.location.Location) {
+                    val gp = GeoPoint(location.latitude, location.longitude)
+                    phoneLocation = gp
+                    if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
+                        viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
+                    }
+                }
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+            }
+            try {
+                // Request location updates every 15 seconds, min distance 5 meters
+                lm.requestLocationUpdates(
+                    android.location.LocationManager.GPS_PROVIDER,
+                    15000L,
+                    5f,
+                    listener
+                )
+                // Fallback network provider
+                lm.requestLocationUpdates(
+                    android.location.LocationManager.NETWORK_PROVIDER,
+                    15000L,
+                    5f,
+                    listener
+                )
+                // Share the last known fix immediately so a GPS-less node gets a
+                // position right away, instead of waiting for the phone to move 5m
+                val lastFix = lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                    ?: lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                if (lastFix != null) {
+                    phoneLocation = GeoPoint(lastFix.latitude, lastFix.longitude)
+                    if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
+                        viewModel.sharePhoneLocation(lastFix.latitude, lastFix.longitude)
+                    }
+                }
+            } catch (e: SecurityException) {
+                android.util.Log.e("MainScreen", "Location permissions missing: ${e.message}")
+            } catch (e: Exception) {
+                android.util.Log.e("MainScreen", "Error requesting location: ${e.message}")
+            }
+            onDispose {
+                try {
+                    lm.removeUpdates(listener)
+                } catch (e: Exception) {
+                    // Ignore
+                }
+            }
+        } else {
+            onDispose {}
+        }
+    }
+
     val headerTitle = when (activeTab) {
         TabItem.CHATS -> "Chats"
         TabItem.NODES -> "Nodes"
@@ -2989,6 +3047,10 @@ fun SettingsView(
     var powerSaveModeEnabled by remember { mutableStateOf(false) }
     var positionPrecisionM by remember { mutableIntStateOf(0) }
     var nodeGpsEnabled by remember { mutableStateOf(true) }
+    var fixedPositionEnabled by remember { mutableStateOf(false) }
+    var fixedLatInput by remember { mutableStateOf("") }
+    var fixedLonInput by remember { mutableStateOf("") }
+    var fixedAltInput by remember { mutableStateOf("") }
 
     var isExpandedSF by remember { mutableStateOf(false) }
     var isExpandedBW by remember { mutableStateOf(false) }
@@ -3034,6 +3096,10 @@ fun SettingsView(
                     put("power_save_mode", powerSaveModeEnabled)
                     put("position_precision", positionPrecisionM)
                     put("gps_mode", if (nodeGpsEnabled) 0 else 1)
+                    put("fixed_position", fixedPositionEnabled)
+                    put("fixed_latitude", fixedLatInput.toFloatOrNull() ?: 0f)
+                    put("fixed_longitude", fixedLonInput.toFloatOrNull() ?: 0f)
+                    put("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0)
                 }.toString(2)
                 
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
@@ -3068,6 +3134,10 @@ fun SettingsView(
                     powerSaveModeEnabled = json.optBoolean("power_save_mode", powerSaveModeEnabled)
                     positionPrecisionM = json.optInt("position_precision", positionPrecisionM)
                     nodeGpsEnabled = json.optInt("gps_mode", if (nodeGpsEnabled) 0 else 1) == 0
+                    fixedPositionEnabled = json.optBoolean("fixed_position", fixedPositionEnabled)
+                    fixedLatInput = json.optDouble("fixed_latitude", fixedLatInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
+                    fixedLonInput = json.optDouble("fixed_longitude", fixedLonInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
+                    fixedAltInput = json.optInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0).toString()
                     
                     android.widget.Toast.makeText(context, "Settings imported. Click Save to apply to device.", android.widget.Toast.LENGTH_LONG).show()
                 }
@@ -3143,6 +3213,16 @@ fun SettingsView(
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
             positionPrecisionM = nodePrefs.getInt("position_precision", 0)
             nodeGpsEnabled = nodePrefs.getInt("gps_mode", 0) == 0
+            // Fixed position isn't carried in telemetry, so it loads from the
+            // last config this phone pushed (node_settings prefs), same as the
+            // radio sliders. 0/blank shows as empty rather than "0.0".
+            fixedPositionEnabled = nodePrefs.getBoolean("fixed_position", false)
+            val fLat = nodePrefs.getFloat("fixed_latitude", 0f)
+            val fLon = nodePrefs.getFloat("fixed_longitude", 0f)
+            val fAlt = nodePrefs.getInt("fixed_altitude", 0)
+            fixedLatInput = if (fLat != 0f) fLat.toString() else ""
+            fixedLonInput = if (fLon != 0f) fLon.toString() else ""
+            fixedAltInput = if (fAlt != 0) fAlt.toString() else ""
         }
     }
 
@@ -3159,7 +3239,11 @@ fun SettingsView(
             screenTimeout = screenTimeoutSecs,
             powerSaveMode = powerSaveModeEnabled,
             positionPrecision = positionPrecisionM,
-            gpsMode = if (nodeGpsEnabled) 0 else 1
+            gpsMode = if (nodeGpsEnabled) 0 else 1,
+            fixedPosition = fixedPositionEnabled,
+            fixedLatitude = fixedLatInput.toFloatOrNull() ?: 0f,
+            fixedLongitude = fixedLonInput.toFloatOrNull() ?: 0f,
+            fixedAltitude = fixedAltInput.toIntOrNull() ?: 0
         )
         if (success) {
             val nodeKey = viewModel.connectedNodeId
@@ -3178,6 +3262,10 @@ fun SettingsView(
                     putBoolean("power_save_mode", powerSaveModeEnabled)
                     putInt("position_precision", positionPrecisionM)
                     putInt("gps_mode", if (nodeGpsEnabled) 0 else 1)
+                    putBoolean("fixed_position", fixedPositionEnabled)
+                    putFloat("fixed_latitude", fixedLatInput.toFloatOrNull() ?: 0f)
+                    putFloat("fixed_longitude", fixedLonInput.toFloatOrNull() ?: 0f)
+                    putInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0)
                     apply()
                 }
             }
@@ -4102,6 +4190,128 @@ fun SettingsView(
                             } else TextMuted,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // 1.5 FIXED POSITION CARD
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = t("Fixed Position", appLanguage),
+                                color = TextLight,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = t("Define static beacon/router position when device has no GPS.", appLanguage),
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Switch(
+                            checked = fixedPositionEnabled,
+                            onCheckedChange = { fixedPositionEnabled = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = DarkBackground,
+                                checkedTrackColor = AccentMint,
+                                uncheckedThumbColor = TextMuted,
+                                uncheckedTrackColor = BorderDark
+                            )
+                        )
+                    }
+
+                    if (fixedPositionEnabled) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        
+                        // Latitude Input
+                        Text(t("Latitude", appLanguage), color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = fixedLatInput,
+                            onValueChange = { fixedLatInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = TextLight, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentCyan,
+                                unfocusedBorderColor = BorderDark,
+                                focusedContainerColor = DarkBackground,
+                                unfocusedContainerColor = DarkBackground
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(10.dp))
+                        
+                        // Longitude Input
+                        Text(t("Longitude", appLanguage), color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = fixedLonInput,
+                            onValueChange = { fixedLonInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = TextLight, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentCyan,
+                                unfocusedBorderColor = BorderDark,
+                                focusedContainerColor = DarkBackground,
+                                unfocusedContainerColor = DarkBackground
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        
+                        // Altitude Input
+                        Text(t("Altitude (m)", appLanguage), color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = fixedAltInput,
+                            onValueChange = { fixedAltInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = TextLight, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentCyan,
+                                unfocusedBorderColor = BorderDark,
+                                focusedContainerColor = DarkBackground,
+                                unfocusedContainerColor = DarkBackground
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        // Set from current phone location button
+                        Text(
+                            text = t("Set from current phone location", appLanguage),
+                            color = AccentMint,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clickable {
+                                    val currentLoc = phoneLocation
+                                    if (currentLoc != null) {
+                                        fixedLatInput = "%.6f".format(currentLoc.latitude)
+                                        fixedLonInput = "%.6f".format(currentLoc.longitude)
+                                        fixedAltInput = "%.0f".format(currentLoc.altitude)
+                                        android.widget.Toast.makeText(context, "Location loaded from phone GPS", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "No phone GPS location lock yet", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                .padding(vertical = 4.dp)
                         )
                     }
                 }

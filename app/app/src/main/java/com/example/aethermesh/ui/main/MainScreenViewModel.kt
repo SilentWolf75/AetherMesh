@@ -122,8 +122,29 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.createChannel(channel)
     }
 
-    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0, gpsMode: Int = 0): Boolean {
-        return repository.sendNodeConfig(name, shortName, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode)
+    fun sendNodeConfig(
+        name: String,
+        shortName: String,
+        sf: Int,
+        bw: Float,
+        txPower: Int,
+        region: Int,
+        role: Int,
+        telemetryInterval: Int = 60,
+        screenTimeout: Int = 30,
+        powerSaveMode: Boolean = false,
+        positionPrecision: Int = 0,
+        gpsMode: Int = 0,
+        fixedPosition: Boolean = false,
+        fixedLatitude: Float = 0f,
+        fixedLongitude: Float = 0f,
+        fixedAltitude: Int = 0
+    ): Boolean {
+        return repository.sendNodeConfig(
+            name, shortName, sf, bw, txPower, region, role,
+            telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
+            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude
+        )
     }
 
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
@@ -143,9 +164,17 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         screenTimeout: Int = 30,
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
-        gpsMode: Int = 0
+        gpsMode: Int = 0,
+        fixedPosition: Boolean = false,
+        fixedLatitude: Float = 0f,
+        fixedLongitude: Float = 0f,
+        fixedAltitude: Int = 0
     ): Boolean {
-        return repository.sendRemoteConfig(nodeId, name, password, sf, bw, txPower, region, role, telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode)
+        return repository.sendRemoteConfig(
+            nodeId, name, password, sf, bw, txPower, region, role,
+            telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
+            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude
+        )
     }
 
     fun getAllRangeTestLogs() = repository.getAllRangeTestLogs()

@@ -648,7 +648,24 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    fun sendNodeConfig(name: String, shortName: String, sf: Int, bw: Float, txPower: Int, region: Int, role: Int, telemetryInterval: Int = 60, screenTimeout: Int = 30, powerSaveMode: Boolean = false, positionPrecision: Int = 0, gpsMode: Int = 0): Boolean {
+    fun sendNodeConfig(
+        name: String,
+        shortName: String,
+        sf: Int,
+        bw: Float,
+        txPower: Int,
+        region: Int,
+        role: Int,
+        telemetryInterval: Int = 60,
+        screenTimeout: Int = 30,
+        powerSaveMode: Boolean = false,
+        positionPrecision: Int = 0,
+        gpsMode: Int = 0,
+        fixedPosition: Boolean = false,
+        fixedLatitude: Float = 0f,
+        fixedLongitude: Float = 0f,
+        fixedAltitude: Int = 0
+    ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
@@ -666,6 +683,10 @@ class AetherMeshRepository(private val context: Context) {
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
             .setGpsMode(gpsMode)
+            .setFixedPosition(fixedPosition)
+            .setFixedLatitude(fixedLatitude)
+            .setFixedLongitude(fixedLongitude)
+            .setFixedAltitude(fixedAltitude)
 
         // Build MeshPacket wrapper
         val packet = MeshPacket.newBuilder()
@@ -706,7 +727,11 @@ class AetherMeshRepository(private val context: Context) {
         screenTimeout: Int = 30,
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
-        gpsMode: Int = 0
+        gpsMode: Int = 0,
+        fixedPosition: Boolean = false,
+        fixedLatitude: Float = 0f,
+        fixedLongitude: Float = 0f,
+        fixedAltitude: Int = 0
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
@@ -725,6 +750,10 @@ class AetherMeshRepository(private val context: Context) {
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
             .setGpsMode(gpsMode)
+            .setFixedPosition(fixedPosition)
+            .setFixedLatitude(fixedLatitude)
+            .setFixedLongitude(fixedLongitude)
+            .setFixedAltitude(fixedAltitude)
 
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
@@ -1542,8 +1571,18 @@ class AetherMeshRepository(private val context: Context) {
     fun sendPhoneLocation(lat: Double, lon: Double): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
+        // Reject a no-fix / invalid reading. A real GPS fix is never exactly
+        // (0,0); sending it caused the node to broadcast Null Island - and with
+        // location fuzzing on, an offset turned it into a fake ~0.017,-0.006
+        // position that looked "locked" in the app.
+        if ((lat == 0.0 && lon == 0.0) || lat.isNaN() || lon.isNaN() ||
+            kotlin.math.abs(lat) > 90.0 || kotlin.math.abs(lon) > 180.0) {
+            Log.d(TAG, "sendPhoneLocation: ignoring invalid/no-fix coords ($lat, $lon)")
+            return false
+        }
+
         val localNodeId = bleManager.connectedNodeId
-        
+
         var fuzzedLat = lat
         var fuzzedLon = lon
 
