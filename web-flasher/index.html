@@ -93,7 +93,7 @@
   }
 
   .wrap {
-    width: min(1140px, 100%);
+    width: min(1280px, 100%);
     margin: 0 auto;
     padding: 36px 20px 72px;
   }
@@ -1115,10 +1115,8 @@
 
   <div id="compat-banner"></div>
 
-  <div class="layout">
-    <section aria-label="Flashing workflow">
-      <!-- STEP 1 -->
-      <div class="panel step-card active" id="step-1-card">
+  <!-- STEP 1 (Full Width Top Panel) -->
+  <div class="panel step-card active" id="step-1-card" style="margin-bottom: 26px;">
         <div class="step-title">
           <span class="num">1</span>
           <h2>Select target</h2>
@@ -1285,8 +1283,10 @@
         <p class="hint">Connect one board at a time using a micro-USB/USB-C data cable.</p>
       </div>
 
-      <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
-      <div class="panel uf2-guide-card" id="uf2-guide" style="display: none; background: rgba(99, 102, 241, 0.04); border: 1px dashed rgba(99, 102, 241, 0.25);">
+      <div class="layout">
+        <section aria-label="Flashing workflow" style="display: flex; flex-direction: column; gap: 26px;">
+          <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
+          <div class="panel uf2-guide-card" id="uf2-guide" style="display: none; background: rgba(99, 102, 241, 0.04); border: 1px dashed rgba(99, 102, 241, 0.25); margin-bottom: 0;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
           <span style="font-size: 20px;">💡</span>
           <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--indigo); text-transform: uppercase; letter-spacing: 0.5px;">nRF52 Bootloader Flow</h3>
