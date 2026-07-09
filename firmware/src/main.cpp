@@ -29,6 +29,10 @@ struct NodeSettings {
     bool powerSaveMode;
     uint32_t positionPrecisionM;
     uint32_t gpsMode;
+    bool fixedPosition;
+    float fixedLat;
+    float fixedLon;
+    int32_t fixedAlt;
 };
 #endif
 
@@ -263,7 +267,11 @@ bool hasOnboardGps = true;
 uint32_t totalGpsBytesReceived = 0;
 bool gpsChecked = false;
 static constexpr uint32_t GPS_DETECT_TIMEOUT_MS = 15000;
-static const uint32_t SETTINGS_VERSION = 8;
+bool fixedPosition = false;
+float fixedLat = 0.0f;
+float fixedLon = 0.0f;
+int32_t fixedAlt = 0;
+static const uint32_t SETTINGS_VERSION = 9;
 
 // OLED message popup state
 char lastMsgText[40] = "";
@@ -309,6 +317,10 @@ void loadSettings() {
         powerSaveMode = preferences.getBool("power_save", false);
         positionPrecisionM = preferences.getUInt("pos_prec", 0);
         gpsMode = preferences.getUInt("gps_mode", 0);
+        fixedPosition = preferences.getBool("fixed_pos", false);
+        fixedLat = preferences.getFloat("fixed_lat", 0.0f);
+        fixedLon = preferences.getFloat("fixed_lon", 0.0f);
+        fixedAlt = preferences.getInt("fixed_alt", 0);
     } else {
         loraSF = 9;
         loraBW = 125.0f;
@@ -320,6 +332,10 @@ void loadSettings() {
         powerSaveMode = false;
         positionPrecisionM = 0;
         gpsMode = 0;
+        fixedPosition = false;
+        fixedLat = 0.0f;
+        fixedLon = 0.0f;
+        fixedAlt = 0;
         nodePassword[0] = '\0';
         Serial.println("Radio settings version changed; resetting settings to defaults.");
     }
@@ -342,6 +358,7 @@ void loadSettings() {
     Serial.printf("  Power Save Mode: %s\n", powerSaveMode ? "ON" : "OFF");
     Serial.printf("  Position Precision: %u m\n", positionPrecisionM);
     Serial.printf("  GPS Mode: %s\n", (gpsMode == 0) ? "ON" : "OFF (power save)");
+    Serial.printf("  Fixed Position: %s (Lat=%.6f, Lon=%.6f, Alt=%d)\n", fixedPosition ? "YES" : "NO", fixedLat, fixedLon, fixedAlt);
 #elif defined(RAK4631) || defined(RAK3401_1W)
     InternalFS.begin();
     File file(InternalFS);
@@ -365,6 +382,10 @@ void loadSettings() {
                 powerSaveMode = settings.powerSaveMode;
                 positionPrecisionM = settings.positionPrecisionM;
                 gpsMode = settings.gpsMode;
+                fixedPosition = settings.fixedPosition;
+                fixedLat = settings.fixedLat;
+                fixedLon = settings.fixedLon;
+                fixedAlt = settings.fixedAlt;
                 loaded = true;
             }
         }
@@ -384,6 +405,10 @@ void loadSettings() {
         powerSaveMode = false;
         positionPrecisionM = 0;
         gpsMode = 0;
+        fixedPosition = false;
+        fixedLat = 0.0f;
+        fixedLon = 0.0f;
+        fixedAlt = 0;
 
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
@@ -401,6 +426,9 @@ void loadSettings() {
     Serial.print("  Screen Timeout: "); Serial.print(screenTimeoutSecs); Serial.println(" sec");
     Serial.print("  Power Save Mode: "); Serial.println(powerSaveMode ? "ON" : "OFF");
     Serial.print("  Position Precision: "); Serial.print(positionPrecisionM); Serial.println(" m");
+    Serial.print("  Fixed Position: "); Serial.print(fixedPosition ? "YES" : "NO");
+    Serial.print(" (Lat="); Serial.print(fixedLat, 6); Serial.print(", Lon="); Serial.print(fixedLon, 6);
+    Serial.print(", Alt="); Serial.print(fixedAlt); Serial.println(")");
 #else
     nodeCustomName[0] = '\0';
     nodePassword[0] = '\0';
@@ -433,6 +461,10 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
     preferences.putUInt("pos_prec", positionPrecisionM);
     preferences.putUInt("gps_mode", gpsMode);
+    preferences.putBool("fixed_pos", fixedPosition);
+    preferences.putFloat("fixed_lat", fixedLat);
+    preferences.putFloat("fixed_lon", fixedLon);
+    preferences.putInt("fixed_alt", fixedAlt);
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
@@ -458,6 +490,10 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
         settings.positionPrecisionM = positionPrecisionM;
         settings.gpsMode = gpsMode;
+        settings.fixedPosition = fixedPosition;
+        settings.fixedLat = fixedLat;
+        settings.fixedLon = fixedLon;
+        settings.fixedAlt = fixedAlt;
 
         file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
@@ -663,16 +699,29 @@ void drawGpsPage() {
 
     bool ownFix = gps.location.isValid();
     bool phoneFix = hasInheritedLocation && (millis() - lastInheritedTime < 300000);
-    if (ownFix || phoneFix) {
-        double lat = ownFix ? gps.location.lat() : (double)inheritedLat;
-        double lon = ownFix ? gps.location.lng() : (double)inheritedLon;
-        snprintf(line, sizeof(line), "Src: %s", ownFix ? "Onboard GPS" : "Phone GPS");
+    if (fixedPosition || ownFix || phoneFix) {
+        double lat;
+        double lon;
+        int32_t alt = 0;
+        if (fixedPosition) {
+            lat = fixedLat;
+            lon = fixedLon;
+            alt = fixedAlt;
+            snprintf(line, sizeof(line), "Src: Fixed Position");
+        } else {
+            lat = ownFix ? gps.location.lat() : (double)inheritedLat;
+            lon = ownFix ? gps.location.lng() : (double)inheritedLon;
+            snprintf(line, sizeof(line), "Src: %s", ownFix ? "Onboard GPS" : "Phone GPS");
+        }
         u8g2.drawStr(0, 23, line);
         snprintf(line, sizeof(line), "Lat %.5f", lat);
         u8g2.drawStr(0, 34, line);
         snprintf(line, sizeof(line), "Lon %.5f", lon);
         u8g2.drawStr(0, 45, line);
-        if (ownFix) {
+        if (fixedPosition) {
+            snprintf(line, sizeof(line), "Alt %dm", (int)alt);
+            u8g2.drawStr(0, 56, line);
+        } else if (ownFix) {
             // The region setting hints at preferred units: US915 -> mph
             float spd = (nodeRegion == 0) ? gps.speed.mph() : gps.speed.kmph();
             snprintf(line, sizeof(line), "Alt %dm  Spd %.1f%s",
@@ -1378,6 +1427,10 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
 
             positionPrecisionM = packet.payload.config.position_precision;
             gpsMode = packet.payload.config.gps_mode;
+            fixedPosition = packet.payload.config.fixed_position;
+            fixedLat = packet.payload.config.fixed_latitude;
+            fixedLon = packet.payload.config.fixed_longitude;
+            fixedAlt = packet.payload.config.fixed_altitude;
 
             // Save to NVS
             saveSettings(
@@ -1443,6 +1496,10 @@ void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
 
         positionPrecisionM = config.position_precision;
         gpsMode = config.gps_mode;
+        fixedPosition = config.fixed_position;
+        fixedLat = config.fixed_latitude;
+        fixedLon = config.fixed_longitude;
+        fixedAlt = config.fixed_altitude;
 
         saveSettings(
             config.node_name,
@@ -1864,7 +1921,15 @@ void loop() {
             float lon = 0.0f;
             int32_t alt = 0;
 
-            if (gps.location.isValid()) {
+            if (fixedPosition) {
+                lat = fixedLat;
+                lon = fixedLon;
+                alt = fixedAlt;
+                Serial.print("Broadcasting Fixed Position Telemetry: Lat=");
+                Serial.print(lat, 6);
+                Serial.print(", Lon=");
+                Serial.println(lon, 6);
+            } else if (gps.location.isValid()) {
                 lat = gps.location.lat();
                 lon = gps.location.lng();
                 alt = gps.altitude.isValid() ? gps.altitude.meters() : 0;

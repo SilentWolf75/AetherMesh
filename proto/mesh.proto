@@ -152,6 +152,10 @@ message NodeConfig {
   uint32 gps_mode = 12;           // 0 = onboard GPS powered (default), 1 = GPS off to save power
                                   // (position falls back to phone-shared GPS). uint32 so the
                                   // proto3 zero-default means "on" for configs that omit it.
+  bool fixed_position = 13;       // True if using a static fixed position instead of GPS
+  float fixed_latitude = 14;      // Static latitude
+  float fixed_longitude = 15;     // Static longitude
+  int32 fixed_altitude = 16;      // Static altitude
 }
 
 // Authentication request sent by companion app to LoRa node

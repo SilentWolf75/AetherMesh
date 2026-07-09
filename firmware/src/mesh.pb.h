@@ -124,6 +124,12 @@ typedef struct _aethermesh_NodeConfig {
     /* Empty for local BLE config (the BLE session is already authenticated). */
     uint32_t position_precision; /* Privacy blur radius (meters) for broadcast positions; 0 = precise. */
     uint32_t gps_mode; /* 0 = onboard GPS powered (default), 1 = GPS off to save power */
+    /* (position falls back to phone-shared GPS). uint32 so the
+ proto3 zero-default means "on" for configs that omit it. */
+    bool fixed_position; /* True if using a static fixed position instead of GPS */
+    float fixed_latitude; /* Static latitude */
+    float fixed_longitude; /* Static longitude */
+    int32_t fixed_altitude; /* Static altitude */
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -221,7 +227,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0}
@@ -233,7 +239,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -282,6 +288,10 @@ extern "C" {
 #define aethermesh_NodeConfig_config_password_tag 10
 #define aethermesh_NodeConfig_position_precision_tag 11
 #define aethermesh_NodeConfig_gps_mode_tag       12
+#define aethermesh_NodeConfig_fixed_position_tag 13
+#define aethermesh_NodeConfig_fixed_latitude_tag 14
+#define aethermesh_NodeConfig_fixed_longitude_tag 15
+#define aethermesh_NodeConfig_fixed_altitude_tag 16
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -421,7 +431,11 @@ X(a, STATIC,   SINGULAR, UINT32,   screen_timeout_secs,   8) \
 X(a, STATIC,   SINGULAR, BOOL,     power_save_mode,   9) \
 X(a, STATIC,   SINGULAR, STRING,   config_password,  10) \
 X(a, STATIC,   SINGULAR, UINT32,   position_precision,  11) \
-X(a, STATIC,   SINGULAR, UINT32,   gps_mode,         12)
+X(a, STATIC,   SINGULAR, UINT32,   gps_mode,         12) \
+X(a, STATIC,   SINGULAR, BOOL,     fixed_position,   13) \
+X(a, STATIC,   SINGULAR, FLOAT,    fixed_latitude,   14) \
+X(a, STATIC,   SINGULAR, FLOAT,    fixed_longitude,  15) \
+X(a, STATIC,   SINGULAR, INT32,    fixed_altitude,   16)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -473,7 +487,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshPacket_size               286
-#define aethermesh_NodeConfig_size               112
+#define aethermesh_NodeConfig_size               136
 #define aethermesh_OtaControl_size               42
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
