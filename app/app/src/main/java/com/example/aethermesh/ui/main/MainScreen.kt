@@ -3016,6 +3016,67 @@ fun SettingsView(
 
     val consoleMessages by viewModel.messages.collectAsStateWithLifecycle()
 
+    val createDocLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val json = org.json.JSONObject().apply {
+                    put("node_name", nodeName)
+                    put("node_short_name", nodeShortName)
+                    put("lora_sf", sf)
+                    put("lora_bw", bw.toDouble())
+                    put("lora_tx_power", txPower)
+                    put("region", region)
+                    put("node_role", role)
+                    put("telemetry_interval", telemetryIntervalSecs)
+                    put("screen_timeout", screenTimeoutSecs)
+                    put("power_save_mode", powerSaveModeEnabled)
+                    put("position_precision", positionPrecisionM)
+                    put("gps_mode", if (nodeGpsEnabled) 0 else 1)
+                }.toString(2)
+                
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(json.toByteArray())
+                }
+                android.widget.Toast.makeText(context, "Settings exported successfully", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Failed to export settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val restoreSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.bufferedReader().use { it.readText() }
+                }
+                if (jsonString != null) {
+                    val json = org.json.JSONObject(jsonString)
+                    nodeName = json.optString("node_name", nodeName)
+                    nodeShortName = json.optString("node_short_name", nodeShortName)
+                    sf = json.optInt("lora_sf", sf)
+                    bw = json.optDouble("lora_bw", bw.toDouble()).toFloat()
+                    txPower = json.optInt("lora_tx_power", txPower)
+                    region = json.optInt("region", region)
+                    role = json.optInt("node_role", role)
+                    telemetryIntervalSecs = json.optInt("telemetry_interval", telemetryIntervalSecs)
+                    screenTimeoutSecs = json.optInt("screen_timeout", screenTimeoutSecs)
+                    powerSaveModeEnabled = json.optBoolean("power_save_mode", powerSaveModeEnabled)
+                    positionPrecisionM = json.optInt("position_precision", positionPrecisionM)
+                    nodeGpsEnabled = json.optInt("gps_mode", if (nodeGpsEnabled) 0 else 1) == 0
+                    
+                    android.widget.Toast.makeText(context, "Settings imported. Click Save to apply to device.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Failed to import settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     var channelsList by remember { mutableStateOf<List<ChannelConfig>>(emptyList()) }
     var showAddChannelDialog by remember { mutableStateOf(false) }
     var showImportChannelDialog by remember { mutableStateOf(false) }
@@ -4866,6 +4927,34 @@ fun SettingsView(
                     Column {
                         Text(t("Reset Node Directory", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(t("Clear all discovered nodes and restart directory", appLanguage), color = TextMuted, fontSize = 11.sp)
+                    }
+                }
+                HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
+                
+                // Backup Settings button
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { createDocLauncher.launch("aethermesh_backup_${connectedNode?.nodeId ?: 0L}.json") }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(t("Backup Device Settings", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(t("Export configuration to JSON file", appLanguage), color = TextMuted, fontSize = 11.sp)
+                    }
+                }
+                HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
+                
+                // Restore Settings button
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { restoreSettingsLauncher.launch(arrayOf("application/json")) }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, tint = AccentMint, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(t("Restore Device Settings", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(t("Import configuration from JSON file", appLanguage), color = TextMuted, fontSize = 11.sp)
                     }
                 }
             }
