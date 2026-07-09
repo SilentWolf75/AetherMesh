@@ -28,6 +28,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install PlatformIO + esptool
         run: pip install --upgrade platformio esptool
 
@@ -36,6 +42,10 @@ jobs:
         run: |
           pio run -e heltec_v4
           pio run -e heltec_v3
+
+      - name: Build Android App (APK)
+        working-directory: app
+        run: ./gradlew :app:assembleDebug
 
       - name: Merge complete USB images + write manifest
         run: |
@@ -68,6 +78,17 @@ jobs:
           printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"}\n]\n' "$HASH" "$NAME_V4" "$HASH" "$NAME_V3" > "$OUT/manifest.json"
           echo "Bundled $NAME_V4 and $NAME_V3"
           ls -la "$OUT"
+
+      - name: Copy Android APK to web-flasher
+        run: |
+          APK_PATH=$(find app -name "app-debug.apk" | head -n1)
+          if [ -n "$APK_PATH" ]; then
+            cp "$APK_PATH" web-flasher/aethermesh-app-debug.apk
+            echo "Copied APK from $APK_PATH to web-flasher"
+          else
+            echo "ERROR: Compiled APK not found!"
+            exit 1
+          fi
 
       - uses: actions/upload-pages-artifact@v3
         with:
