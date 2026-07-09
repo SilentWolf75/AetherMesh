@@ -95,10 +95,10 @@ jobs:
           curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
           python /tmp/uf2conv.py "$BUILD_RAK/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK"
 
-          # Lilygo T-Echo (nRF52): convert the built .hex to UF2 as well
+          # Lilygo T-Echo (nRF52): convert the built .bin to UF2
           BUILD_T_ECHO=firmware/.pio/build/lilygo_t_echo
           NAME_T_ECHO="aethermesh-t-echo-${HASH}.uf2"
-          python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
+          python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.bin" -c -b 0x26000 -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
 
           # Write manifest listing all five builds
           printf '[\n  {"name":"Heltec V4 — %s (latest)","file":"%s"},\n  {"name":"Heltec V3 — %s (latest)","file":"%s"},\n  {"name":"RAK4631 — %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo — %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck — %s (latest)","file":"%s"}\n]\n' \
