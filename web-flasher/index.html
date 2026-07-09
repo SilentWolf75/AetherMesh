@@ -976,6 +976,7 @@
         <label for="target">Device Hardware</label>
         <select id="target">
           <option value="heltec-v4">Heltec V4 / ESP32-S3</option>
+          <option value="heltec-v3">Heltec V3 / ESP32-S3</option>
           <option value="rak4631">RAK WisBlock RAK4631 (nRF52)</option>
         </select>
         <p class="hint">Connect one board at a time using a micro-USB/USB-C data cable.</p>
@@ -1267,21 +1268,37 @@
     });
   }
 
+  function populateFirmwareDropdown() {
+    if (manifest.length === 0) {
+      fwSelect.innerHTML = '<option value="">No bundled builds found - drag a file below</option>';
+      return;
+    }
+    const target = targetSelect.value;
+    let filtered = manifest.map((m, i) => ({ ...m, index: i }));
+    if (target === "heltec-v4") {
+      filtered = filtered.filter(m => m.name.toLowerCase().includes("v4") || m.file.toLowerCase().includes("v4"));
+    } else if (target === "heltec-v3") {
+      filtered = filtered.filter(m => m.name.toLowerCase().includes("v3") || m.file.toLowerCase().includes("v3"));
+    }
+    
+    if (filtered.length === 0) {
+      fwSelect.innerHTML = '<option value="">No matching builds found for target - upload a local file below</option>';
+    } else {
+      fwSelect.innerHTML = filtered
+        .map((m) => `<option value="${m.index}">${m.name || m.file}</option>`)
+        .join("");
+    }
+  }
+
   // Load manifest firmware
   fetch("./firmware/manifest.json")
     .then((r) => r.ok ? r.json() : [])
     .then((list) => {
       manifest = Array.isArray(list) ? list : [];
-      if (manifest.length === 0) {
-        fwSelect.innerHTML = '<option value="">No bundled builds found - drag a file below</option>';
-        return;
-      }
-      fwSelect.innerHTML = manifest
-        .map((m, i) => `<option value="${i}">${m.name || m.file}</option>`)
-        .join("");
+      populateFirmwareDropdown();
       
       // Highlight step 3 once options are available
-      if (isCompatible) setStepActive(3);
+      if (isCompatible && fwSelect.value !== "") setStepActive(3);
     })
     .catch(() => {
       fwSelect.innerHTML = '<option value="">Choose a file below</option>';
@@ -1386,6 +1403,9 @@
       card3.style.display = "block";
       $("uf2-guide").style.display = "none";
       setStatus("Ready.", "info");
+      
+      // Update firmware options list based on target
+      populateFirmwareDropdown();
       
       // Update steps status
       if (isCompatible) {
