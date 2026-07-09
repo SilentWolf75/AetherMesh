@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AetherMesh Web Flasher</title>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --border: #334155;
+    --text: #f8fafc; --muted: #94a3b8; --cyan: #22d3ee; --mint: #34d399; --red: #ef4444; --amber: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  header svg { width: 34px; height: 34px; }
+  h1 { font-size: 22px; margin: 0; }
+  .cyan { color: var(--cyan); }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px; margin-bottom: 18px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  select, input[type=file] {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 14px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    background: var(--mint); color: var(--bg); border: 0; border-radius: 8px;
+    padding: 12px 18px; font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .bar-wrap { height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; margin-top: 14px; display: none; }
+  .bar { height: 100%; width: 0; background: var(--cyan); transition: width .2s; }
+  #status { margin-top: 12px; font-size: 14px; min-height: 20px; }
+  #log {
+    background: #0b1220; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word;
+    max-height: 240px; overflow-y: auto; margin-top: 12px; display: none;
+  }
+  ol { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); }
+  ol li { margin-bottom: 6px; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; color: var(--amber); }
+  .warn { color: var(--amber); }
+  .err { color: var(--red); }
+  .ok { color: var(--mint); }
+  a { color: var(--cyan); }
+  .unsupported { display: none; background: #3b0d0d; border: 1px solid var(--red); color: #fecaca; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="24" cy="12" r="4" fill="#22d3ee"/>
+      <circle cx="12" cy="34" r="3" fill="#34d399"/>
+      <circle cx="36" cy="34" r="3" fill="#34d399"/>
+      <path d="M24 12 L12 34 M24 12 L36 34 M12 34 L36 34" stroke="#334155" stroke-width="2" fill="none"/>
+    </svg>
+    <h1>AetherMesh <span class="cyan">Web Flasher</span></h1>
+  </header>
+  <p class="sub">Flash a Heltec V4 node over USB, straight from your browser — no install needed.</p>
+
+  <div class="card unsupported" id="unsupported">
+    <strong>This browser can't flash over USB.</strong><br>
+    The Web Serial API is only available in <strong>desktop Chrome, Edge, or Opera</strong>.
+    Please open this page in one of those. (Firefox, Safari, and most mobile browsers aren't supported.)
+  </div>
+
+  <div class="card">
+    <h2>1. Choose firmware</h2>
+    <label for="fw">Bundled build</label>
+    <select id="fw"></select>
+    <div style="margin-top:14px">
+      <label for="file">…or pick a <code>-usb.bin</code> file from your computer</label>
+      <input type="file" id="file" accept=".bin" />
+    </div>
+    <p class="sub" style="margin:12px 0 0">
+      Use the <code>aethermesh-heltec-&lt;hash&gt;-usb.bin</code> image (the complete USB build with
+      bootloader), <em>not</em> the <code>-ota.bin</code>.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>2. Put the Heltec in download mode</h2>
+    <ol>
+      <li><strong>Hold</strong> the <code>PRG</code> (BOOT) button.</li>
+      <li>While holding it, briefly press and release <code>RST</code>.</li>
+      <li>Release <code>PRG</code>. The screen stays blank — that's correct.</li>
+    </ol>
+    <p class="sub" style="margin:10px 0 0">This avoids a mid-flash USB disconnect these boards are prone to.</p>
+  </div>
+
+  <div class="card">
+    <h2>3. Flash</h2>
+    <div class="row">
+      <button id="flash">Connect &amp; Flash</button>
+      <button id="clear" class="secondary" type="button">Clear log</button>
+    </div>
+    <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
+    <div id="status"></div>
+    <div id="log"></div>
+    <p class="sub" style="margin:14px 0 0">
+      After a successful flash, tap <code>RST</code> once and the node boots the new firmware.
+      Nothing here is destructive to your other nodes — this only touches the one board you connect.
+    </p>
+  </div>
+
+  <p class="sub">
+    Prefer no cable at all? Once a node runs OTA-capable firmware, use the app's
+    <strong>Settings → Firmware Update</strong> to flash over Bluetooth. This web flasher is for the
+    first-time USB bootstrap and recovery.
+  </p>
+</div>
+
+<script type="module">
+  import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.js";
+
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log"), statusEl = $("status"), bar = $("bar"), barWrap = $("barWrap");
+  const flashBtn = $("flash"), fileInput = $("file"), fwSelect = $("fw");
+
+  // Bundled builds live alongside this page under ./firmware/. The manifest
+  // lists what's available; if it's missing, only the local-file path is shown.
+  let manifest = [];
+  fetch("./firmware/manifest.json")
+    .then(r => r.ok ? r.json() : [])
+    .then(list => {
+      manifest = list || [];
+      if (manifest.length === 0) {
+        fwSelect.innerHTML = '<option value="">(no bundled builds — pick a file below)</option>';
+        return;
+      }
+      fwSelect.innerHTML = manifest.map((m, i) =>
+        `<option value="${i}">${m.name}</option>`).join("");
+    })
+    .catch(() => { fwSelect.innerHTML = '<option value="">(pick a file below)</option>'; });
+
+  function log(msg, cls) {
+    logEl.style.display = "block";
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
+
+  if (!("serial" in navigator)) {
+    $("unsupported").style.display = "block";
+    flashBtn.disabled = true;
+  }
+
+  $("clear").onclick = () => { logEl.innerHTML = ""; logEl.style.display = "none"; };
+
+  const espTerminal = {
+    clean() { logEl.innerHTML = ""; },
+    writeLine(data) { log(data); },
+    write(data) { log(data); },
+  };
+
+  // File (bundled URL or local pick) -> binary string esptool-js expects
+  async function loadFirmwareBinary() {
+    if (fileInput.files && fileInput.files.length > 0) {
+      const buf = await fileInput.files[0].arrayBuffer();
+      return { name: fileInput.files[0].name, data: toBinaryString(new Uint8Array(buf)) };
+    }
+    const idx = fwSelect.value;
+    if (idx === "" || !manifest[idx]) throw new Error("Choose a bundled build or pick a .bin file first.");
+    const url = "./firmware/" + manifest[idx].file;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Couldn't download " + manifest[idx].file);
+    const buf = await resp.arrayBuffer();
+    return { name: manifest[idx].file, data: toBinaryString(new Uint8Array(buf)) };
+  }
+  function toBinaryString(bytes) {
+    let s = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return s;
+  }
+
+  flashBtn.onclick = async () => {
+    let transport;
+    try {
+      flashBtn.disabled = true;
+      setStatus("Loading firmware…");
+      const fw = await loadFirmwareBinary();
+      log("Firmware: " + fw.name + " (" + fw.data.length + " bytes)", "");
+
+      setStatus("Select the Heltec's serial port in the browser prompt…");
+      const port = await navigator.serial.requestPort();
+      transport = new Transport(port, true);
+
+      const esploader = new ESPLoader({
+        transport, baudrate: 921600, romBaudrate: 115200, terminal: espTerminal,
+      });
+
+      setStatus("Connecting to the chip…");
+      const chip = await esploader.main();
+      log("Detected: " + chip, "ok");
+
+      barWrap.style.display = "block";
+      setStatus("Flashing… do not unplug.");
+      await esploader.writeFlash({
+        fileArray: [{ data: fw.data, address: 0 }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep",
+        eraseAll: false, compress: true,
+        reportProgress: (i, written, total) => {
+          const pct = Math.round((written / total) * 100);
+          bar.style.width = pct + "%";
+          setStatus("Flashing… " + pct + "%");
+        },
+      });
+
+      setStatus("Done! Tap RST on the Heltec to boot the new firmware.", "ok");
+      log("Flash complete.", "ok");
+      await esploader.after(); // hard reset
+    } catch (e) {
+      console.error(e);
+      setStatus("Failed: " + (e.message || e), "err");
+      log("ERROR: " + (e.message || e), "err");
+      log("Tips: make sure the board is in download mode (hold PRG, tap RST), the cable carries data, and no other program (Arduino/PlatformIO monitor) holds the port.", "warn");
+    } finally {
+      try { if (transport) await transport.disconnect(); } catch (_) {}
+      flashBtn.disabled = false;
+    }
+  };
+</script>
+</body>
+</html>

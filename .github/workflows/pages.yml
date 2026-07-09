@@ -1,0 +1,70 @@
+name: Deploy web flasher
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'web-flasher/**'
+      - 'firmware/**'
+      - 'proto/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build firmware + bundle flasher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO + esptool
+        run: pip install --upgrade platformio esptool
+
+      - name: Build Heltec V4 firmware
+        working-directory: firmware
+        run: pio run -e heltec_v4
+
+      - name: Merge complete USB image + write manifest
+        run: |
+          set -e
+          HASH=$(git rev-parse --short=7 HEAD)
+          OUT=web-flasher/firmware
+          mkdir -p "$OUT"
+          BUILD=firmware/.pio/build/heltec_v4
+          # boot_app0.bin ships with the arduino-esp32 framework package
+          BOOT_APP0=$(find ~/.platformio/packages -path '*tools/partitions/boot_app0.bin' | head -n1)
+          NAME="aethermesh-heltec-${HASH}-usb.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME" \
+            0x0    "$BUILD/bootloader.bin" \
+            0x8000 "$BUILD/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD/firmware.bin"
+          printf '[{"name":"Heltec V4 — %s (latest)","file":"%s"}]\n' "$HASH" "$NAME" > "$OUT/manifest.json"
+          echo "Bundled $NAME"
+          ls -la "$OUT"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-flasher
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
