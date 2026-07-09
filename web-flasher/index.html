@@ -1291,7 +1291,7 @@
   }
 
   // Load manifest firmware
-  fetch("./firmware/manifest.json")
+  fetch("./firmware/manifest.json?t=" + Date.now())
     .then((r) => r.ok ? r.json() : [])
     .then((list) => {
       manifest = Array.isArray(list) ? list : [];
