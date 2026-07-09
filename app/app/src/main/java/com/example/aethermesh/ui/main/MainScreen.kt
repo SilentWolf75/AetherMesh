@@ -4301,14 +4301,22 @@ fun SettingsView(
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier
                                 .clickable {
-                                    val currentLoc = phoneLocation
-                                    if (currentLoc != null) {
-                                        fixedLatInput = "%.6f".format(currentLoc.latitude)
-                                        fixedLonInput = "%.6f".format(currentLoc.longitude)
-                                        fixedAltInput = "%.0f".format(currentLoc.altitude)
-                                        android.widget.Toast.makeText(context, "Location loaded from phone GPS", android.widget.Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        android.widget.Toast.makeText(context, "No phone GPS location lock yet", android.widget.Toast.LENGTH_LONG).show()
+                                    // Query the phone directly rather than a screen-local state
+                                    // variable that may be unpopulated on the Settings tab.
+                                    try {
+                                        val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+                                        val loc = lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                                            ?: lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                                        if (loc != null && !(loc.latitude == 0.0 && loc.longitude == 0.0)) {
+                                            fixedLatInput = "%.6f".format(loc.latitude)
+                                            fixedLonInput = "%.6f".format(loc.longitude)
+                                            fixedAltInput = "%.0f".format(loc.altitude)
+                                            android.widget.Toast.makeText(context, "Location loaded from phone GPS", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            android.widget.Toast.makeText(context, "No phone GPS location lock yet — open the Map tab briefly to acquire one", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    } catch (e: SecurityException) {
+                                        android.widget.Toast.makeText(context, "Location permission needed", android.widget.Toast.LENGTH_SHORT).show()
                                     }
                                 }
                                 .padding(vertical = 4.dp)
