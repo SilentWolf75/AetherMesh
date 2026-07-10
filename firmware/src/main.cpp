@@ -38,6 +38,11 @@ struct NodeSettings {
     float fixedLon;
     int32_t fixedAlt;
 };
+#if defined(RAK4631) || defined(RAK3401_1W)
+#ifndef WB_A0
+#define WB_A0 PIN_A0
+#endif
+#endif
 #endif
 
 #ifdef ESP32
@@ -46,10 +51,15 @@ struct NodeSettings {
 Preferences preferences;
 #endif
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W)
 #include <U8g2lib.h>
 // SSD1306 128x64 display connection
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ 21, /* clock=*/ 18, /* data=*/ 17);
+#else
+// For RAK4631 / RAK3401_1W (e.g. RAK19026)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+#endif
 #elif defined(AETHER_COLOR_UI)
 #include <U8g2lib.h>
 #include <SPI.h>
@@ -1193,7 +1203,7 @@ uint8_t readBatteryLevel() {
 #endif
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
 #if defined(AETHER_COLOR_UI)
 static void drawTDeckBootSplash(uint8_t wavePhase);
 #endif
@@ -2106,7 +2116,11 @@ void drawSysPage() {
     snprintf(line, sizeof(line), "Batt %u%% %.2fV%s", (unsigned)readBatteryLevel(),
              batteryVoltage, batteryCharging ? " CHG" : "");
     u8g2.drawStr(0, 45, line);
+#ifdef ESP32
     snprintf(line, sizeof(line), "Heap %luk", (unsigned long)(ESP.getFreeHeap() / 1024));
+#else
+    snprintf(line, sizeof(line), "Heap N/A");
+#endif
     u8g2.drawStr(0, 56, line);
 
     u8g2.setFont(u8g2_font_5x7_tf);
@@ -2203,7 +2217,7 @@ void drawEchoStatus() {
 
 // Update the OLED display screen
 void updateDisplay() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
     if (otaActive) {
         return; // drawOtaProgress() renders during firmware updates
     }
@@ -2247,12 +2261,23 @@ void updateDisplay() {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
         setBacklight(false);
 #endif
+#if defined(RAK4631) || defined(RAK3401_1W)
+        if (gpsMode != 0) {
+            digitalWrite(34, LOW); // WisBlock slot power off if GPS also disabled
+        }
+#endif
         displayIsOn = false;
         return;
     }
     if (!displayIsOn) {
 #if !defined(AETHER_COLOR_UI)
         oledPage = 0; // waking from off always lands on the HOME page
+#endif
+#if defined(RAK4631) || defined(RAK3401_1W)
+        digitalWrite(34, HIGH); // Power on WisBlock slots
+        digitalWrite(17, HIGH); // Ensure 3V3_S is high
+        delay(50);
+        u8g2.begin(); // Reinitialize display registers
 #endif
     }
 #if defined(AETHER_COLOR_UI)
@@ -3309,6 +3334,17 @@ void setup() {
     u8g2.begin();
     drawBootSplash(0);
     uint32_t splashShownAt = millis();
+#elif defined(RAK4631) || defined(RAK3401_1W)
+    Serial.println("Initializing RAK display (SSD1306, HW I2C)...");
+    pinMode(34, OUTPUT);
+    digitalWrite(34, HIGH); // Power on WisBlock slots
+    pinMode(17, OUTPUT);
+    digitalWrite(17, HIGH); // Ensure 3V3_S is high
+    delay(100);
+    Wire.begin();
+    u8g2.begin();
+    drawBootSplash(0);
+    uint32_t splashShownAt = millis();
 #elif defined(LILYGO_T_ECHO)
     // Bring up the e-paper. Its refresh is slow, so the status screen is drawn
     // once here (after the rest of setup) and then only at a slow cadence.
@@ -3419,7 +3455,7 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
     // Hold the splash ~2.5s total, pulsing the radio waves. The radio is already
     // live at this point (receive callback armed), so nothing is missed.
     uint8_t splashPhase = 1;
@@ -3513,7 +3549,7 @@ void loop() {
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
     if (currentButtonState == LOW && lastButtonState == HIGH) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
         // Button behavior: dismiss a visible message popup first; otherwise
         // advance the page carousel while the screen is on. Pressing while the
         // screen is off just wakes it (updateDisplay lands on HOME).
@@ -3765,6 +3801,8 @@ void loop() {
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
+#elif defined(RAK19026)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK19026");
 #elif defined(RAK4631)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK4631");
 #elif defined(RAK3401_1W)
