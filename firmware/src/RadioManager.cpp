@@ -5,6 +5,10 @@
 // Volatile flag for ISR
 static volatile bool operationDone = false;
 
+#if defined(ELECROW_CROWPANEL_35)
+static SPIClass crowPanelLoraSPI(HSPI);
+#endif
+
 #if defined(HELTEC_V4)
 static constexpr float HELTEC_V4_TCXO_VOLTAGE = 1.8f;
 
@@ -54,6 +58,12 @@ RadioManager::RadioManager() {
     pinRst = 17;
     pinBusy = 13;
     pinDio1 = 45;
+    txPower = 20;
+#elif defined(ELECROW_CROWPANEL_35)
+    pinNss = 0;
+    pinRst = 2;
+    pinBusy = 46;
+    pinDio1 = 1;
     txPower = 20;
 #elif defined(LILYGO_T_ECHO)
     pinNss = 24;  // P0.24
@@ -115,6 +125,16 @@ bool RadioManager::init() {
     digitalWrite(10, HIGH);
     delay(100);
     SPI.begin(40, 38, 41, 9); // SCK, MISO, MOSI, SS
+#elif defined(ELECROW_CROWPANEL_35)
+    Serial.println("Elecrow CrowPanel 3.5: selecting LoRa module and setting up SPI...");
+    pinMode(45, OUTPUT);
+    digitalWrite(45, LOW); // Select wireless module instead of microphone path
+    pinMode(40, OUTPUT);
+    digitalWrite(40, HIGH); // Keep LCD deselected while the radio owns its SPI bus
+    pinMode(pinNss, OUTPUT);
+    digitalWrite(pinNss, HIGH);
+    delay(100);
+    crowPanelLoraSPI.begin(10, 9, 3, pinNss); // SCK, MISO, MOSI, SS
 #elif defined(LILYGO_T_ECHO)
     Serial.println("Lilygo T-Echo: Setting up SPI pins (23, 19, 22)...");
     SPI.setPins(23, 19, 22); // MISO=23, SCK=19, MOSI=22
@@ -133,12 +153,18 @@ bool RadioManager::init() {
 #endif
 
     // 2. Initialize Module
+#if defined(ELECROW_CROWPANEL_35)
+    Module* mod = new Module(pinNss, pinDio1, pinRst, pinBusy, crowPanelLoraSPI);
+#else
     Module* mod = new Module(pinNss, pinDio1, pinRst, pinBusy);
+#endif
     radio = new SX1262(mod);
     
     // 3. Begin radio with default params
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);
+#elif defined(ELECROW_CROWPANEL_35)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 3.3, false);
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.6, false);
 #else

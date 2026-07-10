@@ -1,7 +1,8 @@
 # Flashing AetherMesh Firmware
 
 The GitHub Pages workflow builds the current web flasher bundle for Heltec V4,
-Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo, LILYGO T-Deck, and the Android APK.
+Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo, LILYGO T-Deck, Elecrow
+CrowPanel 3.5, and the Android APK.
 
 The local staging helper is older and currently stages the Heltec V4 app/USB
 images plus the RAK4631 DFU zip into `ota-images\`, named by the current git
@@ -18,6 +19,7 @@ Current ESP32-S3 firmware targets:
 - `heltec_v4`
 - `heltec_v3`
 - `lilygo_t_deck`
+- `elecrow_crowpanel_35`
 
 ### App OTA
 
@@ -48,6 +50,7 @@ Example filenames:
 - `aethermesh-heltec-v4-<hash>-usb.bin`
 - `aethermesh-heltec-v3-<hash>-usb.bin`
 - `aethermesh-t-deck-<hash>-usb.bin`
+- `aethermesh-crowpanel-35-<hash>-usb.bin`
 
 Flash the merged image at offset `0x0`:
 
@@ -117,6 +120,7 @@ The browser flasher is for first-time setup and recovery. It currently presents:
 - Heltec V4 / ESP32-S3
 - Heltec V3 / ESP32-S3
 - LILYGO T-Deck / ESP32-S3
+- Elecrow CrowPanel 3.5 / ESP32-S3
 - RAK4631 / nRF52
 - RAK3401 1W / nRF52
 - LILYGO T-Echo / nRF52

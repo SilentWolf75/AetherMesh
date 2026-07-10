@@ -8,6 +8,10 @@
 #include "pb_encode.h"
 #include <TinyGPS++.h>
 
+#if defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
+#define AETHER_COLOR_UI
+#endif
+
 #if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
 #include <bluefruit.h>
 #include <nrf_nvic.h>
@@ -46,11 +50,17 @@ Preferences preferences;
 #include <U8g2lib.h>
 // SSD1306 128x64 display connection
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ 21, /* clock=*/ 18, /* data=*/ 17);
-#elif defined(LILYGO_T_DECK)
+#elif defined(AETHER_COLOR_UI)
 #include <U8g2lib.h>
 #include <SPI.h>
+#if defined(ELECROW_CROWPANEL_35)
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#endif
 
 static uint16_t tdeckFrame[320UL * 240UL];
+
+#if defined(LILYGO_T_DECK)
 static uint8_t tdeckTxLine[320 * 2];
 
 // Direct, lightweight ST7789 driver over shared Hardware SPI to enable physical screen output on LILYGO T-Deck
@@ -280,12 +290,235 @@ inline void MyU8G2::sendBuffer() {
 }
 
 MyU8G2 u8g2(U8G2_R0, /* clock=*/ 40, /* data=*/ 41, /* cs=*/ 12, /* dc=*/ 11, /* reset=*/ 6);
+#elif defined(ELECROW_CROWPANEL_35)
+class CrowPanelGfx : public lgfx::LGFX_Device {
+    lgfx::Panel_ILI9488 panel;
+    lgfx::Bus_SPI bus;
+    lgfx::Light_PWM light;
+    lgfx::Touch_GT911 touch;
+
+public:
+    CrowPanelGfx() {
+        auto busCfg = bus.config();
+        busCfg.spi_host = SPI2_HOST;
+        busCfg.spi_mode = 0;
+        busCfg.freq_write = 60000000;
+        busCfg.freq_read = 16000000;
+        busCfg.spi_3wire = false;
+        busCfg.use_lock = true;
+        busCfg.dma_channel = SPI_DMA_CH_AUTO;
+        busCfg.pin_sclk = 42;
+        busCfg.pin_mosi = 39;
+        busCfg.pin_miso = -1;
+        busCfg.pin_dc = 41;
+        bus.config(busCfg);
+        panel.setBus(&bus);
+
+        auto panelCfg = panel.config();
+        panelCfg.pin_cs = 40;
+        panelCfg.pin_rst = -1;
+        panelCfg.pin_busy = -1;
+        panelCfg.memory_width = 320;
+        panelCfg.memory_height = 480;
+        panelCfg.panel_width = 320;
+        panelCfg.panel_height = 480;
+        panelCfg.offset_x = 0;
+        panelCfg.offset_y = 0;
+        panelCfg.offset_rotation = 0;
+        panelCfg.readable = false;
+        panelCfg.invert = true;
+        panelCfg.rgb_order = false;
+        panelCfg.dlen_16bit = false;
+        panelCfg.bus_shared = false;
+        panel.config(panelCfg);
+
+        auto lightCfg = light.config();
+        lightCfg.pin_bl = 38;
+        lightCfg.invert = false;
+        lightCfg.freq = 44100;
+        lightCfg.pwm_channel = 7;
+        light.config(lightCfg);
+        panel.setLight(&light);
+
+        auto touchCfg = touch.config();
+        touchCfg.x_min = 0;
+        touchCfg.x_max = 319;
+        touchCfg.y_min = 0;
+        touchCfg.y_max = 479;
+        touchCfg.pin_int = 47;
+        touchCfg.pin_rst = 48;
+        touchCfg.bus_shared = false;
+        touchCfg.offset_rotation = 3;
+        touchCfg.i2c_port = 1;
+        touchCfg.i2c_addr = 0x5D;
+        touchCfg.pin_sda = 15;
+        touchCfg.pin_scl = 16;
+        touchCfg.freq = 400000;
+        touch.config(touchCfg);
+        panel.setTouch(&touch);
+
+        setPanel(&panel);
+    }
+};
+
+static CrowPanelGfx crowPanel;
+static uint16_t crowPanelLine[480];
+
+inline void st7789_clear(uint16_t color) {
+    for (uint32_t i = 0; i < 320UL * 240UL; i++) {
+        tdeckFrame[i] = color;
+    }
+}
+
+inline void st7789_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    if (w <= 0 || h <= 0 || x >= 320 || y >= 240 || x + w <= 0 || y + h <= 0) {
+        return;
+    }
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 320) w = 320 - x;
+    if (y + h > 240) h = 240 - y;
+    if (w <= 0 || h <= 0) return;
+
+    for (int16_t row = 0; row < h; row++) {
+        uint16_t* dst = &tdeckFrame[(uint32_t)(y + row) * 320UL + x];
+        for (int16_t col = 0; col < w; col++) {
+            dst[col] = color;
+        }
+    }
+}
+
+inline void st7789_push_frame() {
+    for (uint16_t y = 0; y < 320; y++) {
+        const uint16_t* src = &tdeckFrame[((uint32_t)y * 240UL / 320UL) * 320UL];
+        for (uint16_t x = 0; x < 480; x++) {
+            crowPanelLine[x] = src[(uint32_t)x * 320UL / 480UL];
+        }
+        crowPanel.pushImage(0, y, 480, 1, crowPanelLine);
+    }
+}
+
+inline bool crowPanelGetTouch(uint16_t* x, uint16_t* y) {
+    uint16_t tx = 0;
+    uint16_t ty = 0;
+    bool touched = crowPanel.getTouch(&tx, &ty) > 0;
+    if (x) *x = tx;
+    if (y) *y = ty;
+    return touched;
+}
+
+#if defined(CROWPANEL_COLOR_TEST)
+inline void drawCrowPanelColorTest() {
+    const uint16_t colors[8] = {
+        0xF800, // top-left: red
+        0x07E0, // top-second: green
+        0x001F, // top-third: blue
+        0xFFFF, // top-right: white
+        0x0000, // bottom-left: black
+        0x07FF, // bottom-second: cyan
+        0xF81F, // bottom-third: magenta
+        0xFFE0  // bottom-right: yellow
+    };
+    for (uint8_t i = 0; i < 8; i++) {
+        int16_t x = (i % 4) * 80;
+        int16_t y = (i / 4) * 120;
+        st7789_fill_rect(x, y, 80, 120, colors[i]);
+    }
+    st7789_push_frame();
+}
+#endif
+
+inline void st7789_draw_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    st7789_fill_rect(x, y, w, 1, color);
+    st7789_fill_rect(x, y + h - 1, w, 1, color);
+    st7789_fill_rect(x, y, 1, h, color);
+    st7789_fill_rect(x + w - 1, y, 1, h, color);
+}
+
+inline void st7789_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    int16_t dx = abs(x1 - x0);
+    int16_t sx = x0 < x1 ? 1 : -1;
+    int16_t dy = -abs(y1 - y0);
+    int16_t sy = y0 < y1 ? 1 : -1;
+    int16_t err = dx + dy;
+    while (true) {
+        st7789_fill_rect(x0, y0, 2, 2, color);
+        if (x0 == x1 && y0 == y1) break;
+        int16_t e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+inline void st7789_fill_circle(int16_t cx, int16_t cy, int16_t r, uint16_t color) {
+    for (int16_t y = -r; y <= r; y++) {
+        int16_t x = 0;
+        while (x * x + y * y <= r * r) x++;
+        x--;
+        st7789_fill_rect(cx - x, cy + y, x * 2 + 1, 1, color);
+    }
+}
+
+inline void st7789_draw_circle(int16_t cx, int16_t cy, int16_t r, uint16_t color) {
+    int16_t x = -r;
+    int16_t y = 0;
+    int16_t err = 2 - 2 * r;
+    do {
+        st7789_fill_rect(cx - x, cy + y, 1, 1, color);
+        st7789_fill_rect(cx - y, cy - x, 1, 1, color);
+        st7789_fill_rect(cx + x, cy - y, 1, 1, color);
+        st7789_fill_rect(cx + y, cy + x, 1, 1, color);
+        int16_t e2 = err;
+        if (e2 <= y) {
+            y++;
+            err += y * 2 + 1;
+        }
+        if (e2 > x || err > y) {
+            x++;
+            err += x * 2 + 1;
+        }
+    } while (x < 0);
+}
+
+inline void init_st7789() {
+    pinMode(38, OUTPUT);
+    digitalWrite(38, HIGH);
+    pinMode(48, OUTPUT);
+    digitalWrite(48, HIGH);
+    crowPanel.init();
+    crowPanel.setRotation(3);
+    crowPanel.setSwapBytes(true);
+    crowPanel.setBrightness(180);
+    crowPanel.fillScreen(TFT_BLACK);
+    st7789_clear(0x0000);
+    st7789_push_frame();
+}
+
+class MyU8G2 : public U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI {
+public:
+    using U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI::U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI;
+    void sendBuffer();
+};
+
+extern MyU8G2 u8g2;
+
+inline void MyU8G2::sendBuffer() {
+    st7789_push_frame();
+}
+
+MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /* reset=*/ -1);
+#endif
 #endif
 
 #if defined(LILYGO_T_DECK)
 #define setBacklight(on) do { \
     digitalWrite(42, (on) ? HIGH : LOW); \
     digitalWrite(4, (on) ? HIGH : LOW); \
+} while(0)
+#elif defined(ELECROW_CROWPANEL_35)
+#define setBacklight(on) do { \
+    digitalWrite(38, (on) ? HIGH : LOW); \
+    if (on) crowPanel.setBrightness(220); else crowPanel.setBrightness(0); \
 } while(0)
 #else
 #define setBacklight(on) ((void)0)
@@ -533,7 +766,7 @@ RecentMsg recentMsgs[4] = {};
 uint8_t recentMsgHead = 0;
 uint8_t recentMsgCount = 0;
 
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
 static const uint8_t TDECK_KEYBOARD_ADDR = 0x55;
 static const uint8_t TDECK_KEYBOARD_SDA = 18;
 static const uint8_t TDECK_KEYBOARD_SCL = 8;
@@ -541,6 +774,7 @@ static const uint8_t TDECK_KEYBOARD_INT = 46;
 static const uint8_t TDECK_KB_BRIGHTNESS_CMD = 0x01;
 static const uint8_t TDECK_KB_MODE_KEY_CMD = 0x04;
 static const uint8_t TDECK_COMPOSE_MAX = 120;
+#if defined(LILYGO_T_DECK)
 static bool tdeckKeyboardPresent = false;
 static bool tdeckComposeActive = false;
 static char tdeckComposeText[TDECK_COMPOSE_MAX + 1] = "";
@@ -552,6 +786,19 @@ static bool tdeckDisplayDirty = true;
 static bool tdeckComposeFrameDrawn = false;
 static uint8_t tdeckLastRenderMode = 0xFF;
 static uint32_t tdeckLastRenderSig = 0;
+#else
+static bool tdeckKeyboardPresent = false;
+static bool tdeckComposeActive = false;
+static char tdeckComposeText[TDECK_COMPOSE_MAX + 1] = "";
+static uint8_t tdeckComposeLen = 0;
+static char tdeckKeyboardStatus[32] = "TOUCH READY";
+static char tdeckKeyboardNotice[36] = "TOUCH READY";
+static uint32_t tdeckKeyboardNoticeUntil = 0;
+static bool tdeckDisplayDirty = true;
+static bool tdeckComposeFrameDrawn = false;
+static uint8_t tdeckLastRenderMode = 0xFF;
+static uint32_t tdeckLastRenderSig = 0;
+#endif
 #endif
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
@@ -769,7 +1016,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
 
 // Helper to retrieve unique node ID based on hardware
 uint32_t getHardwareNodeId() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     uint64_t mac = ESP.getEfuseMac();
     return (uint32_t)(mac & 0xFFFFFFFF);
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
@@ -929,14 +1176,14 @@ uint8_t readBatteryLevel() {
 #endif
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
-#if defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+#if defined(AETHER_COLOR_UI)
 static void drawTDeckBootSplash(uint8_t wavePhase);
 #endif
 // Boot splash: mesh glyph + wordmark + firmware version. wavePhase pulses the
 // radio arcs while setup runs.
 void drawBootSplash(uint8_t wavePhase) {
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
     drawTDeckBootSplash(wavePhase);
     return;
 #endif
@@ -996,7 +1243,7 @@ static void formatAge(uint32_t ageMs, char* out, size_t n) {
     else snprintf(out, n, "%luh", (unsigned long)(s / 3600));
 }
 
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
 static const uint16_t TDECK_BG = 0x0841;
 static const uint16_t TDECK_PANEL = 0x10C4;
 static const uint16_t TDECK_PANEL_2 = 0x1927;
@@ -1052,6 +1299,15 @@ static void tdeckDrawText(int16_t x, int16_t y, const uint8_t* font, const char*
             }
         }
     }
+}
+
+static void tdeckDrawCenteredText(int16_t y, const uint8_t* font, const char* text, uint16_t color, uint8_t scale = 1) {
+    if (!text || text[0] == '\0') return;
+    u8g2.setFont(font);
+    int16_t width = (int16_t)u8g2.getStrWidth(text) * scale;
+    int16_t x = (320 - width) / 2;
+    if (x < 0) x = 0;
+    tdeckDrawText(x, y, font, text, color, scale);
 }
 
 static void tdeckDrawBackground(uint16_t accent) {
@@ -1244,22 +1500,22 @@ static void tdeckDrawUpperArc(int16_t cx, int16_t cy, int16_t r, uint16_t color)
 static void drawTDeckBootSplash(uint8_t wavePhase) {
     st7789_clear(TDECK_BG);
     st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
-    st7789_fill_circle(160, 74, 9, TDECK_CYAN);
-    st7789_fill_circle(112, 112, 7, TDECK_BLUE);
-    st7789_fill_circle(208, 112, 7, TDECK_GREEN);
-    st7789_draw_line(160, 74, 112, 112, TDECK_LINE);
-    st7789_draw_line(160, 74, 208, 112, TDECK_LINE);
-    st7789_draw_line(112, 112, 208, 112, TDECK_LINE);
+    st7789_fill_circle(160, 68, 9, TDECK_CYAN);
+    st7789_fill_circle(114, 106, 7, TDECK_BLUE);
+    st7789_fill_circle(206, 106, 7, TDECK_GREEN);
+    st7789_draw_line(160, 68, 114, 106, TDECK_LINE);
+    st7789_draw_line(160, 68, 206, 106, TDECK_LINE);
+    st7789_draw_line(114, 106, 206, 106, TDECK_LINE);
     uint8_t r = 18 + (wavePhase % 3) * 10;
-    tdeckDrawUpperArc(160, 74, r, TDECK_CYAN);
+    tdeckDrawUpperArc(160, 68, r, TDECK_CYAN);
     if (r > 18) {
-        tdeckDrawUpperArc(160, 74, r - 10, TDECK_BLUE);
+        tdeckDrawUpperArc(160, 68, r - 10, TDECK_BLUE);
     }
 
-    tdeckDrawText(72, 138, u8g2_font_ncenB14_tr, "AetherMesh", TDECK_TEXT, 2);
+    tdeckDrawCenteredText(138, u8g2_font_ncenB14_tr, "AetherMesh", TDECK_TEXT, 2);
     char ver[32];
     snprintf(ver, sizeof(ver), "v%s", AETHERMESH_FW_VERSION);
-    tdeckDrawText(92, 202, u8g2_font_6x10_tf, ver, TDECK_MUTED, 1);
+    tdeckDrawCenteredText(202, u8g2_font_6x10_tf, ver, TDECK_MUTED, 1);
     st7789_push_frame();
 }
 
@@ -1317,13 +1573,13 @@ static void drawTDeckHome() {
 
     bool ble = bleMgr.isDeviceConnected();
     tdeckDrawCard(12, 54, 142, 62, "BLE", ble ? TDECK_GREEN : TDECK_AMBER);
-    tdeckDrawText(24, 80, u8g2_font_7x14_tf, ble ? "CONNECTED" : "ADVERT", ble ? TDECK_GREEN : TDECK_AMBER, 2);
-    tdeckDrawMiniSignalBars(122, 94, ble ? 5 : 2, ble ? TDECK_GREEN : TDECK_AMBER);
+    tdeckDrawText(24, 82, u8g2_font_5x7_tf, ble ? "CONNECTED" : "ADVERT", ble ? TDECK_GREEN : TDECK_AMBER, 2);
+    tdeckDrawMiniSignalBars(130, 94, ble ? 5 : 2, ble ? TDECK_GREEN : TDECK_AMBER);
 
     tdeckDrawCard(166, 54, 142, 62, "MESH", TDECK_CYAN);
     char meshLine[18];
     snprintf(meshLine, sizeof(meshLine), "NODES %u", (unsigned)countActivePeers());
-    tdeckDrawText(180, 80, u8g2_font_7x14_tf, meshLine, TDECK_CYAN, 2);
+    tdeckDrawText(180, 82, u8g2_font_5x7_tf, meshLine, TDECK_CYAN, 2);
     tdeckDrawNodeTrace(278, 92, TDECK_CYAN);
 
     tdeckDrawCard(12, 128, 296, 42, "RADIO", TDECK_BLUE);
@@ -1808,12 +2064,12 @@ extern bool otaActive;
 
 // Update the OLED display screen
 void updateDisplay() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     if (otaActive) {
         return; // drawOtaProgress() renders during firmware updates
     }
     if (nodeRole == 2) {
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
         setBacklight(false);
 #else
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
@@ -1846,7 +2102,7 @@ void updateDisplay() {
     }
 
     if (!shouldBeOn) {
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
         setBacklight(false);
 #else
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
@@ -1856,11 +2112,11 @@ void updateDisplay() {
         return;
     }
     if (!displayIsOn) {
-#if !defined(LILYGO_T_DECK)
+#if !defined(AETHER_COLOR_UI)
         oledPage = 0; // waking from off always lands on the HOME page
 #endif
     }
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
     setBacklight(true);
 #else
     u8g2.setPowerSave(0); // Ensure awake if not repeater
@@ -1868,7 +2124,7 @@ void updateDisplay() {
 #endif
     displayIsOn = true;
 
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
     uint8_t tdeckMode = tdeckComposeActive ? 10 : (popupActive ? 11 : oledPage);
     uint32_t tdeckSig;
     if (tdeckComposeActive) {
@@ -1892,7 +2148,7 @@ void updateDisplay() {
     
     // Check if we should render message popup overlay
     if (popupActive) {
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
         drawTDeckMessagePopup();
         return;
 #endif
@@ -1938,7 +2194,7 @@ void updateDisplay() {
         hasNewMsgPopup = false;
     }
 
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
     switch (oledPage) {
         case 1: drawTDeckGpsPage(); return;
         case 2: drawTDeckMessagesPage(); return;
@@ -2408,9 +2664,9 @@ void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const 
     }
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
 void drawOtaProgress(uint8_t pct, const char* label) {
-#if defined(LILYGO_T_DECK)
+#if defined(AETHER_COLOR_UI)
     drawTDeckOtaProgress(pct, label);
     return;
 #endif
@@ -2430,7 +2686,7 @@ void drawOtaProgress(uint8_t pct, const char* label) {
 #endif
 
 void otaAbort(const char* reason) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     if (otaActive) {
         Update.abort();
     }
@@ -2459,7 +2715,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
         return;
     }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     switch (ctl.op) {
         case aethermesh_OtaControl_Op_BEGIN: {
             if (otaActive) {
@@ -2521,7 +2777,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
 }
 
 void handleOtaData(const aethermesh_OtaData& od) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     if (!otaActive) {
         sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
         return;
@@ -2791,7 +3047,7 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     updateDisplay();
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
 #define USER_BUTTON_PIN 0
 #elif defined(PIN_BUTTON1)
 #define USER_BUTTON_PIN PIN_BUTTON1
@@ -2802,6 +3058,13 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 #endif
 
 void setup() {
+#if defined(ELECROW_CROWPANEL_35)
+    // CrowPanel 2.4/2.8/3.5 routes the expansion-slot pins through a board
+    // switch. LOW selects the wireless module; HIGH leaves the microphone path.
+    pinMode(45, OUTPUT);
+    digitalWrite(45, LOW);
+    delay(100);
+#endif
 #if defined(LILYGO_T_DECK)
     // Power on board peripherals and screen backlight on boot (pins 10, 42, 4, 6).
     // GPIO 45 is LoRa DIO1 on the T-Deck; leave it under RadioManager control.
@@ -2870,6 +3133,7 @@ void setup() {
     
     // 2. Initialize display if Heltec V4, V3, or LILYGO T-Deck — show the boot splash while the
     // radio/BLE/GPS bring-up below runs
+#if defined(AETHER_COLOR_UI)
 #if defined(LILYGO_T_DECK)
     // Pull board peripheral power enable HIGH (GPIO 10) to power display/keyboard
     pinMode(10, OUTPUT);
@@ -2885,8 +3149,21 @@ void setup() {
     digitalWrite(6, HIGH); // Release screen reset pin
 
     initTDeckKeyboard();
+#elif defined(ELECROW_CROWPANEL_35)
+    pinMode(38, OUTPUT);
+    digitalWrite(38, HIGH); // LCD backlight
+    pinMode(48, OUTPUT);
+    digitalWrite(48, HIGH); // Release GT911 touch reset
+#endif
     u8g2.begin();
     init_st7789();
+#if defined(ELECROW_CROWPANEL_35) && defined(CROWPANEL_COLOR_TEST)
+    drawCrowPanelColorTest();
+    Serial.println("CrowPanel color test active. Expected top row: red, green, blue, white. Bottom row: black, cyan, magenta, yellow.");
+    while (true) {
+        delay(1000);
+    }
+#endif
     drawBootSplash(0);
     uint32_t splashShownAt = millis();
 #elif defined(HELTEC_V4) || defined(HELTEC_V3)
@@ -2996,7 +3273,7 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     // Hold the splash ~2.5s total, pulsing the radio waves. The radio is already
     // live at this point (receive callback armed), so nothing is missed.
     uint8_t splashPhase = 1;
@@ -3033,11 +3310,61 @@ void loop() {
 #if defined(LILYGO_T_DECK)
     pollTDeckKeyboard();
 #endif
+#if defined(ELECROW_CROWPANEL_35)
+    static bool lastTouchState = false;
+    static uint16_t touchStartX = 0;
+    static uint16_t touchStartY = 0;
+    static uint16_t touchLastX = 0;
+    static uint16_t touchLastY = 0;
+    static uint32_t touchStartMs = 0;
+    static bool touchGestureHandled = false;
+    uint16_t touchX = 0;
+    uint16_t touchY = 0;
+    bool currentTouchState = crowPanelGetTouch(&touchX, &touchY);
+    if (currentTouchState && !lastTouchState) {
+        touchStartX = touchX;
+        touchStartY = touchY;
+        touchLastX = touchX;
+        touchLastY = touchY;
+        touchStartMs = millis();
+        touchGestureHandled = false;
+        lastDisplayActivityTime = millis();
+        if (nodeRole != 2) {
+            lastBleActiveTime = millis();
+            if (!bleMgr.isAdvertising && !bleMgr.isDeviceConnected()) {
+                bleMgr.startAdvertising();
+            }
+        }
+        updateDisplay();
+    } else if (currentTouchState) {
+        touchLastX = touchX;
+        touchLastY = touchY;
+        uint32_t gestureMs = millis() - touchStartMs;
+        int16_t dx = (int16_t)touchLastX - (int16_t)touchStartX;
+        int16_t dy = (int16_t)touchLastY - (int16_t)touchStartY;
+        int16_t primary = (abs(dx) >= abs(dy)) ? dx : dy;
+        if (!touchGestureHandled && displayIsOn && gestureMs < 1800 && abs(primary) > 45) {
+            if (hasNewMsgPopup) {
+                hasNewMsgPopup = false;
+            } else if (primary < 0) {
+                oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
+            } else {
+                oledPage = (oledPage == 0) ? (OLED_PAGE_COUNT - 1) : (oledPage - 1);
+            }
+            touchGestureHandled = true;
+            lastDisplayActivityTime = millis();
+            updateDisplay();
+        }
+    } else if (!currentTouchState && lastTouchState) {
+        touchGestureHandled = false;
+    }
+    lastTouchState = currentTouchState;
+#endif
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
     if (currentButtonState == LOW && lastButtonState == HIGH) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
         // Button behavior: dismiss a visible message popup first; otherwise
         // advance the page carousel while the screen is on. Pressing while the
         // screen is off just wakes it (updateDisplay lands on HOME).
@@ -3271,6 +3598,8 @@ void loop() {
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V3");
 #elif defined(LILYGO_T_DECK)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Deck");
+#elif defined(ELECROW_CROWPANEL_35)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
 #elif defined(RAK4631)

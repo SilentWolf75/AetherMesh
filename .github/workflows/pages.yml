@@ -38,7 +38,7 @@ jobs:
       - name: Install PlatformIO + esptool
         run: pip install --upgrade platformio esptool
 
-      - name: Build Heltec V4/V3 + RAK + LILYGO firmware
+      - name: Build supported firmware targets
         working-directory: firmware
         run: |
           pio run -e heltec_v4
@@ -47,6 +47,7 @@ jobs:
           pio run -e rak3401_1w
           pio run -e lilygo_t_echo
           pio run -e lilygo_t_deck
+          pio run -e elecrow_crowpanel_35
 
       - name: Build Android App (APK)
         working-directory: app
@@ -87,6 +88,15 @@ jobs:
             0x8000 "$BUILD_T_DECK/partitions.bin" \
             0xe000 "$BOOT_APP0" \
             0x10000 "$BUILD_T_DECK/firmware.bin"
+
+          # Merge Elecrow CrowPanel 3.5
+          BUILD_CROWPANEL=firmware/.pio/build/elecrow_crowpanel_35
+          NAME_CROWPANEL="aethermesh-crowpanel-35-${HASH}-usb.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$OUT/$NAME_CROWPANEL" \
+            0x0    "$BUILD_CROWPANEL/bootloader.bin" \
+            0x8000 "$BUILD_CROWPANEL/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD_CROWPANEL/firmware.bin"
             
           # RAK4631 (nRF52): convert the built .hex into a UF2 for the Adafruit
           # bootloader (drag-and-drop). Family ID 0xADA52840 = Nordic nRF52840.
@@ -107,14 +117,15 @@ jobs:
           python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.bin" -c -b 0x26000 -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
 
           # Write manifest listing all builds
-          printf '[\n  {"name":"Heltec V4 - %s (latest)","file":"%s"},\n  {"name":"Heltec V3 - %s (latest)","file":"%s"},\n  {"name":"RAK4631 - %s (latest)","file":"%s"},\n  {"name":"RAK3401 1W - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck - %s (latest)","file":"%s"}\n]\n' \
+          printf '[\n  {"name":"Heltec V4 - %s (latest)","file":"%s"},\n  {"name":"Heltec V3 - %s (latest)","file":"%s"},\n  {"name":"RAK4631 - %s (latest)","file":"%s"},\n  {"name":"RAK3401 1W - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck - %s (latest)","file":"%s"},\n  {"name":"Elecrow CrowPanel 3.5 - %s (latest)","file":"%s"}\n]\n' \
             "$HASH" "$NAME_V4" \
             "$HASH" "$NAME_V3" \
             "$HASH" "$NAME_RAK" \
             "$HASH" "$NAME_RAK_1W" \
             "$HASH" "$NAME_T_ECHO" \
-            "$HASH" "$NAME_T_DECK" > "$OUT/manifest.json"
-          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_T_ECHO, $NAME_T_DECK"
+            "$HASH" "$NAME_T_DECK" \
+            "$HASH" "$NAME_CROWPANEL" > "$OUT/manifest.json"
+          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_T_ECHO, $NAME_T_DECK, $NAME_CROWPANEL"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

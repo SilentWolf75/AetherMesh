@@ -24,6 +24,8 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
   Pages and bundled by GitHub Actions.
 - Color T-Deck interface with hardware keyboard input and multiple full-screen
   status pages.
+- Initial Elecrow CrowPanel 3.5 TFT target with SX1262 LoRa, BLE, OTA, and
+  centered color dashboard output.
 
 ## Supported Hardware
 
@@ -32,6 +34,7 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 | Heltec WiFi LoRa 32 V4 | ESP32-S3 | Default firmware target; OLED UI, GPS support, BLE OTA, USB/web flashing |
 | Heltec WiFi LoRa 32 V3 | ESP32-S3 | Firmware target with OLED UI and USB/web flashing |
 | LILYGO T-Deck | ESP32-S3 | Color screen UI, keyboard input, SX1262 LoRa, USB/web flashing |
+| Elecrow CrowPanel Advance 3.5 TFT | ESP32-S3 | Initial CrowPanel firmware target with ILI9488 color UI and SX1262 LoRa |
 | RAK WisBlock RAK4631 | nRF52840 | SX1262 LoRa, WisBlock GPS support, Nordic DFU update path |
 | RAK3401 1W | nRF52840 | High-power RAK variant using the RAK4631 target base |
 | LILYGO T-Echo | nRF52840 | T-Echo firmware target and web flasher UF2 flow |
@@ -95,6 +98,7 @@ rak4631
 rak3401_1w
 lilygo_t_echo
 lilygo_t_deck
+elecrow_crowpanel_35
 ```
 
 The firmware includes LoRa transport, routing, BLE GATT services, telemetry,
@@ -111,6 +115,7 @@ It supports the current target list in the UI:
 
 - Heltec V4 and Heltec V3 as merged ESP32-S3 USB images.
 - LILYGO T-Deck as a merged ESP32-S3 USB image.
+- Elecrow CrowPanel 3.5 TFT as a merged ESP32-S3 USB image.
 - RAK4631, RAK3401 1W, and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
 
 GitHub Actions builds the firmware and Android APK, writes a flasher manifest,
@@ -162,10 +167,13 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
   Android app.
 - RAK4631, RAK3401 1W, and T-Echo can be installed from the web flasher with UF2
   drag-and-drop builds.
+- Heltec, T-Deck, and CrowPanel ESP32-S3 targets can be installed from the web
+  flasher with merged USB images.
 - Do not flash firmware for one board family onto another board family.
 
 ## Status
 
 AetherMesh is actively evolving hardware and app software. The Heltec, RAK,
-T-Echo, and T-Deck targets are all present in the repository, with the T-Deck
-now using a color screen UI and keyboard-driven interaction.
+T-Echo, T-Deck, and CrowPanel targets are all present in the repository, with
+the T-Deck using a color screen UI and keyboard-driven interaction and the
+CrowPanel using a touch-ready color dashboard.

@@ -527,6 +527,8 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     strcpy(packet.payload.telemetry.node_model, "Heltec V4");
 #elif defined(LILYGO_T_DECK)
     strcpy(packet.payload.telemetry.node_model, "T-Deck");
+#elif defined(ELECROW_CROWPANEL_35)
+    strcpy(packet.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
     strcpy(packet.payload.telemetry.node_model, "T-Echo");
 #elif defined(RAK4631)

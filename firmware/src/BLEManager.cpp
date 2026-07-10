@@ -35,7 +35,7 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
     bleRxHead = next;
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -117,7 +117,7 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     Serial.print("Initializing BLE Advertising name: ");
     Serial.println(localName);
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     espBLEInstance = this;
     BLEDevice::init(localName);
     BLEDevice::setMTU(256);
@@ -226,7 +226,7 @@ bool BLEManager::sendToPhone(uint8_t* data, size_t len) {
         return false;
     }
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     if (espRxChar) {
         espRxChar->setValue(data, len);
         espRxChar->notify();
@@ -245,7 +245,7 @@ void BLEManager::onReceivedFromPhone(void (*callback)(uint8_t* data, size_t len)
 }
 
 void BLEManager::stopAdvertising() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     BLEDevice::getAdvertising()->stop();
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     Bluefruit.Advertising.stop();
@@ -255,7 +255,7 @@ void BLEManager::stopAdvertising() {
 }
 
 void BLEManager::startAdvertising() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     BLEDevice::startAdvertising();
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     Bluefruit.Advertising.start(0);

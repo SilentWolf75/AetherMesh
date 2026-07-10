@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [heltec_v4, rak4631, rak3401_1w]
+        env: [heltec_v4, heltec_v3, rak4631, rak3401_1w, lilygo_t_echo, lilygo_t_deck, elecrow_crowpanel_35]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
