@@ -1,7 +1,7 @@
 # Flashing AetherMesh Firmware
 
 The GitHub Pages workflow builds the current web flasher bundle for Heltec V4,
-Heltec V3, RAK4631, LILYGO T-Echo, LILYGO T-Deck, and the Android APK.
+Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo, LILYGO T-Deck, and the Android APK.
 
 The local staging helper is older and currently stages the Heltec V4 app/USB
 images plus the RAK4631 DFU zip into `ota-images\`, named by the current git
@@ -118,6 +118,7 @@ The browser flasher is for first-time setup and recovery. It currently presents:
 - Heltec V3 / ESP32-S3
 - LILYGO T-Deck / ESP32-S3
 - RAK4631 / nRF52
+- RAK3401 1W / nRF52
 - LILYGO T-Echo / nRF52
 
 Desktop Chrome, Edge, or Opera is required for Web Serial flashing. For nRF52

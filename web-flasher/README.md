@@ -8,9 +8,9 @@ Android app once a node already has OTA-capable firmware.
 
 ## How it's served
 
-`pages.yml` builds Heltec V4, Heltec V3, RAK4631, LILYGO T-Echo, LILYGO T-Deck,
-and the Android APK. It merges complete ESP32-S3 USB images, converts nRF52
-builds to UF2 where needed, drops everything into `firmware/` with a
+`pages.yml` builds Heltec V4, Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo,
+LILYGO T-Deck, and the Android APK. It merges complete ESP32-S3 USB images,
+converts nRF52 builds to UF2 where needed, drops everything into `firmware/` with a
 `manifest.json`, and deploys this directory to GitHub Pages. The firmware
 binaries are built fresh each deploy and are not committed.
 
@@ -43,4 +43,5 @@ Then open `http://localhost:8000`.
 - Heltec V3 / ESP32-S3
 - LILYGO T-Deck / ESP32-S3
 - RAK4631 / nRF52
+- RAK3401 1W / nRF52
 - LILYGO T-Echo / nRF52
