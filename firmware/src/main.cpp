@@ -1189,16 +1189,24 @@ void drawBootSplash(uint8_t wavePhase) {
 #endif
     u8g2.clearBuffer();
 
-    // Canonical website mark, reduced to a crisp monochrome 128x64 glyph.
-    (void)wavePhase;
-    u8g2.drawLine(52, 7, 56, 4);
-    u8g2.drawLine(56, 4, 64, 2);
-    u8g2.drawLine(64, 2, 72, 4);
-    u8g2.drawLine(72, 4, 76, 7);
+    // Canonical website mark, with its radio arcs pulsing during startup.
+    uint8_t pulse = wavePhase % 3;
     u8g2.drawLine(57, 11, 60, 9);
     u8g2.drawLine(60, 9, 64, 8);
     u8g2.drawLine(64, 8, 68, 9);
     u8g2.drawLine(68, 9, 71, 11);
+    if (pulse >= 1) {
+        u8g2.drawLine(52, 7, 56, 4);
+        u8g2.drawLine(56, 4, 64, 2);
+        u8g2.drawLine(64, 2, 72, 4);
+        u8g2.drawLine(72, 4, 76, 7);
+    }
+    if (pulse == 2) {
+        u8g2.drawLine(51, 8, 56, 5);
+        u8g2.drawLine(56, 5, 64, 3);
+        u8g2.drawLine(64, 3, 72, 5);
+        u8g2.drawLine(72, 5, 77, 8);
+    }
     u8g2.drawLine(48, 31, 64, 14);
     u8g2.drawLine(64, 14, 80, 31);
     u8g2.drawLine(54, 26, 74, 26);
@@ -1533,9 +1541,14 @@ static void tdeckDrawBrandLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, u
 static void drawTDeckBootSplash(uint8_t wavePhase) {
     st7789_clear(TDECK_BG);
     st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
-    uint16_t outerWave = (wavePhase % 3 == 0) ? TDECK_BLUE : TDECK_CYAN;
-    tdeckDrawShallowArc(160, 36, 28, 14, outerWave);
+    uint8_t pulse = wavePhase % 3;
     tdeckDrawShallowArc(160, 47, 16, 9, TDECK_BLUE);
+    if (pulse >= 1) {
+        tdeckDrawShallowArc(160, 36, 28, 14, TDECK_CYAN);
+    }
+    if (pulse == 2) {
+        tdeckDrawShallowArc(160, 26, 40, 18, TDECK_BLUE);
+    }
     tdeckDrawBrandLine(122, 118, 160, 58, TDECK_CYAN);
     tdeckDrawBrandLine(160, 58, 198, 118, TDECK_BLUE);
     tdeckDrawBrandLine(136, 98, 184, 98, TDECK_BLUE);
