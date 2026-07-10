@@ -17,6 +17,8 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 
 - Peer-to-peer LoRa mesh with broadcast, direct messages, route discovery, and
   packet deduplication.
+- Live two-way traceroute with per-hop RSSI/SNR and route learning from the
+  observed forward and return paths.
 - Android app with Chats, Nodes, Map, Settings, diagnostics, firmware updates,
   channel controls, and background BLE service support.
 - Shared protobuf wire format across Android, BLE, and LoRa packets.
@@ -64,6 +66,8 @@ The app is the day-to-day control surface for the mesh:
 - Sends and receives mesh chat messages.
 - Shows known nodes, routes, telemetry, battery state, firmware versions, and
   GPS/map positions.
+- Keeps configured network names synchronized while preserving explicit local
+  aliases, using full 32-bit node identities throughout the app database.
 - Runs direct one-hop range tests with delayed-reply tracking and signal data
   from both ends of the radio link.
 - Applies radio, GPS, channel, security, and device settings over BLE.
@@ -183,3 +187,16 @@ AetherMesh is actively evolving hardware and app software. The Heltec, RAK,
 T-Echo, T-Deck, and CrowPanel targets are all present in the repository, with
 the T-Deck using a color screen UI and keyboard-driven interaction and the
 CrowPanel using a touch-ready color dashboard.
+
+## Contributors
+
+AetherMesh is created and maintained by **William Lovell**, developed with the
+assistance of several AI coding collaborators across the project's lifetime:
+
+- **Antigravity** (Google) — early architecture and initial firmware/app work.
+- **ChatGPT** (OpenAI) — firmware, app, and web-flasher development.
+- **Claude** (Anthropic) — firmware, app, and infrastructure development.
+
+> Note: GitHub's auto-generated Contributors graph reflects commit authorship
+> and only lists linked GitHub accounts. This section credits the AI tools used,
+> which don't have GitHub accounts of their own.
