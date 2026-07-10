@@ -1189,18 +1189,24 @@ void drawBootSplash(uint8_t wavePhase) {
 #endif
     u8g2.clearBuffer();
 
-    // Mesh glyph: three linked nodes, radio waves rippling from the top one
-    u8g2.drawDisc(64, 16, 3);
-    u8g2.drawDisc(44, 28, 2);
-    u8g2.drawDisc(84, 28, 2);
-    u8g2.drawLine(64, 16, 44, 28);
-    u8g2.drawLine(64, 16, 84, 28);
-    u8g2.drawLine(44, 28, 84, 28);
-    uint8_t r = 7 + (wavePhase % 3) * 4;
-    u8g2.drawCircle(64, 16, r, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
-    if (r > 7) {
-        u8g2.drawCircle(64, 16, r - 4, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
-    }
+    // Canonical website mark, reduced to a crisp monochrome 128x64 glyph.
+    (void)wavePhase;
+    u8g2.drawLine(52, 7, 56, 4);
+    u8g2.drawLine(56, 4, 64, 2);
+    u8g2.drawLine(64, 2, 72, 4);
+    u8g2.drawLine(72, 4, 76, 7);
+    u8g2.drawLine(57, 11, 60, 9);
+    u8g2.drawLine(60, 9, 64, 8);
+    u8g2.drawLine(64, 8, 68, 9);
+    u8g2.drawLine(68, 9, 71, 11);
+    u8g2.drawLine(48, 31, 64, 14);
+    u8g2.drawLine(64, 14, 80, 31);
+    u8g2.drawLine(54, 26, 74, 26);
+    u8g2.drawLine(64, 14, 64, 26);
+    u8g2.drawDisc(64, 14, 2);
+    u8g2.drawDisc(48, 31, 2);
+    u8g2.drawDisc(80, 31, 2);
+    u8g2.drawDisc(64, 26, 2);
 
     // Wordmark, centered (fall back to a smaller face if it would clip)
     u8g2.setFont(u8g2_font_ncenB14_tr);
@@ -1497,22 +1503,49 @@ static void tdeckDrawUpperArc(int16_t cx, int16_t cy, int16_t r, uint16_t color)
     }
 }
 
+static void tdeckDrawShallowArc(
+    int16_t cx,
+    int16_t baselineY,
+    int16_t halfWidth,
+    int16_t rise,
+    uint16_t color
+) {
+    int16_t lastX = cx - halfWidth;
+    int16_t lastY = baselineY;
+    for (int16_t dx = -halfWidth + 1; dx <= halfWidth; dx++) {
+        float normalized = (float)dx / (float)halfWidth;
+        float curve = sqrtf(fmaxf(0.0f, 1.0f - normalized * normalized));
+        int16_t x = cx + dx;
+        int16_t y = baselineY - (int16_t)(rise * curve);
+        st7789_draw_line(lastX, lastY, x, y, color);
+        st7789_draw_line(lastX, lastY + 1, x, y + 1, color);
+        lastX = x;
+        lastY = y;
+    }
+}
+
+static void tdeckDrawBrandLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    st7789_draw_line(x0, y0, x1, y1, color);
+    st7789_draw_line(x0 - 1, y0, x1 - 1, y1, color);
+    st7789_draw_line(x0 + 1, y0, x1 + 1, y1, color);
+}
+
 static void drawTDeckBootSplash(uint8_t wavePhase) {
     st7789_clear(TDECK_BG);
     st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
-    st7789_fill_circle(160, 68, 9, TDECK_CYAN);
-    st7789_fill_circle(114, 106, 7, TDECK_BLUE);
-    st7789_fill_circle(206, 106, 7, TDECK_GREEN);
-    st7789_draw_line(160, 68, 114, 106, TDECK_LINE);
-    st7789_draw_line(160, 68, 206, 106, TDECK_LINE);
-    st7789_draw_line(114, 106, 206, 106, TDECK_LINE);
-    uint8_t r = 18 + (wavePhase % 3) * 10;
-    tdeckDrawUpperArc(160, 68, r, TDECK_CYAN);
-    if (r > 18) {
-        tdeckDrawUpperArc(160, 68, r - 10, TDECK_BLUE);
-    }
+    uint16_t outerWave = (wavePhase % 3 == 0) ? TDECK_BLUE : TDECK_CYAN;
+    tdeckDrawShallowArc(160, 36, 28, 14, outerWave);
+    tdeckDrawShallowArc(160, 47, 16, 9, TDECK_BLUE);
+    tdeckDrawBrandLine(122, 118, 160, 58, TDECK_CYAN);
+    tdeckDrawBrandLine(160, 58, 198, 118, TDECK_BLUE);
+    tdeckDrawBrandLine(136, 98, 184, 98, TDECK_BLUE);
+    tdeckDrawBrandLine(160, 58, 160, 98, TDECK_CYAN);
+    st7789_fill_circle(160, 58, 7, TDECK_TEXT);
+    st7789_fill_circle(122, 118, 7, TDECK_CYAN);
+    st7789_fill_circle(198, 118, 7, TDECK_CYAN);
+    st7789_fill_circle(160, 98, 6, TDECK_TEXT);
 
-    tdeckDrawCenteredText(138, u8g2_font_ncenB14_tr, "AetherMesh", TDECK_TEXT, 2);
+    tdeckDrawCenteredText(154, u8g2_font_ncenB14_tr, "AetherMesh", TDECK_TEXT, 2);
     char ver[32];
     snprintf(ver, sizeof(ver), "v%s", AETHERMESH_FW_VERSION);
     tdeckDrawCenteredText(202, u8g2_font_6x10_tf, ver, TDECK_MUTED, 1);

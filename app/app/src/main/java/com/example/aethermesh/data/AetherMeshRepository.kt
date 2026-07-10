@@ -43,6 +43,7 @@ class AetherMeshRepository(private val context: Context) {
         private const val MAX_ENCRYPTED_CONTENT_LENGTH = 96
         private const val MAX_CHANNEL_LENGTH = 31
         private const val MESSAGE_ACK_TIMEOUT_MS = 15_000L
+        private const val RANGE_PING_TIMEOUT_MS = 15_000L
         private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
     }
 
@@ -136,8 +137,18 @@ class AetherMeshRepository(private val context: Context) {
     private var rangeTestTargetId: Long = 0L
     val activeRangeTestTargetId: Long
         get() = rangeTestTargetId
-    private var lastSentRangePingId: Int = 0
-    private var lastSentRangePingTime: Long = 0L
+    private data class RangeTestPosition(
+        val latitude: Double,
+        val longitude: Double,
+        val speedMps: Float?,
+        val gpsAccuracyM: Float?
+    )
+    private data class PendingRangePing(
+        val targetId: Long,
+        val sentAtMs: Long,
+        val position: RangeTestPosition
+    )
+    private val pendingRangePings = java.util.concurrent.ConcurrentHashMap<Int, PendingRangePing>()
     private var rangeTestJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
 
@@ -436,10 +447,25 @@ class AetherMeshRepository(private val context: Context) {
                 // A PONG scores the outstanding ping (packet.rxRssi/Snr = how our
                 // node heard the PONG over the air).
                 if (contentReceived.startsWith("PONG_")) {
-                    val pongId = contentReceived.removePrefix("PONG_").toIntOrNull()
-                    if (_isRangeTestActive.value && pongId != null && pongId == lastSentRangePingId) {
-                        Log.d(TAG, "Range test PONG matched ping $pongId")
-                        logRangeTestResult(success = true, rssi = packet.rxRssi, snr = packet.rxSnr)
+                    // New direct-range replies are PONG_<id>_<target RSSI>_<target SNR x4>_D.
+                    // The shorter legacy PONG_<id> form remains accepted during firmware rollouts.
+                    val fields = contentReceived.removePrefix("PONG_").split('_')
+                    val pongId = fields.getOrNull(0)?.toIntOrNull()
+                    val targetRssi = fields.getOrNull(1)?.toFloatOrNull()
+                    val targetSnr = fields.getOrNull(2)?.toFloatOrNull()?.div(4f)
+                    val pending = pongId?.let { pendingRangePings[it] }
+                    if (_isRangeTestActive.value && pongId != null && pending != null &&
+                        pending.targetId == senderId && pendingRangePings.remove(pongId, pending)
+                    ) {
+                        Log.d(TAG, "Direct range-test PONG matched ping $pongId")
+                        logRangeTestResult(
+                            pending = pending,
+                            success = true,
+                            rssi = packet.rxRssi,
+                            snr = packet.rxSnr,
+                            remoteRssi = targetRssi,
+                            remoteSnr = targetSnr
+                        )
                     }
                     return
                 }
@@ -522,9 +548,13 @@ class AetherMeshRepository(private val context: Context) {
                 val ackedId = packet.ack.ackedPacketId
                 Log.d(TAG, "ACK received for packet: $ackedId")
                 dbHelper.updateMessageStatus(ackedId, "DELIVERED")
-                if (_isRangeTestActive.value && ackedId == lastSentRangePingId) {
+                val pending = pendingRangePings[ackedId]
+                if (_isRangeTestActive.value && pending != null && pending.targetId == senderId &&
+                    pendingRangePings.remove(ackedId, pending)
+                ) {
                     Log.d(TAG, "Range test ACK matched packet $ackedId")
                     logRangeTestResult(
+                        pending = pending,
                         success = true,
                         rssi = packet.rxRssi,
                         snr = packet.rxSnr,
@@ -1386,16 +1416,21 @@ class AetherMeshRepository(private val context: Context) {
         _isRangeTestActive.value = true
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
         startRangeTestLocationUpdates()
-        lastSentRangePingId = 0
-        lastSentRangePingTime = 0L
+        pendingRangePings.clear()
 
         rangeTestJob = repositoryScope.launch {
             while (_isRangeTestActive.value) {
+                expirePendingRangePings()
                 sendRangePing(targetId)
-                delay(intervalSeconds * 1000L)
+                val nextPingAt = System.currentTimeMillis() + intervalSeconds * 1000L
+                while (_isRangeTestActive.value && System.currentTimeMillis() < nextPingAt) {
+                    val remaining = (nextPingAt - System.currentTimeMillis()).coerceAtLeast(1L)
+                    delay(minOf(1000L, remaining))
+                    expirePendingRangePings()
+                }
             }
         }
-        Log.d(TAG, "Range Test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSeconds}s.")
+        Log.d(TAG, "Direct range test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSeconds}s.")
     }
 
     fun loadRangeTestLogs(targetId: Long) {
@@ -1407,8 +1442,7 @@ class AetherMeshRepository(private val context: Context) {
         rangeTestJob?.cancel()
         rangeTestJob = null
         _isRangeTestActive.value = false
-        lastSentRangePingId = 0
-        lastSentRangePingTime = 0L
+        pendingRangePings.clear()
         stopRangeTestLocationUpdates()
         Log.d(TAG, "Range Test stopped.")
     }
@@ -1423,22 +1457,26 @@ class AetherMeshRepository(private val context: Context) {
             return
         }
 
-        if (lastSentRangePingId != 0) {
-            logRangeTestResult(success = false, rssi = -140f, snr = -20f)
-        }
-
         val localNodeId = bleManager.connectedNodeId
         if (localNodeId == targetId) {
             Log.w(TAG, "Range test target 0x${targetId.toString(16)} is the BLE-connected node; " +
                     "connect to a different node to test this target.")
         }
 
-        val generatedPacketId = (1..100000).random()
-        lastSentRangePingId = generatedPacketId
-        lastSentRangePingTime = System.currentTimeMillis()
+        var generatedPacketId: Int
+        do {
+            generatedPacketId = (1..100000).random()
+        } while (pendingRangePings.containsKey(generatedPacketId))
+
+        val pending = PendingRangePing(
+            targetId = targetId,
+            sentAtMs = System.currentTimeMillis(),
+            position = captureRangeTestPosition()
+        )
+        pendingRangePings[generatedPacketId] = pending
 
         val textBuilder = TextMessage.newBuilder()
-            .setContent("PING_$generatedPacketId")
+            .setContent("PING_${generatedPacketId}_D")
             .setChannel("")
             .setIsEncrypted(false)
 
@@ -1449,7 +1487,7 @@ class AetherMeshRepository(private val context: Context) {
             .setSenderId(localNodeId.toInt())
             .setRecipientId(targetId.toInt())
             .setPacketId(generatedPacketId)
-            .setHopLimit(4)
+            .setHopLimit(1)
             .setWantAck(false)
             .setPrevHopId(localNodeId.toInt())
             .setText(textBuilder)
@@ -1459,15 +1497,11 @@ class AetherMeshRepository(private val context: Context) {
             Log.d(TAG, "Range test ping sent: packetId=$generatedPacketId")
         } else {
             Log.w(TAG, "Range test ping failed to send over BLE.")
-            lastSentRangePingId = 0
-            lastSentRangePingTime = 0L
+            pendingRangePings.remove(generatedPacketId)
         }
     }
 
-    fun logRangeTestResult(success: Boolean, rssi: Float, snr: Float, remoteRssi: Float? = null, remoteSnr: Float? = null) {
-        val targetId = rangeTestTargetId
-        if (targetId == 0L) return
-
+    private fun captureRangeTestPosition(): RangeTestPosition {
         var lat = 0.0
         var lon = 0.0
         var speedMps: Float? = null
@@ -1487,20 +1521,58 @@ class AetherMeshRepository(private val context: Context) {
                 lon = localNode.longitude.toDouble()
             }
         }
+        return RangeTestPosition(lat, lon, speedMps, gpsAccuracyM)
+    }
 
-        dbHelper.insertRangeTestLog(targetId, lat, lon, rssi, snr, success, remoteRssi, remoteSnr, speedMps, gpsAccuracyM)
-        _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
-        lastSentRangePingId = 0
-        lastSentRangePingTime = 0L
+    private fun expirePendingRangePings() {
+        val cutoff = System.currentTimeMillis() - RANGE_PING_TIMEOUT_MS
+        pendingRangePings.entries
+            .filter { it.value.sentAtMs <= cutoff }
+            .forEach { entry ->
+                if (pendingRangePings.remove(entry.key, entry.value)) {
+                    logRangeTestResult(
+                        pending = entry.value,
+                        success = false,
+                        rssi = -140f,
+                        snr = -20f
+                    )
+                }
+            }
+    }
+
+    private fun logRangeTestResult(
+        pending: PendingRangePing,
+        success: Boolean,
+        rssi: Float,
+        snr: Float,
+        remoteRssi: Float? = null,
+        remoteSnr: Float? = null
+    ) {
+        val position = pending.position
+        dbHelper.insertRangeTestLog(
+            pending.targetId,
+            position.latitude,
+            position.longitude,
+            rssi,
+            snr,
+            success,
+            remoteRssi,
+            remoteSnr,
+            position.speedMps,
+            position.gpsAccuracyM,
+            pending.sentAtMs
+        )
+        if (pending.targetId == rangeTestTargetId) {
+            _rangeTestLogs.value = dbHelper.getRangeTestLogs(pending.targetId)
+        }
     }
 
     fun clearRangeTestLogs(targetId: Long) {
         dbHelper.clearRangeTestLogs(targetId)
         _rangeTestLogs.value = emptyList()
-        if (_isRangeTestActive.value && rangeTestTargetId == targetId) {
-            lastSentRangePingId = 0
-            lastSentRangePingTime = 0L
-        }
+        pendingRangePings.entries
+            .filter { it.value.targetId == targetId }
+            .forEach { pendingRangePings.remove(it.key, it.value) }
     }
 
     fun getAllRangeTestLogs(): List<RangeTestLog> {

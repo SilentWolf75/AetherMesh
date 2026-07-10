@@ -54,7 +54,8 @@ struct PendingAck {
 
 struct PendingPongReply {
     uint32_t recipientId;
-    char content[24];
+    char content[32];
+    uint8_t hopLimit;
     uint32_t sendAtMs;
     uint32_t firstQueuedMs;
     uint32_t sendCount;
@@ -70,7 +71,7 @@ public:
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
     // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
-    bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false);
+    bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false, uint8_t hopLimit = DEFAULT_HOP_LIMIT);
     // lat/lon must already be privacy-blurred by the caller when positionPrecision > 0
     bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0);
     
@@ -137,8 +138,8 @@ private:
     void clearPendingAck(uint32_t ackedPacketId, float ackRssi = 0.0f, float ackSnr = 0.0f);
     void emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi = 0.0f, float ackSnr = 0.0f);
 
-    void maybeQueuePongForPingText(const aethermesh_MeshPacket& packet);
-    void queuePongReply(uint32_t recipientId, const char* pingId);
+    void maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, float rssi, float snr);
+    void queuePongReply(uint32_t recipientId, const char* pingId, float rssi, float snr, bool directOnly);
     void drainPendingPongReplies();
     
     // Buffer serialization helpers

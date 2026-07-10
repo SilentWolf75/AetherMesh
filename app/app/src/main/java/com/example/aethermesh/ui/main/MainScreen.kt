@@ -6244,7 +6244,7 @@ fun ConnectionView(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Signal Range Testing",
+                            text = "Direct Signal Range Test",
                             color = TextLight,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
@@ -6266,6 +6266,12 @@ fun ConnectionView(
                     
                     if (!isRangeTestActive) {
                         // Configuration Panel
+                        Text(
+                            "One-hop only: repeaters are excluded so distance and signal describe the two selected nodes.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text("Target Node", color = TextMuted, fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(4.dp))
                         Box(
@@ -6344,7 +6350,7 @@ fun ConnectionView(
                                 Text("$totalPings", color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                Text("ACKs RECVD", color = TextMuted, fontSize = 10.sp)
+                                Text("REPLIES", color = TextMuted, fontSize = 10.sp)
                                 Text("$successfulPings", color = AccentMint, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
@@ -6386,10 +6392,31 @@ fun ConnectionView(
                             }
                         }
 
+                        rangeTestLogs.lastOrNull { it.success }?.let { latest ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                Text(
+                                    "Reply ${latest.rssi.toInt()} dBm / ${"%.1f".format(latest.snr)} dB",
+                                    color = AccentCyan,
+                                    fontSize = 10.sp
+                                )
+                                if (latest.remoteRssi != null && latest.remoteSnr != null) {
+                                    Text(
+                                        "Ping ${latest.remoteRssi.toInt()} dBm / ${"%.1f".format(latest.remoteSnr)} dB",
+                                        color = AccentMint,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Draw Mini Signal Chart using Canvas
-                        Text("RSSI Signal Level History (dBm)", color = TextMuted, fontSize = 11.sp)
+                        Text("Return Signal History (dBm)", color = TextMuted, fontSize = 11.sp)
                         Spacer(modifier = Modifier.height(4.dp))
                         
                         Box(
@@ -7530,7 +7557,7 @@ fun exportRangeTestLogsToCsv(
     }
 
     // Machine-friendly CSV: epoch ms for tooling, ISO local time for humans,
-    // raw lat/lon plus BOTH link directions for signal analysis:
+    // raw lat/lon plus BOTH directions of the direct one-hop link:
     //   ping_* = signal of our ping as heard by the target (from the ACK payload)
     //   ack_*  = signal of the target's ACK as heard by our node
     //   distance_m = row GPS -> target node's last reported position

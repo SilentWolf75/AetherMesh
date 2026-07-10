@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AetherMesh Firmware</title>
+    <link rel="icon" type="image/svg+xml" href="../web-flasher/aethermesh-logo.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
@@ -66,13 +67,13 @@
         .mark {
             width: 44px;
             height: 44px;
-            border: 2px solid var(--cyan);
-            display: grid;
-            place-items: center;
-            color: var(--mint);
-            font-family: "Outfit", Arial, sans-serif;
-            font-weight: 800;
-            letter-spacing: 0;
+            flex: 0 0 44px;
+        }
+
+        .mark svg {
+            display: block;
+            width: 100%;
+            height: 100%;
         }
 
         .brand strong {
@@ -279,7 +280,33 @@
         <section class="shell">
             <div class="topbar">
                 <div class="brand">
-                    <div class="mark">AM</div>
+                    <div class="mark" aria-hidden="true">
+                        <svg viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">
+                            <defs>
+                                <linearGradient id="homeBrandBg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+                                    <stop offset="0" stop-color="#070C14"/>
+                                    <stop offset="0.5" stop-color="#142136"/>
+                                    <stop offset="1" stop-color="#1A2D4A"/>
+                                </linearGradient>
+                                <linearGradient id="homeBrandPeak" x1="32" y1="34" x2="76" y2="76" gradientUnits="userSpaceOnUse">
+                                    <stop offset="0" stop-color="#00E5FF"/>
+                                    <stop offset="1" stop-color="#0072FF"/>
+                                </linearGradient>
+                            </defs>
+                            <rect width="108" height="108" rx="18" fill="url(#homeBrandBg)"/>
+                            <path d="M18 0v108M36 0v108M54 0v108M72 0v108M90 0v108M0 18h108M0 36h108M0 54h108M0 72h108M0 90h108" fill="none" stroke="#FFFFFF" stroke-opacity="0.095" stroke-width="0.4"/>
+                            <path d="M0 0l108 108M108 0L0 108" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="0.3"/>
+                            <path d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#00E5FF" stroke-width="3.5" stroke-linecap="round"/>
+                            <path d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#00B0FF" stroke-width="3" stroke-linecap="round"/>
+                            <path d="M32 76L54 34L76 76" fill="none" stroke="url(#homeBrandPeak)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M40 62H68" fill="none" stroke="#00B0FF" stroke-width="4" stroke-linecap="round"/>
+                            <path d="M54 34V62" fill="none" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
+                            <circle cx="54" cy="34" r="5" fill="#FFFFFF"/>
+                            <circle cx="32" cy="76" r="5" fill="#00E5FF"/>
+                            <circle cx="76" cy="76" r="5" fill="#00E5FF"/>
+                            <circle cx="54" cy="62" r="4" fill="#FFFFFF"/>
+                        </svg>
+                    </div>
                     <div>
                         <strong>AetherMesh</strong>
                         <span>LoRa mesh firmware, Android app, and web flasher</span>

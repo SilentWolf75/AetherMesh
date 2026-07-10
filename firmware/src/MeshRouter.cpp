@@ -281,7 +281,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         // Range-test PING retries (same packet_id) mean the sender never got our
         // PONG — queue another reply without re-displaying the ping on screen.
         if (packet.recipient_id == localNodeId) {
-            maybeQueuePongForPingText(packet);
+            maybeQueuePongForPingText(packet, rssi, snr);
         }
         return;
     }
@@ -323,7 +323,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
 
         // Always queue PONG for range-test pings, even if this is a retry duplicate.
-        maybeQueuePongForPingText(packet);
+        maybeQueuePongForPingText(packet, rssi, snr);
 
         if (packetIdSeenBefore && packet.which_payload != aethermesh_MeshPacket_ack_tag) {
             Serial.printf("Retry %u of packet %u for us; ACKed without duplicate delivery.\n",
@@ -404,7 +404,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
     } else {
         // Unicast packet for someone else (we are a relay node)
-        if (packet.hop_limit >= 1) {
+        if (packet.hop_limit > 1) {
             RouteEntry* route = getRoute(packet.recipient_id);
             if (route) {
                 Serial.print("Relaying unicast packet for 0x");
@@ -480,12 +480,12 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     return serializeAndSend(&packet);
 }
 
-bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urgent) {
+bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urgent, uint8_t hopLimit) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.hop_limit = hopLimit;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_text_tag;
@@ -495,7 +495,7 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     packet.payload.text.channel[0] = '\0';
     packet.payload.text.is_encrypted = false;
 
-    if (recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
+    if (hopLimit > 1 && recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
         sendRouteRequest(recipientId);
     }
 
@@ -659,27 +659,40 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
     return serializeAndSend(packet, urgent);
 }
 
-void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet) {
+void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, float rssi, float snr) {
     if (packet.which_payload != aethermesh_MeshPacket_text_tag) {
         return;
     }
-    // Range test uses mesh ACKs (want_ack=true). PONG replies are only for
-    // want_ack=false pings and would just congest the channel otherwise.
+    // Range tests use want_ack=false PING/PONG control traffic so normal
+    // message retransmission does not collide with the reply window.
     if (packet.want_ack) {
         return;
     }
     if (strncmp(packet.payload.text.content, "PING_", 5) != 0) {
         return;
     }
-    const char* pingId = packet.payload.text.content + 5;
-    if (pingId[0] != '\0' && strlen(pingId) < 8) {
-        queuePongReply(packet.sender_id, pingId);
+    const char* encoded = packet.payload.text.content + 5;
+    const char* suffix = strchr(encoded, '_');
+    size_t idLength = suffix ? (size_t)(suffix - encoded) : strlen(encoded);
+    bool directOnly = suffix != nullptr && strcmp(suffix, "_D") == 0;
+    if (idLength > 0 && idLength < 8) {
+        char pingId[8];
+        memcpy(pingId, encoded, idLength);
+        pingId[idLength] = '\0';
+        queuePongReply(packet.sender_id, pingId, rssi, snr, directOnly);
     }
 }
 
-void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId) {
-    char pongContent[24];
-    snprintf(pongContent, sizeof(pongContent), "PONG_%s", pingId);
+void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float rssi, float snr, bool directOnly) {
+    char pongContent[32];
+    int rssiDbm = (int)lroundf(rssi);
+    int snrQuarterDb = (int)lroundf(snr * 4.0f);
+    if (directOnly) {
+        snprintf(pongContent, sizeof(pongContent), "PONG_%s_%d_%d_D", pingId, rssiDbm, snrQuarterDb);
+    } else {
+        // Preserve the legacy reply shape for older app builds.
+        snprintf(pongContent, sizeof(pongContent), "PONG_%s", pingId);
+    }
 
     // Coalesce duplicate PING retries for the same id.
     for (int i = 0; i < MAX_PENDING_PONGS; i++) {
@@ -727,6 +740,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId) {
     strncpy(pendingPongs[slot].content, pongContent, sizeof(pendingPongs[slot].content) - 1);
     pendingPongs[slot].content[sizeof(pendingPongs[slot].content) - 1] = '\0';
     pendingPongs[slot].recipientId = recipientId;
+    pendingPongs[slot].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
     pendingPongs[slot].sendAtMs = millis() + 100 + random(0, 100);
     pendingPongs[slot].firstQueuedMs = millis();
     pendingPongs[slot].sendCount = 0;
@@ -753,7 +767,12 @@ void MeshRouter::drainPendingPongReplies() {
         // caused back-to-back failures in field tests. Retries also back off
         // (1.5s, 3s, 4.5s...) instead of hammering a flat 1.5s cadence.
         bool firstAttempt = (pendingPongs[i].sendCount == 0);
-        if (sendTextNoAck(pendingPongs[i].recipientId, pendingPongs[i].content, firstAttempt)) {
+        if (sendTextNoAck(
+                pendingPongs[i].recipientId,
+                pendingPongs[i].content,
+                firstAttempt,
+                pendingPongs[i].hopLimit
+            )) {
             pendingPongs[i].sendCount++;
             Serial.printf("Sent range-test %s (attempt %u)\n",
                           pendingPongs[i].content, pendingPongs[i].sendCount);

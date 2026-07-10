@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web-flasher/aethermesh-logo.svg" width="108" height="108" alt="AetherMesh logo">
+</p>
+
 # AetherMesh
 
 AetherMesh is a LoRa mesh networking project with custom node firmware, an
@@ -60,6 +64,8 @@ The app is the day-to-day control surface for the mesh:
 - Sends and receives mesh chat messages.
 - Shows known nodes, routes, telemetry, battery state, firmware versions, and
   GPS/map positions.
+- Runs direct one-hop range tests with delayed-reply tracking and signal data
+  from both ends of the radio link.
 - Applies radio, GPS, channel, security, and device settings over BLE.
 - Updates firmware wirelessly once a node already has an OTA-capable build.
 

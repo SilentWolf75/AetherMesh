@@ -5,7 +5,21 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
     
-    <!-- Outer peak stroke -->
+    <!-- Canonical AetherMesh radio arcs -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M8.5,4.5 A4.5,4.5 0 0,1 15.5,4.5"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M10,6 A2.7,2.7 0 0,1 14,6"
+        android:strokeWidth="1.1"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF" />
+
+    <!-- Canonical mesh peak -->
     <path
         android:fillColor="#00000000"
         android:pathData="M7,18 L12,8 L17,18"

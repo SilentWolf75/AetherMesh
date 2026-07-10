@@ -589,11 +589,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         remoteRssi: Float? = null,
         remoteSnr: Float? = null,
         speedMps: Float? = null,
-        gpsAccuracyM: Float? = null
+        gpsAccuracyM: Float? = null,
+        timestamp: Long = System.currentTimeMillis()
     ): Long {
         val db = this.writableDatabase
         val values = ContentValues().apply {
-            put(COL_LOG_TIMESTAMP, System.currentTimeMillis())
+            put(COL_LOG_TIMESTAMP, timestamp)
             put(COL_LOG_TARGET_ID, targetId)
             put(COL_LOG_LATITUDE, latitude)
             put(COL_LOG_LONGITUDE, longitude)
