@@ -526,6 +526,23 @@ MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /*
 
 #include <Wire.h>
 
+#if defined(LILYGO_T_ECHO)
+// LilyGO T-Echo 1.54" 200x200 e-paper (GDEH0154D67 / SSD1681). Driven over
+// SOFTWARE SPI so it doesn't share the hardware SPI bus the SX1262 uses.
+// Pin map from the well-documented T-Echo pinout (nRF52840 P0.xx == Arduino n).
+#include <Adafruit_GFX.h>
+#include <Adafruit_EPD.h>
+#define EINK_MOSI  29   // P0.29
+#define EINK_SCLK  31   // P0.31
+#define EINK_CS    30   // P0.30
+#define EINK_DC    28   // P0.28
+#define EINK_RST    2   // P0.02
+#define EINK_BUSY   3   // P0.03
+// (width, height, SID/MOSI, SCLK, DC, RST, CS, SRAM_CS=-1, MISO=-1, BUSY)
+Adafruit_SSD1681 epd(200, 200, EINK_MOSI, EINK_SCLK, EINK_DC, EINK_RST, EINK_CS, -1, -1, EINK_BUSY);
+bool echoDisplayReady = false;
+#endif
+
 // Instances
 RadioManager radioMgr;
 MeshRouter router(&radioMgr);
@@ -2108,6 +2125,82 @@ void drawSysPage() {
 // ahead of its definition further down.
 extern bool otaActive;
 
+#if defined(LILYGO_T_ECHO)
+// Render the T-Echo's e-paper status screen. E-paper is slow (~2s full
+// refresh) and blocking, so this is only called on boot and at a slow cadence
+// (or on a real change) - never in the tight loop.
+void drawEchoStatus() {
+    if (!echoDisplayReady) return;
+    epd.clearBuffer();
+    epd.setTextColor(EPD_BLACK);
+
+    // Title
+    epd.setTextSize(2);
+    epd.setCursor(6, 6);
+    epd.print("AetherMesh");
+    epd.drawLine(4, 26, 196, 26, EPD_BLACK);
+
+    epd.setTextSize(1);
+    int y = 36;
+    char line[40];
+
+    // Name + short id
+    if (strlen(nodeCustomName) > 0) {
+        snprintf(line, sizeof(line), "%.12s  0x%04X", nodeCustomName, (unsigned)(localNodeId & 0xFFFF));
+    } else {
+        snprintf(line, sizeof(line), "Node 0x%08X", (unsigned)localNodeId);
+    }
+    epd.setCursor(6, y); epd.print(line); y += 14;
+
+    // Battery
+    snprintf(line, sizeof(line), "Battery: %u%%%s", (unsigned)readBatteryLevel(),
+             batteryCharging ? " (chg)" : "");
+    epd.setCursor(6, y); epd.print(line); y += 14;
+
+    // Radio config
+    snprintf(line, sizeof(line), "SF%u BW%d %.1fMHz",
+             (unsigned)radioMgr.getSpreadingFactor(), (int)radioMgr.getBandwidth(),
+             radioMgr.getFrequency());
+    epd.setCursor(6, y); epd.print(line); y += 14;
+
+    // BLE + peers
+    snprintf(line, sizeof(line), "%s   Nodes:%u",
+             bleMgr.isDeviceConnected() ? "BLE Connected" : "BLE Advertising",
+             (unsigned)countActivePeers());
+    epd.setCursor(6, y); epd.print(line); y += 14;
+
+    // Position source + coords
+    bool ownFix = gps.location.isValid();
+    bool phoneFix = hasInheritedLocation && (millis() - lastInheritedTime < 300000);
+    if (fixedPosition) {
+        snprintf(line, sizeof(line), "Pos: Fixed");
+        epd.setCursor(6, y); epd.print(line); y += 12;
+        snprintf(line, sizeof(line), "%.5f, %.5f", fixedLat, fixedLon);
+    } else if (ownFix) {
+        snprintf(line, sizeof(line), "GPS: %.5f", gps.location.lat());
+        epd.setCursor(6, y); epd.print(line); y += 12;
+        snprintf(line, sizeof(line), "     %.5f", gps.location.lng());
+    } else if (phoneFix) {
+        snprintf(line, sizeof(line), "Phone GPS:");
+        epd.setCursor(6, y); epd.print(line); y += 12;
+        snprintf(line, sizeof(line), "%.5f, %.5f", inheritedLat, inheritedLon);
+    } else if (!hasOnboardGps) {
+        snprintf(line, sizeof(line), "GPS: none (share phone)");
+    } else {
+        snprintf(line, sizeof(line), "GPS: no lock (%lu sat)", (unsigned long)gps.satellites.value());
+    }
+    epd.setCursor(6, y); epd.print(line); y += 16;
+
+    // Footer: uptime + firmware version
+    uint32_t upSec = millis() / 1000UL;
+    snprintf(line, sizeof(line), "Up %lum   v%s",
+             (unsigned long)(upSec / 60), AETHERMESH_FW_VERSION);
+    epd.setCursor(6, 186); epd.print(line);
+
+    epd.display(); // full refresh (blocks ~2-3s)
+}
+#endif
+
 // Update the OLED display screen
 void updateDisplay() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
@@ -3216,6 +3309,13 @@ void setup() {
     u8g2.begin();
     drawBootSplash(0);
     uint32_t splashShownAt = millis();
+#elif defined(LILYGO_T_ECHO)
+    // Bring up the e-paper. Its refresh is slow, so the status screen is drawn
+    // once here (after the rest of setup) and then only at a slow cadence.
+    Serial.println("Initializing T-Echo e-paper (SSD1681, SW SPI)...");
+    epd.begin();
+    epd.setRotation(3); // T-Echo panel orientation (adjust if mirrored/rotated)
+    echoDisplayReady = true;
 #endif
 
     // 3. Initialize GPS serial port and power toggle. gps_mode == 1 keeps the
@@ -3332,6 +3432,9 @@ void setup() {
     // Start the screen-timeout window from boot so the display shows initially
     lastDisplayActivityTime = millis();
     updateDisplay();
+#if defined(LILYGO_T_ECHO)
+    drawEchoStatus(); // first e-paper render (blocks ~2-3s)
+#endif
     Serial.println("Setup completed successfully. Ready.");
 }
 
@@ -3437,6 +3540,17 @@ void loop() {
         lastDisplayRefresh = millis();
         updateDisplay();
     }
+
+#if defined(LILYGO_T_ECHO)
+    // E-paper refresh is slow/blocking, so run it far less often than the OLED.
+    // ~45s cadence keeps the status readable without constant flashing or
+    // stalling the radio for long. (No refresh during an OTA/DFU.)
+    static uint32_t lastEchoRefresh = 0;
+    if (!otaActive && millis() - lastEchoRefresh > 45000) {
+        lastEchoRefresh = millis();
+        drawEchoStatus();
+    }
+#endif
 
     // Abort a stalled firmware update (phone app killed / walked away)
     if (otaActive && (millis() - otaLastChunkMs > OTA_TIMEOUT_MS)) {
@@ -3611,7 +3725,7 @@ void loop() {
             float txLat = lat;
             float txLon = lon;
             meshmath::blurPosition(lat, lon, positionPrecisionM, txLat, txLon);
-            router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, batteryCharging, batteryVoltage, positionPrecisionM);
+            router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM);
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
             if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
@@ -3637,6 +3751,9 @@ void loop() {
                 localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
                 strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
                         sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);
+                strncpy(localTelemetryPacket.payload.telemetry.node_name, nodeCustomName,
+                        sizeof(localTelemetryPacket.payload.telemetry.node_name) - 1);
+                localTelemetryPacket.payload.telemetry.node_name[sizeof(localTelemetryPacket.payload.telemetry.node_name) - 1] = '\0';
 
 #if defined(HELTEC_V4)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V4");
