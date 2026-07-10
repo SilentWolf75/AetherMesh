@@ -42,11 +42,169 @@ struct NodeSettings {
 Preferences preferences;
 #endif
 
-// Conditional OLED display inclusion for Heltec V4
 #if defined(HELTEC_V4) || defined(HELTEC_V3)
 #include <U8g2lib.h>
 // SSD1306 128x64 display connection
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ 21, /* clock=*/ 18, /* data=*/ 17);
+#elif defined(LILYGO_T_DECK)
+#include <U8g2lib.h>
+#include <SPI.h>
+
+// Direct, lightweight ST7789 driver over shared Hardware SPI to enable physical screen output on LILYGO T-Deck
+inline void st7789_write_cmd(uint8_t cmd) {
+    digitalWrite(11, LOW); // DC LOW
+    digitalWrite(12, LOW); // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    SPI.transfer(cmd);
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+}
+
+inline void st7789_write_data(uint8_t val) {
+    digitalWrite(11, HIGH); // DC HIGH
+    digitalWrite(12, LOW); // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    SPI.transfer(val);
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+}
+
+inline void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    st7789_write_cmd(0x2A); // Column Address Set
+    digitalWrite(11, HIGH); // DC HIGH
+    digitalWrite(12, LOW); // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    SPI.transfer(x0 >> 8);
+    SPI.transfer(x0 & 0xFF);
+    SPI.transfer(x1 >> 8);
+    SPI.transfer(x1 & 0xFF);
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+    
+    st7789_write_cmd(0x2B); // Row Address Set
+    digitalWrite(11, HIGH); // DC HIGH
+    digitalWrite(12, LOW); // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    SPI.transfer(y0 >> 8);
+    SPI.transfer(y0 & 0xFF);
+    SPI.transfer(y1 >> 8);
+    SPI.transfer(y1 & 0xFF);
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+    
+    st7789_write_cmd(0x2C); // Memory Write
+}
+
+inline void st7789_clear(uint16_t color) {
+    st7789_set_window(0, 0, 319, 239);
+    digitalWrite(11, HIGH); // DC HIGH
+    digitalWrite(12, LOW);  // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    uint8_t high = color >> 8;
+    uint8_t low = color & 0xFF;
+    for (uint32_t i = 0; i < 320UL * 240UL; i++) {
+        SPI.transfer(high);
+        SPI.transfer(low);
+    }
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+}
+
+inline void init_st7789() {
+    pinMode(12, OUTPUT); // CS
+    pinMode(11, OUTPUT); // DC
+    pinMode(6, OUTPUT);  // RST
+    
+    // Ensure SPI is initialized on pins 40 (SCK), 38 (MISO), 41 (MOSI), 9 (SS/LoRa CS)
+    SPI.begin(40, 38, 41, 9);
+    
+    // Hardware Reset
+    digitalWrite(6, HIGH);
+    delay(50);
+    digitalWrite(6, LOW);
+    delay(50);
+    digitalWrite(6, HIGH);
+    delay(150);
+    
+    st7789_write_cmd(0x01); // Software Reset
+    delay(150);
+    st7789_write_cmd(0x11); // Sleep Out
+    delay(250);
+    
+    st7789_write_cmd(0x3A); // Interface Pixel Format
+    st7789_write_data(0x55); // 16-bit/pixel color
+    
+    st7789_write_cmd(0x36); // Memory Data Access Control (MADCTL)
+    st7789_write_data(0x60); // Landscape orientation
+    
+    st7789_write_cmd(0x21); // Display Inversion On
+    
+    st7789_write_cmd(0x13); // Normal Display Mode On
+    
+    st7789_write_cmd(0x29); // Display On
+    delay(100);
+    
+    st7789_clear(0x0000); // Clear screen to black
+}
+
+class MyU8G2 : public U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI {
+public:
+    using U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI::U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI;
+    void sendBuffer();
+};
+
+extern MyU8G2 u8g2;
+
+inline void st7789_refresh() {
+    st7789_set_window(32, 56, 287, 183);
+    
+    digitalWrite(11, HIGH); // DC HIGH
+    digitalWrite(12, LOW);  // CS LOW
+    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+    
+    uint8_t* buf = u8g2.getBufferPtr();
+    
+    for (uint8_t y = 0; y < 64; y++) {
+        for (uint8_t rep = 0; rep < 2; rep++) {
+            uint8_t page = y / 8;
+            uint8_t bit = y % 8;
+            uint8_t mask = (1 << bit);
+            
+            for (uint8_t x = 0; x < 128; x++) {
+                uint16_t idx = page * 128 + x;
+                bool pixel = (buf[idx] & mask) != 0;
+                
+                // Color: Active is bright neon green (0x07E0), inactive is black (0x0000)
+                uint16_t color = pixel ? 0x07E0 : 0x0000;
+                uint8_t high = color >> 8;
+                uint8_t low = color & 0xFF;
+                
+                // 2x scale horizontally
+                SPI.transfer(high);
+                SPI.transfer(low);
+                SPI.transfer(high);
+                SPI.transfer(low);
+            }
+        }
+    }
+    SPI.endTransaction();
+    digitalWrite(12, HIGH); // CS HIGH
+}
+
+inline void MyU8G2::sendBuffer() {
+    st7789_refresh();
+}
+
+MyU8G2 u8g2(U8G2_R0, /* clock=*/ 40, /* data=*/ 41, /* cs=*/ 12, /* dc=*/ 11, /* reset=*/ 6);
+#endif
+
+#if defined(LILYGO_T_DECK)
+#define setBacklight(on) do { \
+    digitalWrite(42, (on) ? HIGH : LOW); \
+    digitalWrite(4, (on) ? HIGH : LOW); \
+} while(0)
+#else
+#define setBacklight(on) ((void)0)
 #endif
 
 #include <Wire.h>
@@ -666,7 +824,7 @@ uint8_t readBatteryLevel() {
 #endif
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
 // Boot splash: mesh glyph + wordmark + firmware version. wavePhase pulses the
 // radio arcs while setup runs.
 void drawBootSplash(uint8_t wavePhase) {
@@ -912,12 +1070,13 @@ extern bool otaActive;
 
 // Update the OLED display screen
 void updateDisplay() {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     if (otaActive) {
         return; // drawOtaProgress() renders during firmware updates
     }
     if (nodeRole == 2) {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
+        setBacklight(false);
         displayIsOn = false;
         return;
     }
@@ -945,6 +1104,7 @@ void updateDisplay() {
 
     if (!shouldBeOn) {
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
+        setBacklight(false);
         displayIsOn = false;
         return;
     }
@@ -952,6 +1112,7 @@ void updateDisplay() {
         oledPage = 0; // waking from off always lands on the HOME page
     }
     u8g2.setPowerSave(0); // Ensure awake if not repeater
+    setBacklight(true);
     displayIsOn = true;
     
     // Check if we should render message popup overlay
@@ -1230,9 +1391,10 @@ void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const 
     }
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
 void drawOtaProgress(uint8_t pct, const char* label) {
     u8g2.setPowerSave(0);
+    setBacklight(true);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_7x14_tf);
     u8g2.drawStr((128 - u8g2.getStrWidth("FIRMWARE UPDATE")) / 2, 20, "FIRMWARE UPDATE");
@@ -1247,7 +1409,7 @@ void drawOtaProgress(uint8_t pct, const char* label) {
 #endif
 
 void otaAbort(const char* reason) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     if (otaActive) {
         Update.abort();
     }
@@ -1276,7 +1438,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
         return;
     }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     switch (ctl.op) {
         case aethermesh_OtaControl_Op_BEGIN: {
             if (otaActive) {
@@ -1338,7 +1500,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
 }
 
 void handleOtaData(const aethermesh_OtaData& od) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     if (!otaActive) {
         sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
         return;
@@ -1608,7 +1770,7 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     updateDisplay();
 }
 
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
 #define USER_BUTTON_PIN 0
 #elif defined(PIN_BUTTON1)
 #define USER_BUTTON_PIN PIN_BUTTON1
@@ -1620,13 +1782,12 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 
 void setup() {
 #if defined(LILYGO_T_DECK)
-    // Power on board peripherals and screen backlight on boot (pins 10, 42, 45, 4, 6)
+    // Power on board peripherals and screen backlight on boot (pins 10, 42, 4, 6).
+    // GPIO 45 is LoRa DIO1 on the T-Deck; leave it under RadioManager control.
     pinMode(10, OUTPUT);
     digitalWrite(10, HIGH);
     pinMode(42, OUTPUT);
     digitalWrite(42, HIGH);
-    pinMode(45, OUTPUT);
-    digitalWrite(45, HIGH);
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
     pinMode(6, OUTPUT);
@@ -1639,6 +1800,7 @@ void setup() {
         delay(10);
     }
     
+    delay(4000);
     Serial.println("\n=== AETHERMESH NODE STARTING ===");
     Serial.printf("Firmware: %s\n", AETHERMESH_FW_VERSION);
     
@@ -1692,15 +1854,19 @@ void setup() {
     pinMode(10, OUTPUT);
     digitalWrite(10, HIGH);
     delay(20);
-    // Pull backlight enable pins HIGH (GPIO 42, 45, 4) to support various board revisions
+    // Pull backlight enable pins HIGH (GPIO 42, 4) to support known board revisions.
+    // GPIO 45 is LoRa DIO1 and must remain an input.
     pinMode(42, OUTPUT);
     digitalWrite(42, HIGH);
-    pinMode(45, OUTPUT);
-    digitalWrite(45, HIGH);
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
     pinMode(6, OUTPUT);
     digitalWrite(6, HIGH); // Release screen reset pin
+
+    u8g2.begin();
+    init_st7789();
+    drawBootSplash(0);
+    uint32_t splashShownAt = millis();
 #elif defined(HELTEC_V4) || defined(HELTEC_V3)
     u8g2.begin();
     drawBootSplash(0);
@@ -1808,7 +1974,7 @@ void setup() {
         Serial.println("Low-Power Repeater mode: skipping BLE initialization.");
     }
     
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
     // Hold the splash ~2.5s total, pulsing the radio waves. The radio is already
     // live at this point (receive callback armed), so nothing is missed.
     uint8_t splashPhase = 1;
@@ -1846,7 +2012,7 @@ void loop() {
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
     if (currentButtonState == LOW && lastButtonState == HIGH) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
         // Button behavior: dismiss a visible message popup first; otherwise
         // advance the page carousel while the screen is on. Pressing while the
         // screen is off just wakes it (updateDisplay lands on HOME).

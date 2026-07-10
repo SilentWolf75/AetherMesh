@@ -114,7 +114,7 @@ bool RadioManager::init() {
     pinMode(10, OUTPUT);
     digitalWrite(10, HIGH);
     delay(100);
-    SPI.begin(40, 39, 41, 9); // SCK, MISO, MOSI, SS
+    SPI.begin(40, 38, 41, 9); // SCK, MISO, MOSI, SS
 #elif defined(LILYGO_T_ECHO)
     Serial.println("Lilygo T-Echo: Setting up SPI pins (23, 19, 22)...");
     SPI.setPins(23, 19, 22); // MISO=23, SCK=19, MOSI=22
