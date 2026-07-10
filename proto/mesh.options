@@ -2,6 +2,13 @@ aethermesh.TextMessage.content max_size:168
 aethermesh.TextMessage.channel max_size:32
 aethermesh.Telemetry.node_model max_size:32
 aethermesh.Telemetry.firmware_version max_size:20
+aethermesh.Telemetry.node_name max_size:17
+aethermesh.TraceRoute.forward_node_ids max_count:8
+aethermesh.TraceRoute.forward_rssi max_count:8
+aethermesh.TraceRoute.forward_snr_quarter_db max_count:8
+aethermesh.TraceRoute.return_node_ids max_count:8
+aethermesh.TraceRoute.return_rssi max_count:8
+aethermesh.TraceRoute.return_snr_quarter_db max_count:8
 aethermesh.NodeConfig.node_name max_size:17
 aethermesh.AuthRequest.password max_size:32
 aethermesh.AuthRequest.new_password max_size:32

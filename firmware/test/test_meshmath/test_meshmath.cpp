@@ -44,6 +44,27 @@ void test_backoff_monotonic() {
     }
 }
 
+void test_route_selection_prefers_better_metric() {
+    TEST_ASSERT_TRUE(shouldReplaceRoute(0x10, 20, 1000, 0x20, 10, 600000));
+}
+
+void test_route_selection_refreshes_same_next_hop() {
+    TEST_ASSERT_TRUE(shouldReplaceRoute(0x10, 10, 1000, 0x10, 20, 600000));
+}
+
+void test_route_selection_rejects_worse_fresh_path() {
+    TEST_ASSERT_FALSE(shouldReplaceRoute(0x10, 10, 1000, 0x20, 20, 600000));
+}
+
+void test_route_selection_replaces_aging_path() {
+    TEST_ASSERT_TRUE(shouldReplaceRoute(0x10, 10, 300001, 0x20, 20, 600000));
+}
+
+void test_proxy_route_freshness_is_bounded() {
+    TEST_ASSERT_TRUE(proxyRouteIsFresh(60000, 60000));
+    TEST_ASSERT_FALSE(proxyRouteIsFresh(60001, 60000));
+}
+
 void test_blur_zero_radius_passthrough() {
     float lat, lon;
     blurPosition(38.812345f, -94.912345f, 0, lat, lon);
@@ -107,6 +128,11 @@ int main(int, char**) {
     RUN_TEST(test_backoff_strong_link_shortest);
     RUN_TEST(test_backoff_weak_link_longest);
     RUN_TEST(test_backoff_monotonic);
+    RUN_TEST(test_route_selection_prefers_better_metric);
+    RUN_TEST(test_route_selection_refreshes_same_next_hop);
+    RUN_TEST(test_route_selection_rejects_worse_fresh_path);
+    RUN_TEST(test_route_selection_replaces_aging_path);
+    RUN_TEST(test_proxy_route_freshness_is_bounded);
     RUN_TEST(test_blur_zero_radius_passthrough);
     RUN_TEST(test_blur_no_fix_passthrough);
     RUN_TEST(test_blur_within_radius_per_axis);

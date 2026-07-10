@@ -25,6 +25,11 @@ typedef enum _aethermesh_OtaStatus_State {
     aethermesh_OtaStatus_State_ERROR = 4 /* aborted; message says why */
 } aethermesh_OtaStatus_State;
 
+typedef enum _aethermesh_TraceRoute_Type {
+    aethermesh_TraceRoute_Type_REQUEST = 0,
+    aethermesh_TraceRoute_Type_RESPONSE = 1
+} aethermesh_TraceRoute_Type;
+
 typedef enum _aethermesh_RouteDiscovery_Type {
     aethermesh_RouteDiscovery_Type_REQUEST = 0,
     aethermesh_RouteDiscovery_Type_REPLY = 1
@@ -82,7 +87,34 @@ typedef struct _aethermesh_Telemetry {
     bool is_charging; /* True when the battery is charging (voltage rising / on solar) */
     float battery_voltage; /* Raw pack voltage (V); 0 if unmeasured. For solar monitoring. */
     uint32_t position_precision; /* Privacy blur radius (meters) applied to lat/lon before */
+    /* broadcast; 0 = precise. Receivers should show the node
+ as "somewhere within this radius" (uncertainty circle). */
+    char node_name[17]; /* Configured network-visible name (max 16 characters). */
 } aethermesh_Telemetry;
+
+/* On-air route observation. Each receiver appends itself and the quality of
+ the link on which it received the packet. The target turns REQUEST into
+ RESPONSE, preserving the outbound path and collecting the return path. */
+typedef struct _aethermesh_TraceRoute {
+    aethermesh_TraceRoute_Type type;
+    uint32_t trace_id;
+    uint32_t origin_id;
+    uint32_t target_id;
+    pb_size_t forward_node_ids_count;
+    uint32_t forward_node_ids[8];
+    pb_size_t forward_rssi_count;
+    int32_t forward_rssi[8];
+    pb_size_t forward_snr_quarter_db_count;
+    int32_t forward_snr_quarter_db[8];
+    pb_size_t return_node_ids_count;
+    uint32_t return_node_ids[8];
+    pb_size_t return_rssi_count;
+    int32_t return_rssi[8];
+    pb_size_t return_snr_quarter_db_count;
+    int32_t return_snr_quarter_db[8];
+    bool forward_truncated;
+    bool return_truncated;
+} aethermesh_TraceRoute;
 
 /* Path discovery for unicast routing */
 typedef struct _aethermesh_RouteDiscovery {
@@ -166,6 +198,7 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_OtaControl ota_control;
         aethermesh_OtaData ota_data;
         aethermesh_OtaStatus ota_status;
+        aethermesh_TraceRoute trace_route;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
@@ -187,6 +220,10 @@ extern "C" {
 #define _aethermesh_OtaStatus_State_MAX aethermesh_OtaStatus_State_ERROR
 #define _aethermesh_OtaStatus_State_ARRAYSIZE ((aethermesh_OtaStatus_State)(aethermesh_OtaStatus_State_ERROR+1))
 
+#define _aethermesh_TraceRoute_Type_MIN aethermesh_TraceRoute_Type_REQUEST
+#define _aethermesh_TraceRoute_Type_MAX aethermesh_TraceRoute_Type_RESPONSE
+#define _aethermesh_TraceRoute_Type_ARRAYSIZE ((aethermesh_TraceRoute_Type)(aethermesh_TraceRoute_Type_RESPONSE+1))
+
 #define _aethermesh_RouteDiscovery_Type_MIN aethermesh_RouteDiscovery_Type_REQUEST
 #define _aethermesh_RouteDiscovery_Type_MAX aethermesh_RouteDiscovery_Type_REPLY
 #define _aethermesh_RouteDiscovery_Type_ARRAYSIZE ((aethermesh_RouteDiscovery_Type)(aethermesh_RouteDiscovery_Type_REPLY+1))
@@ -207,6 +244,8 @@ extern "C" {
 
 
 
+#define aethermesh_TraceRoute_type_ENUMTYPE aethermesh_TraceRoute_Type
+
 #define aethermesh_RouteDiscovery_type_ENUMTYPE aethermesh_RouteDiscovery_Type
 
 
@@ -223,7 +262,8 @@ extern "C" {
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
-#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0}
+#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0, ""}
+#define aethermesh_TraceRoute_init_default       {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
@@ -235,7 +275,8 @@ extern "C" {
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
-#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0}
+#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0, ""}
+#define aethermesh_TraceRoute_init_zero          {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
@@ -265,6 +306,19 @@ extern "C" {
 #define aethermesh_Telemetry_is_charging_tag     8
 #define aethermesh_Telemetry_battery_voltage_tag 9
 #define aethermesh_Telemetry_position_precision_tag 10
+#define aethermesh_Telemetry_node_name_tag       11
+#define aethermesh_TraceRoute_type_tag           1
+#define aethermesh_TraceRoute_trace_id_tag       2
+#define aethermesh_TraceRoute_origin_id_tag      3
+#define aethermesh_TraceRoute_target_id_tag      4
+#define aethermesh_TraceRoute_forward_node_ids_tag 5
+#define aethermesh_TraceRoute_forward_rssi_tag   6
+#define aethermesh_TraceRoute_forward_snr_quarter_db_tag 7
+#define aethermesh_TraceRoute_return_node_ids_tag 8
+#define aethermesh_TraceRoute_return_rssi_tag    9
+#define aethermesh_TraceRoute_return_snr_quarter_db_tag 10
+#define aethermesh_TraceRoute_forward_truncated_tag 11
+#define aethermesh_TraceRoute_return_truncated_tag 12
 #define aethermesh_RouteDiscovery_type_tag       1
 #define aethermesh_RouteDiscovery_target_id_tag  2
 #define aethermesh_RouteDiscovery_metric_tag     3
@@ -314,6 +368,7 @@ extern "C" {
 #define aethermesh_MeshPacket_ota_control_tag    18
 #define aethermesh_MeshPacket_ota_data_tag       19
 #define aethermesh_MeshPacket_ota_status_tag     20
+#define aethermesh_MeshPacket_trace_route_tag    21
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
@@ -340,7 +395,8 @@ X(a, STATIC,   SINGULAR, UINT32,   retry_count,      16) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,delivery_status,payload.delivery_status),  17) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_control,payload.ota_control),  18) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_data,payload.ota_data),  19) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_status,payload.ota_status),  20)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_status,payload.ota_status),  20) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,trace_route,payload.trace_route),  21)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -354,6 +410,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_status,payload.ota_status),  20)
 #define aethermesh_MeshPacket_payload_ota_control_MSGTYPE aethermesh_OtaControl
 #define aethermesh_MeshPacket_payload_ota_data_MSGTYPE aethermesh_OtaData
 #define aethermesh_MeshPacket_payload_ota_status_MSGTYPE aethermesh_OtaStatus
+#define aethermesh_MeshPacket_payload_trace_route_MSGTYPE aethermesh_TraceRoute
 
 #define aethermesh_OtaControl_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
@@ -392,9 +449,26 @@ X(a, STATIC,   SINGULAR, UINT32,   uptime_seconds,    6) \
 X(a, STATIC,   SINGULAR, STRING,   firmware_version,   7) \
 X(a, STATIC,   SINGULAR, BOOL,     is_charging,       8) \
 X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9) \
-X(a, STATIC,   SINGULAR, UINT32,   position_precision,  10)
+X(a, STATIC,   SINGULAR, UINT32,   position_precision,  10) \
+X(a, STATIC,   SINGULAR, STRING,   node_name,        11)
 #define aethermesh_Telemetry_CALLBACK NULL
 #define aethermesh_Telemetry_DEFAULT NULL
+
+#define aethermesh_TraceRoute_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    type,              1) \
+X(a, STATIC,   SINGULAR, UINT32,   trace_id,          2) \
+X(a, STATIC,   SINGULAR, UINT32,   origin_id,         3) \
+X(a, STATIC,   SINGULAR, UINT32,   target_id,         4) \
+X(a, STATIC,   REPEATED, UINT32,   forward_node_ids,   5) \
+X(a, STATIC,   REPEATED, SINT32,   forward_rssi,      6) \
+X(a, STATIC,   REPEATED, SINT32,   forward_snr_quarter_db,   7) \
+X(a, STATIC,   REPEATED, UINT32,   return_node_ids,   8) \
+X(a, STATIC,   REPEATED, SINT32,   return_rssi,       9) \
+X(a, STATIC,   REPEATED, SINT32,   return_snr_quarter_db,  10) \
+X(a, STATIC,   SINGULAR, BOOL,     forward_truncated,  11) \
+X(a, STATIC,   SINGULAR, BOOL,     return_truncated,  12)
+#define aethermesh_TraceRoute_CALLBACK NULL
+#define aethermesh_TraceRoute_DEFAULT NULL
 
 #define aethermesh_RouteDiscovery_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    type,              1) \
@@ -459,6 +533,7 @@ extern const pb_msgdesc_t aethermesh_OtaData_msg;
 extern const pb_msgdesc_t aethermesh_OtaStatus_msg;
 extern const pb_msgdesc_t aethermesh_TextMessage_msg;
 extern const pb_msgdesc_t aethermesh_Telemetry_msg;
+extern const pb_msgdesc_t aethermesh_TraceRoute_msg;
 extern const pb_msgdesc_t aethermesh_RouteDiscovery_msg;
 extern const pb_msgdesc_t aethermesh_Ack_msg;
 extern const pb_msgdesc_t aethermesh_DeliveryStatus_msg;
@@ -473,6 +548,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_OtaStatus_fields &aethermesh_OtaStatus_msg
 #define aethermesh_TextMessage_fields &aethermesh_TextMessage_msg
 #define aethermesh_Telemetry_fields &aethermesh_Telemetry_msg
+#define aethermesh_TraceRoute_fields &aethermesh_TraceRoute_msg
 #define aethermesh_RouteDiscovery_fields &aethermesh_RouteDiscovery_msg
 #define aethermesh_Ack_fields &aethermesh_Ack_msg
 #define aethermesh_DeliveryStatus_fields &aethermesh_DeliveryStatus_msg
@@ -486,14 +562,15 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
-#define aethermesh_MeshPacket_size               286
+#define aethermesh_MeshPacket_size               365
 #define aethermesh_NodeConfig_size               136
 #define aethermesh_OtaControl_size               42
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                100
+#define aethermesh_Telemetry_size                118
 #define aethermesh_TextMessage_size              205
+#define aethermesh_TraceRoute_size               312
 
 #ifdef __cplusplus
 } /* extern "C" */

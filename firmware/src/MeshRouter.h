@@ -10,7 +10,7 @@
 #define MAX_SEEN_PACKETS_CACHE 50
 #define DEFAULT_HOP_LIMIT 4
 #define ROUTE_TIMEOUT_MS 600000 // 10 minutes
-#define MAX_PENDING_REBROADCASTS 3
+#define MAX_PENDING_REBROADCASTS 6
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
 // Field data: PONGs travel the strong link direction and always delivered on
@@ -21,6 +21,8 @@
 #define PONG_RESEND_INTERVAL_MS 2500
 #define ACK_RETRY_INTERVAL_MS 3000
 #define ACK_MAX_RETRIES 3
+#define ROUTE_DISCOVERY_COOLDOWN_MS 5000
+#define PROXY_ROUTE_MAX_AGE_MS 60000
 
 struct RouteEntry {
     uint32_t targetId;
@@ -62,6 +64,11 @@ struct PendingPongReply {
     bool active;
 };
 
+struct RouteDiscoveryState {
+    uint32_t targetId;
+    uint32_t lastRequestMs;
+};
+
 class MeshRouter {
 public:
     MeshRouter(RadioManager* radioMgr);
@@ -73,7 +80,7 @@ public:
     // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
     bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false, uint8_t hopLimit = DEFAULT_HOP_LIMIT);
     // lat/lon must already be privacy-blurred by the caller when positionPrecision > 0
-    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0);
+    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
     void processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr);
@@ -107,6 +114,7 @@ private:
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
     PendingPongReply pendingPongs[MAX_PENDING_PONGS];
+    RouteDiscoveryState routeDiscoveries[6];
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);
@@ -117,6 +125,7 @@ private:
     // Private Helpers
     void addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric);
     RouteEntry* getRoute(uint32_t targetId);
+    void invalidateRoute(uint32_t targetId);
     
     bool hasSeenPacketId(uint32_t senderId, uint32_t packetId);
     bool isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
@@ -127,6 +136,10 @@ private:
     
     void sendRouteRequest(uint32_t targetId);
     void sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t metric);
+
+    void appendTraceHop(aethermesh_TraceRoute& trace, bool returning, float rssi, float snr);
+    uint8_t traceMetric(const aethermesh_TraceRoute& trace, bool returning) const;
+    void sendTraceResponse(const aethermesh_TraceRoute& request);
     
     // Rebroadcast Queue helpers
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);

@@ -47,6 +47,10 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
         pendingPongs[i].sendCount = 0;
         pendingPongs[i].firstQueuedMs = 0;
     }
+    for (int i = 0; i < 6; i++) {
+        routeDiscoveries[i].targetId = 0;
+        routeDiscoveries[i].lastRequestMs = 0;
+    }
 }
 
 void MeshRouter::init(uint32_t localId) {
@@ -93,6 +97,7 @@ void MeshRouter::loop() {
                     aethermesh_DeliveryStatus_Reason_ACK_TIMEOUT,
                     pendingAcks[i].packet.retry_count
                 );
+                invalidateRoute(pendingAcks[i].packet.recipient_id);
                 continue;
             }
             // If we still have no route, ask again while retrying (the direct
@@ -130,8 +135,12 @@ void MeshRouter::addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric)
     RouteEntry* existing = getRoute(targetId);
     
     if (existing) {
-        // Update if new metric is better or equal
-        if (metric <= existing->metric || (now - existing->timestamp) > 30000) {
+        // Refresh the active next hop, accept a genuinely better path, or replace
+        // a route only when it is old enough to be suspect. This prevents a noisy
+        // late discovery reply from making a healthy route flap every 30 seconds.
+        if (meshmath::shouldReplaceRoute(existing->nextHopId, existing->metric,
+                                         now - existing->timestamp, nextHopId,
+                                         metric, ROUTE_TIMEOUT_MS)) {
             existing->nextHopId = nextHopId;
             existing->metric = metric;
             existing->timestamp = now;
@@ -200,6 +209,15 @@ RouteEntry* MeshRouter::getRoute(uint32_t targetId) {
         }
     }
     return nullptr;
+}
+
+void MeshRouter::invalidateRoute(uint32_t targetId) {
+    for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
+        if (routingTable[i].active && routingTable[i].targetId == targetId) {
+            routingTable[i].active = false;
+            Serial.printf("Invalidated failed route to 0x%08X.\n", targetId);
+        }
+    }
 }
 
 bool MeshRouter::hasSeenPacketId(uint32_t senderId, uint32_t packetId) {
@@ -309,6 +327,25 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         addRoute(packet.sender_id, immediateSender, hopCost);
     }
     
+    // Traceroute packets carry the route they actually traversed. Learn the
+    // reverse direction at every hop and append this receiver before relaying.
+    if (packet.which_payload == aethermesh_MeshPacket_trace_route_tag) {
+        aethermesh_TraceRoute& trace = packet.payload.trace_route;
+        bool returning = trace.type == aethermesh_TraceRoute_Type_RESPONSE;
+        appendTraceHop(trace, returning, rssi, snr);
+        addRoute(
+            returning ? trace.target_id : trace.origin_id,
+            immediateSender,
+            traceMetric(trace, returning)
+        );
+
+        if (!returning && trace.target_id == localNodeId) {
+            Serial.printf("Traceroute %u reached target; returning observed path.\n", trace.trace_id);
+            sendTraceResponse(trace);
+            return;
+        }
+    }
+
     // 4. Handle recipient logic
     if (packet.recipient_id == localNodeId) {
         // Packet addressed to US
@@ -361,6 +398,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 if (configCallback) {
                     configCallback(packet.sender_id, packet.payload.config);
                 }
+                break;
+            case aethermesh_MeshPacket_trace_route_tag:
+                Serial.printf("Traceroute %u response reached origin.\n", packet.payload.trace_route.trace_id);
                 break;
         }
         // (ACK already sent above, before processing)
@@ -433,14 +473,15 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 // are triggered by the same packet). Wait out the ACK airtime with
                 // jitter; if a duplicate arrives meanwhile, the relay is cancelled.
                 queueRebroadcast(packet, millis() + random(300, 700));
-            } else if (packet.which_payload == aethermesh_MeshPacket_text_tag &&
-                       (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
-                        strncmp(packet.payload.text.content, "PONG_", 5) == 0)) {
-                // Range-test ping/pong with no route: flood anyway (telemetry uses
-                // broadcast and often gets through when routed unicast would drop here).
+            } else if ((packet.which_payload == aethermesh_MeshPacket_text_tag &&
+                        (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
+                         strncmp(packet.payload.text.content, "PONG_", 5) == 0)) ||
+                       packet.which_payload == aethermesh_MeshPacket_trace_route_tag) {
+                // Diagnostics must still discover a path when the route table is
+                // cold. Duplicate suppression and jitter bound this fallback flood.
                 Serial.print("No route to 0x");
                 Serial.print(packet.recipient_id, HEX);
-                Serial.println("; flooding range-test PING/PONG.");
+                Serial.println("; flooding diagnostic packet.");
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
                 queueRebroadcast(packet, millis() + random(300, 700));
@@ -502,7 +543,7 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     return serializeAndSend(&packet, urgent);
 }
 
-bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, bool charging, float voltage, uint32_t positionPrecision) {
+bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging, float voltage, uint32_t positionPrecision) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
@@ -522,6 +563,11 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     packet.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
     strncpy(packet.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
             sizeof(packet.payload.telemetry.firmware_version) - 1);
+    if (nodeName != nullptr) {
+        strncpy(packet.payload.telemetry.node_name, nodeName,
+                sizeof(packet.payload.telemetry.node_name) - 1);
+        packet.payload.telemetry.node_name[sizeof(packet.payload.telemetry.node_name) - 1] = '\0';
+    }
 
 #if defined(HELTEC_V4)
     strcpy(packet.payload.telemetry.node_model, "Heltec V4");
@@ -551,7 +597,7 @@ bool MeshRouter::handleRouteRequest(uint32_t senderId, uint32_t prevHopId, const
     } else {
         // If we have a route to the target, we can send RREP on target's behalf (Gratuitous RREP)
         RouteEntry* route = getRoute(rreq.target_id);
-        if (route) {
+        if (route && meshmath::proxyRouteIsFresh(millis() - route->timestamp, PROXY_ROUTE_MAX_AGE_MS)) {
             Serial.print("We know a route to target. Sending proxy RREP back to 0x");
             Serial.println(senderId, HEX);
             sendRouteReply(senderId, rreq.target_id, route->metric);
@@ -569,6 +615,24 @@ void MeshRouter::handleRouteReply(uint32_t senderId, uint32_t prevHopId, const a
 }
 
 void MeshRouter::sendRouteRequest(uint32_t targetId) {
+    uint32_t now = millis();
+    int slot = -1;
+    int oldest = 0;
+    for (int i = 0; i < 6; i++) {
+        if (routeDiscoveries[i].targetId == targetId) {
+            if (now - routeDiscoveries[i].lastRequestMs < ROUTE_DISCOVERY_COOLDOWN_MS) {
+                return;
+            }
+            slot = i;
+            break;
+        }
+        if (routeDiscoveries[i].targetId == 0 && slot < 0) slot = i;
+        if (routeDiscoveries[i].lastRequestMs < routeDiscoveries[oldest].lastRequestMs) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    routeDiscoveries[slot].targetId = targetId;
+    routeDiscoveries[slot].lastRequestMs = now;
+
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = 0xFFFFFFFF; // Broadcast
@@ -602,6 +666,56 @@ void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t
     // A broadcast RREQ triggers the target AND every proxy that knows a route
     // to reply at the same instant — jitter the RREP so they don't collide.
     queueRebroadcast(packet, millis() + random(100, 400));
+}
+
+void MeshRouter::appendTraceHop(aethermesh_TraceRoute& trace, bool returning, float rssi, float snr) {
+    pb_size_t& nodeCount = returning ? trace.return_node_ids_count : trace.forward_node_ids_count;
+    pb_size_t& rssiCount = returning ? trace.return_rssi_count : trace.forward_rssi_count;
+    pb_size_t& snrCount = returning ? trace.return_snr_quarter_db_count : trace.forward_snr_quarter_db_count;
+    uint32_t* nodeIds = returning ? trace.return_node_ids : trace.forward_node_ids;
+    int32_t* rssiValues = returning ? trace.return_rssi : trace.forward_rssi;
+    int32_t* snrValues = returning ? trace.return_snr_quarter_db : trace.forward_snr_quarter_db;
+
+    if (nodeCount > 0 && nodeIds[nodeCount - 1] == localNodeId) {
+        return;
+    }
+    if (nodeCount >= 8 || rssiCount >= 8 || snrCount >= 8) {
+        if (returning) trace.return_truncated = true;
+        else trace.forward_truncated = true;
+        return;
+    }
+
+    nodeIds[nodeCount++] = localNodeId;
+    rssiValues[rssiCount++] = (int32_t)roundf(rssi);
+    snrValues[snrCount++] = (int32_t)roundf(snr * 4.0f);
+}
+
+uint8_t MeshRouter::traceMetric(const aethermesh_TraceRoute& trace, bool returning) const {
+    pb_size_t count = returning ? trace.return_snr_quarter_db_count : trace.forward_snr_quarter_db_count;
+    const int32_t* values = returning ? trace.return_snr_quarter_db : trace.forward_snr_quarter_db;
+    uint16_t metric = 0;
+    for (pb_size_t i = 0; i < count; ++i) {
+        metric += meshmath::hopCost(values[i] / 4.0f);
+    }
+    return metric > 255 ? 255 : (uint8_t)metric;
+}
+
+void MeshRouter::sendTraceResponse(const aethermesh_TraceRoute& request) {
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = request.origin_id;
+    packet.packet_id = ++packetSequenceCounter;
+    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.want_ack = false;
+    packet.prev_hop_id = localNodeId;
+    packet.which_payload = aethermesh_MeshPacket_trace_route_tag;
+    packet.payload.trace_route = request;
+    packet.payload.trace_route.type = aethermesh_TraceRoute_Type_RESPONSE;
+    packet.payload.trace_route.return_node_ids_count = 0;
+    packet.payload.trace_route.return_rssi_count = 0;
+    packet.payload.trace_route.return_snr_quarter_db_count = 0;
+    packet.payload.trace_route.return_truncated = false;
+    queueRebroadcast(packet, millis() + random(120, 320));
 }
 
 bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet, bool urgent) {

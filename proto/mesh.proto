@@ -29,6 +29,7 @@ message MeshPacket {
     OtaControl ota_control = 18;
     OtaData ota_data = 19;
     OtaStatus ota_status = 20;
+    TraceRoute trace_route = 21;
   }
 }
 
@@ -91,6 +92,29 @@ message Telemetry {
   uint32 position_precision = 10; // Privacy blur radius (meters) applied to lat/lon before
                                   // broadcast; 0 = precise. Receivers should show the node
                                   // as "somewhere within this radius" (uncertainty circle).
+  string node_name = 11;          // Configured network-visible name (max 16 characters).
+}
+
+// On-air route observation. Each receiver appends itself and the quality of
+// the link on which it received the packet. The target turns REQUEST into
+// RESPONSE, preserving the outbound path and collecting the return path.
+message TraceRoute {
+  enum Type {
+    REQUEST = 0;
+    RESPONSE = 1;
+  }
+  Type type = 1;
+  uint32 trace_id = 2;
+  uint32 origin_id = 3;
+  uint32 target_id = 4;
+  repeated uint32 forward_node_ids = 5;
+  repeated sint32 forward_rssi = 6;
+  repeated sint32 forward_snr_quarter_db = 7;
+  repeated uint32 return_node_ids = 8;
+  repeated sint32 return_rssi = 9;
+  repeated sint32 return_snr_quarter_db = 10;
+  bool forward_truncated = 11;
+  bool return_truncated = 12;
 }
 
 // Path discovery for unicast routing

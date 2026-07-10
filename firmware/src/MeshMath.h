@@ -28,6 +28,18 @@ inline uint32_t rebroadcastDelayMs(float snr) {
     return (uint32_t)(500.0f + (10.0f - s) * (1500.0f / 30.0f));
 }
 
+inline bool shouldReplaceRoute(uint32_t currentNextHop, uint8_t currentMetric,
+                               uint32_t currentAgeMs, uint32_t candidateNextHop,
+                               uint8_t candidateMetric, uint32_t routeTimeoutMs) {
+    return candidateNextHop == currentNextHop ||
+           candidateMetric < currentMetric ||
+           currentAgeMs > routeTimeoutMs / 2;
+}
+
+inline bool proxyRouteIsFresh(uint32_t routeAgeMs, uint32_t maxProxyAgeMs) {
+    return routeAgeMs <= maxProxyAgeMs;
+}
+
 // Position privacy blur: snap lat/lon to the center of a grid cell sized
 // 2*radiusM, so the true position stays within +/-radiusM per axis of what
 // gets broadcast. Deterministic on purpose: the same true position always
