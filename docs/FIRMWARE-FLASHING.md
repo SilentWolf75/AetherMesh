@@ -1,70 +1,131 @@
-# Flashing AetherMesh firmware
+# Flashing AetherMesh Firmware
 
-Build + stage all artifacts (into `ota-images\`, named by git hash):
+The GitHub Pages workflow builds the current web flasher bundle for Heltec V4,
+Heltec V3, RAK4631, LILYGO T-Echo, LILYGO T-Deck, and the Android APK.
+
+The local staging helper is older and currently stages the Heltec V4 app/USB
+images plus the RAK4631 DFU zip into `ota-images\`, named by the current git
+hash:
 
 ```powershell
 powershell -File tools\stage-firmware.ps1
 ```
 
-## Heltec V4
+## ESP32-S3 Boards
 
-### OTA (normal path — no cables)
-File: `aethermesh-heltec-<hash>-ota.bin`
-1. Copy the file to the phone.
-2. App → Settings → Firmware Update → Choose firmware .bin → Update via BLE OTA.
-3. Node verifies the image (MD5), reboots into it. A failed transfer leaves the
-   running firmware untouched. Takes ~1 min (fast profile) or ~3 min against
-   older firmware (auto-negotiated).
+Current ESP32-S3 firmware targets:
 
-### USB (bootstrap / recovery)
-File: `aethermesh-heltec-<hash>-usb.bin` (complete image: bootloader +
-partition table + otadata + app).
-1. Enter download mode: **hold PRG**, tap **RST**, release PRG (screen stays
-   blank). Auto-reset flashing is unreliable on these boards — always do this.
-2. Flash at offset 0x0:
+- `heltec_v4`
+- `heltec_v3`
+- `lilygo_t_deck`
+
+### App OTA
+
+Use the board-specific OTA `.bin`. The local staging helper currently creates
+the Heltec V4 OTA `.bin`; other ESP32-S3 boards can be built with PlatformIO and
+packaged the same way.
+
+1. Copy the `.bin` file to the phone.
+2. In the app, connect to the node.
+3. Open Settings -> Firmware Update.
+4. Choose the `.bin` file and start the BLE OTA update.
+
+The node writes to the inactive OTA partition, verifies the image, and reboots
+only after a successful transfer. A failed transfer leaves the current firmware
+in place.
+
+The first OTA-capable build still has to be installed over USB. A node that does
+not already contain the OTA receiver cannot receive an OTA update.
+
+### USB Bootstrap / Recovery
+
+Use the board-specific merged USB image. The GitHub Pages workflow creates
+merged USB images for the current ESP32-S3 web flasher targets. The local helper
+currently creates the Heltec V4 merged image.
+
+Example filenames:
+
+- `aethermesh-heltec-v4-<hash>-usb.bin`
+- `aethermesh-heltec-v3-<hash>-usb.bin`
+- `aethermesh-t-deck-<hash>-usb.bin`
+
+Flash the merged image at offset `0x0`:
+
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" `
   "$env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py" `
   --chip esp32s3 --port COM8 --before no_reset --after hard_reset `
-  write_flash -z 0x0 ota-images\aethermesh-heltec-<hash>-usb.bin
+  write_flash -z 0x0 ota-images\aethermesh-heltec-v4-<hash>-usb.bin
 ```
-(Adjust the COM port; `pio device list` shows it — Heltec is VID 303A.)
 
-## RAK4631
+Adjust the COM port and filename for the board. If auto-reset is unreliable,
+put the ESP32-S3 board into download mode before flashing.
 
-One file serves both paths: `aethermesh-rak4631-<hash>.zip` (Nordic DFU package).
+## RAK4631 / RAK3401 1W
 
-### OTA (normal path)
-1. Copy the .zip to the phone.
-2. Connect the app to the RAK → Settings → Firmware Update → Choose firmware
-   .zip → Update. The node reboots into its DFU bootloader and Android's DFU
-   service streams the package to it (watch the % on the Firmware Update
-   screen). If the transfer never starts, the bootloader falls back to the
-   current firmware.
+RAK boards use the Nordic/Adafruit DFU bootloader path.
 
-### USB (bootstrap / recovery)
+### App DFU
+
+Use the staged `.zip` package:
+
+```text
+aethermesh-rak4631-<hash>.zip
+```
+
+1. Copy the `.zip` file to the phone.
+2. Connect the app to the RAK node.
+3. Open Settings -> Firmware Update.
+4. Choose the `.zip` package and start the update.
+
+The node reboots into its DFU bootloader and the Android DFU service streams the
+package. If the transfer never starts, the bootloader falls back to the current
+firmware.
+
+### USB Bootstrap / Recovery
+
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -e rak4631 -t upload --upload-port COM11
 ```
-or flash a staged zip directly with adafruit-nrfutil:
+
+Or flash a staged zip directly with `adafruit-nrfutil`:
+
 ```powershell
 adafruit-nrfutil dfu serial --package ota-images\aethermesh-rak4631-<hash>.zip -p COM11 -b 115200
 ```
-(RAK is VID 239A. If the port won't respond, double-tap RST to force the
-bootloader.)
 
-## Rules of thumb
-- The updater app stays compatible with old firmware (transfer parameters are
-  negotiated), but a node must already run an OTA-capable build (>= item 45)
-  to receive OTA at all — older nodes need one USB flash first.
-- Never OTA a Heltec image to a RAK or vice versa.
-- Firmware version is printed on the boot splash (Heltec), in the serial boot
-  banner, in every 30 s "Radio health" serial line, and on each node card in
-  the app.
+RAK boards usually appear as VID `239A`. If the port will not respond,
+double-tap reset to force bootloader mode.
 
-## Web flasher (Heltec, no install)
-https://silentwolf75.github.io/AetherMesh/ — flashes a Heltec V4 over USB from
-desktop Chrome/Edge/Opera (Web Serial + esptool-js). Put the board in download
-mode (hold PRG, tap RST), pick the bundled "latest" build (or a local
--usb.bin), Connect & Flash. Rebuilt and redeployed automatically by pages.yml
-on firmware changes. RAK/nRF52 not yet supported there — use OTA or USB DFU.
+## LILYGO T-Echo
+
+The T-Echo firmware target is:
+
+```text
+lilygo_t_echo
+```
+
+The web flasher provides a UF2 build for the T-Echo. Use the board bootloader's
+mounted USB drive and drag the UF2 file onto it.
+
+## Web Flasher
+
+[https://silentwolf75.github.io/AetherMesh/](https://silentwolf75.github.io/AetherMesh/)
+
+The browser flasher is for first-time setup and recovery. It currently presents:
+
+- Heltec V4 / ESP32-S3
+- Heltec V3 / ESP32-S3
+- LILYGO T-Deck / ESP32-S3
+- RAK4631 / nRF52
+- LILYGO T-Echo / nRF52
+
+Desktop Chrome, Edge, or Opera is required for Web Serial flashing. For nRF52
+boards, the page provides UF2 downloads for drag-and-drop bootloader flashing.
+
+## Rules of Thumb
+
+- Do not flash firmware for one board family onto another board family.
+- Keep one known-good USB recovery path before testing OTA or DFU changes.
+- Firmware version is printed on boot, in serial logs, and in the app's node
+  details when telemetry is received.

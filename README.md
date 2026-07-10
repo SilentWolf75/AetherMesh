@@ -1,108 +1,171 @@
 # AetherMesh
 
-A LoRa-based mesh networking system with an Android companion app. Nodes form a
-peer-to-peer radio mesh over long-range LoRa, while an Android phone connects to a
-nearby node over Bluetooth LE to send/receive messages and view telemetry on a map.
+AetherMesh is a LoRa mesh networking project with custom node firmware, an
+Android companion app, and a browser-based firmware flasher. A phone connects to
+a nearby node over Bluetooth LE, then that node relays messages and telemetry
+across the long-range LoRa mesh.
 
+```text
+Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 ```
-   Phone  ◀──── BLE ────▶  Node  ◀──── LoRa ────▶  Node  ◀──── LoRa ────▶  Node
- (Android app)          (firmware)              (firmware)              (firmware)
-```
 
-## Features
+## Current Highlights
 
-- Peer-to-peer LoRa mesh (broadcast + unicast with route discovery, 4-hop default)
-- Text messaging with channels
-- GPS telemetry (location, battery, board model) shown on an offline map
-- BLE bridge between phone and node, with auto-reconnect
-- Node configuration over BLE (LoRa spreading factor, bandwidth, TX power, region)
-- Multi-hardware: Heltec LoRa V4, RAK WisBlock RAK4631, RAK3401 (1W)
+- Peer-to-peer LoRa mesh with broadcast, direct messages, route discovery, and
+  packet deduplication.
+- Android app with Chats, Nodes, Map, Settings, diagnostics, firmware updates,
+  channel controls, and background BLE service support.
+- Shared protobuf wire format across Android, BLE, and LoRa packets.
+- BLE configuration for radio settings, GPS/position behavior, node naming,
+  security keys, and device preferences.
+- Firmware update flows from the app: ESP32-S3 boards use chunked BLE OTA
+  `.bin` updates, while RAK boards can enter Nordic DFU for `.zip` updates.
+- Browser flasher for first-time setup and recovery, published through GitHub
+  Pages and bundled by GitHub Actions.
+- Color T-Deck interface with hardware keyboard input and multiple full-screen
+  status pages.
 
-## Repository layout
+## Supported Hardware
+
+| Board | Platform | Notes |
+|-------|----------|-------|
+| Heltec WiFi LoRa 32 V4 | ESP32-S3 | Default firmware target; OLED UI, GPS support, BLE OTA, USB/web flashing |
+| Heltec WiFi LoRa 32 V3 | ESP32-S3 | Firmware target with OLED UI and USB/web flashing |
+| LILYGO T-Deck | ESP32-S3 | Color screen UI, keyboard input, SX1262 LoRa, USB/web flashing |
+| RAK WisBlock RAK4631 | nRF52840 | SX1262 LoRa, WisBlock GPS support, Nordic DFU update path |
+| RAK3401 1W | nRF52840 | High-power RAK variant using the RAK4631 target base |
+| LILYGO T-Echo | nRF52840 | T-Echo firmware target and web flasher UF2 flow |
+
+## Repository Layout
 
 | Path | What it is |
 |------|------------|
-| `proto/` | Protocol Buffer definitions (`mesh.proto`) — the wire format shared by firmware and app |
-| `firmware/` | PlatformIO C++ firmware for the mesh nodes (ESP32 / nRF52) |
-| `app/` | Android companion app (Kotlin + Jetpack Compose) |
+| `app/` | Android companion app built with Kotlin and Jetpack Compose |
+| `firmware/` | PlatformIO C++ firmware for ESP32-S3 and nRF52840 nodes |
+| `proto/` | Protocol Buffer definitions shared by app and firmware |
+| `web-flasher/` | GitHub Pages USB/UF2 firmware flasher |
+| `web/` | ESP Web Tools style installer assets |
+| `docs/` | Flashing notes, OTA notes, and development history |
+| `tools/` | Helper scripts for staging firmware artifacts |
 
-### Firmware (`firmware/src/`)
+## Android App
 
-| File | Role |
-|------|------|
-| `main.cpp` | Entry point: node ID, settings (NVS), GPS, broadcast loop, OLED (Heltec) |
-| `RadioManager.*` | LoRa abstraction over RadioLib / SX1262 |
-| `MeshRouter.*` | Mesh routing: routing table, dedup cache, route discovery (RREQ/RREP) |
-| `BLEManager.*` | BLE peripheral exposing the AetherMesh GATT service |
-| `mesh.pb.{c,h}` | nanopb-generated protobuf code (see "Regenerating proto" below) |
+The app is the day-to-day control surface for the mesh:
 
-### Android app (`app/app/src/main/java/com/example/aethermesh/`)
+- Connects to nearby AetherMesh nodes over BLE and keeps the link alive in a
+  foreground service.
+- Sends and receives mesh chat messages.
+- Shows known nodes, routes, telemetry, battery state, firmware versions, and
+  GPS/map positions.
+- Applies radio, GPS, channel, security, and device settings over BLE.
+- Updates firmware wirelessly once a node already has an OTA-capable build.
 
-| File | Role |
-|------|------|
-| `ble/BleConnectionManager.kt` | BLE central: scan, connect, auto-reconnect, packet TX/RX |
-| `ble/AetherMeshService.kt` | Foreground service keeping the BLE link alive |
-| `data/AetherMeshRepository.kt` | Data layer: parses packets, exposes StateFlows |
-| `data/DatabaseHelper.kt` | SQLite schema for nodes and messages |
-| `ui/main/MainScreen.kt` | Compose UI: Chats, Nodes, Map, Settings, Connection tabs |
-| `ui/main/MainScreenViewModel.kt` | ViewModel bridging repository ↔ UI |
+Build with Android Studio or the Gradle wrapper:
 
-## BLE GATT contract
+```bash
+cd app
+./gradlew :app:assembleDebug
+./gradlew :app:installDebug
+```
+
+Create `app/local.properties` with your Android SDK path if Android Studio has
+not already created it:
+
+```properties
+sdk.dir=/path/to/Android/Sdk
+```
+
+## Firmware
+
+Firmware is built with PlatformIO.
+
+```bash
+cd firmware
+pio run -e heltec_v4
+pio run -e heltec_v4 -t upload
+pio device monitor
+```
+
+Current PlatformIO environments:
+
+```text
+heltec_v4
+heltec_v3
+rak4631
+rak3401_1w
+lilygo_t_echo
+lilygo_t_deck
+```
+
+The firmware includes LoRa transport, routing, BLE GATT services, telemetry,
+GPS handling, board-specific display support, battery reporting, settings
+storage, and firmware update control.
+
+## Web Flasher
+
+The web flasher is intended for first-time setup and recovery:
+
+[https://silentwolf75.github.io/AetherMesh/](https://silentwolf75.github.io/AetherMesh/)
+
+It supports the current target list in the UI:
+
+- Heltec V4 and Heltec V3 as merged ESP32-S3 USB images.
+- LILYGO T-Deck as a merged ESP32-S3 USB image.
+- RAK4631 and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
+
+GitHub Actions builds the firmware and Android APK, writes a flasher manifest,
+and deploys `web-flasher/` to GitHub Pages.
+
+For local testing:
+
+```bash
+cd web-flasher
+python -m http.server 8000
+```
+
+Then open `http://localhost:8000` in desktop Chrome, Edge, or another browser
+with Web Serial support.
+
+## BLE GATT Contract
 
 | Item | UUID |
 |------|------|
 | Service | `a75e0001-8b01-4475-bf7d-9477b83e7953` |
-| TX (phone → node) | `a75e0002-8b01-4475-bf7d-9477b83e7953` |
-| RX (node → phone, notify) | `a75e0003-8b01-4475-bf7d-9477b83e7953` |
+| TX, phone to node | `a75e0002-8b01-4475-bf7d-9477b83e7953` |
+| RX, node to phone | `a75e0003-8b01-4475-bf7d-9477b83e7953` |
 
-Nodes advertise as `AetherMesh-XXXX`, where `XXXX` is the lower 16 bits of the node ID in hex.
-Packets on both BLE and LoRa are protobuf-encoded `MeshPacket`s.
+Nodes advertise as `AetherMesh-XXXX`, where `XXXX` is the lower 16 bits of the
+node ID in hex. Packets on BLE and LoRa are protobuf-encoded `MeshPacket`
+messages.
 
-## Building
+## Regenerating Protobuf Code
 
-### Firmware
+The shared wire format lives in `proto/mesh.proto`.
 
-Requires [PlatformIO](https://platformio.org/).
-
-```bash
-cd firmware
-pio run -e heltec_v4            # build (default board)
-pio run -e heltec_v4 -t upload  # flash
-pio device monitor              # serial monitor @ 115200
-```
-
-Other environments: `rak4631`, `rak3401_1w`.
-
-### Android app
-
-Requires Android Studio (or the Gradle wrapper) and a device on Android 7.0+ (min SDK 24).
+- Android regenerates Kotlin classes automatically during Gradle builds.
+- Firmware uses committed nanopb C files. After changing `mesh.proto`, run:
 
 ```bash
-cd app
-./gradlew :app:assembleDebug    # build APK
-./gradlew :app:installDebug     # install on connected device
+cd proto
+python generate_proto.py
 ```
 
-Create `app/local.properties` with your SDK path (`sdk.dir=...`) — this file is git-ignored.
+That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
 
-## Regenerating proto
+## Flashing Notes
 
-The wire format lives in `proto/mesh.proto`.
+- The first OTA-capable build must be installed over USB. A node that does not
+  already include the OTA receiver cannot receive an OTA update.
+- After that first bootstrap, Heltec/ESP32-S3 boards can update from the app
+  using a `.bin` firmware file.
+- RAK boards use their bootloader DFU path and a `.zip` package from the
+  Android app.
+- RAK4631 and T-Echo can be installed from the web flasher with UF2
+  drag-and-drop builds.
+- Do not flash firmware for one board family onto another board family.
 
-- **Android** regenerates Kotlin classes automatically via the protobuf Gradle plugin on each build.
-- **Firmware** does **not** auto-generate. After editing `mesh.proto`, regenerate the nanopb C files:
+## Status
 
-  ```bash
-  cd proto
-  python generate_proto.py        # writes firmware/src/mesh.pb.{c,h}
-  ```
-
-  Because of this manual step, `firmware/src/mesh.pb.{c,h}` are committed to the repo.
-
-## Hardware
-
-| Board | Notes |
-|-------|-------|
-| Heltec WiFi LoRa 32 V4 | Default target; has OLED display support |
-| RAK WisBlock RAK4631 | nRF52840 + SX1262 |
-| RAK3401 (1W) | High-power variant (TX power up to ~30 dBm) |
+AetherMesh is actively evolving hardware and app software. The Heltec, RAK,
+T-Echo, and T-Deck targets are all present in the repository, with the T-Deck
+now using a color screen UI and keyboard-driven interaction.

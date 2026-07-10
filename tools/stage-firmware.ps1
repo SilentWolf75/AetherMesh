@@ -1,4 +1,5 @@
-# Builds both firmware targets and stages versioned OTA + USB artifacts into
+# Builds the original Heltec V4 + RAK4631 firmware targets and stages versioned
+# OTA + USB/DFU artifacts into
 # ota-images\. Run from anywhere:  powershell -File tools\stage-firmware.ps1
 #
 # Produces (hash = current git short hash):

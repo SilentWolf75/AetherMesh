@@ -3,185 +3,325 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AetherMesh Web Installer</title>
+    <title>AetherMesh Firmware</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-dark: #0B0F19;
-            --surface-dark: #151B2C;
-            --border-color: #242F47;
-            --accent-purple: #8B5CF6;
-            --accent-cyan: #06B6D4;
-            --accent-mint: #10B981;
-            --text-light: #F3F4F6;
-            --text-muted: #9CA3AF;
+            --bg: #07111d;
+            --panel: #0d1b2d;
+            --panel-2: #10243a;
+            --line: #1f3a56;
+            --cyan: #18d3ff;
+            --mint: #49f0a4;
+            --amber: #ffd166;
+            --text: #f4f8fb;
+            --muted: #a5b6c9;
+        }
+
+        * {
+            box-sizing: border-box;
         }
 
         body {
             margin: 0;
-            padding: 0;
-            background-color: var(--bg-dark);
-            color: var(--text-light);
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             min-height: 100vh;
-            overflow-x: hidden;
+            color: var(--text);
+            font-family: "Plus Jakarta Sans", Arial, sans-serif;
+            background:
+                linear-gradient(rgba(31, 58, 86, 0.25) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(31, 58, 86, 0.25) 1px, transparent 1px),
+                linear-gradient(145deg, #07111d 0%, #0d1b2d 52%, #162033 100%);
+            background-size: 32px 32px, 32px 32px, auto;
         }
 
-        /* Glassmorphic background glow circles */
-        .bg-glow-1 {
-            position: absolute;
-            width: 400px;
-            height: 400px;
-            background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0) 70%);
-            top: 10%;
-            left: 15%;
-            z-index: -1;
+        main {
+            width: min(1120px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 48px 0;
         }
 
-        .bg-glow-2 {
-            position: absolute;
-            width: 400px;
-            height: 400px;
-            background: radial-gradient(circle, rgba(6, 182, 212, 0.15) 0%, rgba(6, 182, 212, 0) 70%);
-            bottom: 10%;
-            right: 15%;
-            z-index: -1;
+        .shell {
+            border: 1px solid rgba(73, 240, 164, 0.2);
+            background: rgba(13, 27, 45, 0.92);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
         }
 
-        .container {
-            width: 90%;
-            max-width: 540px;
-            background-color: var(--surface-dark);
-            border: 1px solid var(--border-color);
-            border-radius: 24px;
-            padding: 40px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-            text-align: center;
-            backdrop-filter: blur(12px);
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .mark {
+            width: 44px;
+            height: 44px;
+            border: 2px solid var(--cyan);
+            display: grid;
+            place-items: center;
+            color: var(--mint);
+            font-family: "Outfit", Arial, sans-serif;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+
+        .brand strong {
+            display: block;
+            font-family: "Outfit", Arial, sans-serif;
+            font-size: 22px;
+            letter-spacing: 0;
+        }
+
+        .brand span {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .status {
+            color: var(--mint);
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+            gap: 28px;
+            padding: 32px 24px 24px;
         }
 
         h1 {
-            font-family: 'Outfit', sans-serif;
-            font-size: 2.5rem;
-            font-weight: 800;
-            margin: 0 0 10px 0;
-            background: linear-gradient(135deg, var(--text-light) 30%, var(--accent-purple) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            max-width: 700px;
+            margin: 0;
+            font-family: "Outfit", Arial, sans-serif;
+            font-size: clamp(42px, 7vw, 76px);
+            line-height: 0.95;
+            letter-spacing: 0;
         }
 
-        .subtitle {
-            color: var(--text-muted);
-            font-size: 1rem;
-            margin-bottom: 30px;
-            line-height: 1.5;
+        .lead {
+            max-width: 700px;
+            margin: 18px 0 0;
+            color: var(--muted);
+            font-size: 18px;
+            line-height: 1.7;
         }
 
-        .installer-box {
-            background-color: rgba(11, 15, 25, 0.6);
-            border: 1px dashed var(--border-color);
-            border-radius: 16px;
-            padding: 30px;
-            margin-bottom: 30px;
+        .actions {
             display: flex;
-            flex-direction: column;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 28px;
+        }
+
+        .button {
+            display: inline-flex;
             align-items: center;
             justify-content: center;
-        }
-
-        .installer-box p {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-            margin-top: 15px;
-            margin-bottom: 0;
-        }
-
-        /* Customize esp-web-tools button style */
-        esp-web-install-button {
-            --esp-tools-button-color: var(--accent-purple);
-            --esp-tools-button-text-color: var(--text-light);
-            --esp-tools-button-border-radius: 12px;
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-weight: 600;
-            font-size: 1rem;
-        }
-
-        .features-list {
-            text-align: left;
-            margin-top: 20px;
-            border-top: 1px solid var(--border-color);
-            padding-top: 25px;
-        }
-
-        .feature-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 12px;
-            font-size: 0.9rem;
-            color: var(--text-light);
-        }
-
-        .feature-icon {
-            color: var(--accent-mint);
-            margin-right: 10px;
-            font-weight: bold;
-        }
-
-        .footer {
-            margin-top: 30px;
-            font-size: 0.8rem;
-            color: var(--text-muted);
-        }
-
-        .footer a {
-            color: var(--accent-cyan);
+            min-height: 46px;
+            padding: 0 18px;
+            border: 1px solid var(--line);
+            color: var(--text);
             text-decoration: none;
+            font-weight: 800;
+            background: var(--panel-2);
         }
 
-        .footer a:hover {
-            text-decoration: underline;
+        .button.primary {
+            border-color: rgba(73, 240, 164, 0.65);
+            color: #03120c;
+            background: var(--mint);
+        }
+
+        .device {
+            min-height: 270px;
+            border: 1px solid var(--line);
+            background: #07111d;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .device::before {
+            content: "";
+            position: absolute;
+            inset: 28px 46px;
+            border: 2px solid #26384d;
+            background: #111a25;
+        }
+
+        .device::after {
+            content: "";
+            position: absolute;
+            left: 72px;
+            right: 72px;
+            bottom: 44px;
+            height: 58px;
+            border-top: 2px solid #39495d;
+            border-bottom: 2px solid #39495d;
+            background:
+                repeating-linear-gradient(90deg, #0f1824 0 18px, #223044 18px 20px);
+        }
+
+        .screen {
+            position: absolute;
+            left: 76px;
+            right: 76px;
+            top: 54px;
+            height: 120px;
+            border: 2px solid var(--cyan);
+            background: linear-gradient(180deg, #10243a, #081522);
+            padding: 16px;
+        }
+
+        .screen span {
+            display: block;
+            height: 10px;
+            margin-bottom: 12px;
+            background: var(--mint);
+        }
+
+        .screen span:nth-child(2) {
+            width: 68%;
+            background: var(--cyan);
+        }
+
+        .screen span:nth-child(3) {
+            width: 48%;
+            background: var(--amber);
+        }
+
+        .supported {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 12px;
+            padding: 0 24px 28px;
+        }
+
+        .board {
+            border: 1px solid var(--line);
+            background: rgba(16, 36, 58, 0.82);
+            padding: 16px;
+            min-height: 106px;
+        }
+
+        .board span {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .board strong {
+            display: block;
+            font-size: 16px;
+            line-height: 1.3;
+        }
+
+        .note {
+            padding: 18px 24px 24px;
+            border-top: 1px solid var(--line);
+            color: var(--muted);
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        @media (max-width: 900px) {
+            .hero {
+                grid-template-columns: 1fr;
+            }
+
+            .supported {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 560px) {
+            main {
+                width: min(100% - 20px, 1120px);
+                padding: 16px 0;
+            }
+
+            .topbar {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .hero {
+                padding: 24px 16px 18px;
+            }
+
+            .supported {
+                grid-template-columns: 1fr;
+                padding: 0 16px 20px;
+            }
+
+            .device {
+                min-height: 230px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="bg-glow-1"></div>
-    <div class="bg-glow-2"></div>
-
-    <div class="container">
-        <h1>AetherMesh</h1>
-        <p class="subtitle">Flash AetherMesh Firmware directly to your LoRa node from your web browser. Make sure your device is connected via USB.</p>
-        
-        <div class="installer-box">
-            <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
-            <p>Supported boards: Heltec V4 (ESP32-S3)</p>
-        </div>
-
-        <div class="features-list">
-            <div class="feature-item">
-                <span class="feature-icon">✓</span>
-                <span>Plug-and-play browser serial flashing</span>
+    <main>
+        <section class="shell">
+            <div class="topbar">
+                <div class="brand">
+                    <div class="mark">AM</div>
+                    <div>
+                        <strong>AetherMesh</strong>
+                        <span>LoRa mesh firmware, Android app, and web flasher</span>
+                    </div>
+                </div>
+                <div class="status">Current targets updated</div>
             </div>
-            <div class="feature-item">
-                <span class="feature-icon">✓</span>
-                <span>US915 / EU868 region auto-configurations</span>
-            </div>
-            <div class="feature-item">
-                <span class="feature-icon">✓</span>
-                <span>Low-power Repeater and Client configurations support</span>
-            </div>
-        </div>
 
-        <div class="footer">
-            AetherMesh open-source protocol. View <a href="https://github.com/meshcore-dev/MeshCore" target="_blank">MeshCore</a> inspired project.
-        </div>
-    </div>
+            <div class="hero">
+                <div>
+                    <h1>Flash and manage AetherMesh nodes.</h1>
+                    <p class="lead">Use the full browser flasher for ESP32-S3 USB images,
+                        nRF52 UF2 builds, and the Android APK. The Android app handles
+                        day-to-day messaging, maps, settings, and wireless firmware updates.</p>
+                    <div class="actions">
+                        <a class="button primary" href="https://silentwolf75.github.io/AetherMesh/">Open Web Flasher</a>
+                        <a class="button" href="https://github.com/SilentWolf75/AetherMesh">View GitHub Repo</a>
+                    </div>
+                </div>
+                <div class="device" aria-hidden="true">
+                    <div class="screen">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            </div>
 
-    <!-- Load ESP Web Tools installer script -->
-    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+            <div class="supported">
+                <div class="board"><span>ESP32-S3</span><strong>Heltec WiFi LoRa 32 V4</strong></div>
+                <div class="board"><span>ESP32-S3</span><strong>Heltec WiFi LoRa 32 V3</strong></div>
+                <div class="board"><span>ESP32-S3</span><strong>LILYGO T-Deck</strong></div>
+                <div class="board"><span>nRF52840</span><strong>RAK WisBlock RAK4631</strong></div>
+                <div class="board"><span>nRF52840</span><strong>LILYGO T-Echo</strong></div>
+            </div>
+
+            <div class="note">
+                The older ESP Web Tools manifest in this folder is kept for reference, but the
+                maintained install path is the full AetherMesh Web Flasher deployed from
+                `web-flasher/` by GitHub Actions.
+            </div>
+        </section>
+    </main>
 </body>
 </html>

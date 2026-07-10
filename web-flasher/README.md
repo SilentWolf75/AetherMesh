@@ -1,34 +1,46 @@
 # AetherMesh Web Flasher
 
-A static page that flashes a **Heltec V4** node over USB from the browser using
-the Web Serial API + [esptool-js](https://github.com/espressif/esptool-js) — no
-install needed. For the first-time USB bootstrap and recovery; day-to-day
-updates go over Bluetooth from the app.
+A static page for first-time setup and recovery flashing from the browser.
+ESP32-S3 targets use the Web Serial API with
+[esptool-js](https://github.com/espressif/esptool-js). nRF52 targets use UF2
+drag-and-drop firmware downloads. Day-to-day updates go over Bluetooth from the
+Android app once a node already has OTA-capable firmware.
 
 ## How it's served
-`pages.yml` builds the Heltec firmware, merges the complete USB image
-(bootloader + partitions + otadata + app) with `esptool merge_bin`, drops it
-into `firmware/` with a `manifest.json`, and deploys this directory to GitHub
-Pages. The firmware binaries are built fresh each deploy and are **not**
-committed (see `firmware/.gitignore`).
+
+`pages.yml` builds Heltec V4, Heltec V3, RAK4631, LILYGO T-Echo, LILYGO T-Deck,
+and the Android APK. It merges complete ESP32-S3 USB images, converts nRF52
+builds to UF2 where needed, drops everything into `firmware/` with a
+`manifest.json`, and deploys this directory to GitHub Pages. The firmware
+binaries are built fresh each deploy and are not committed.
 
 ## One-time repo setup
-GitHub → **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-The workflow runs on pushes that touch `web-flasher/`, `firmware/`, or `proto/`.
+
+GitHub -> **Settings -> Pages -> Build and deployment -> Source: GitHub Actions**.
+The workflow runs on pushes that touch `web-flasher/`, `firmware/`, `proto/`,
+`app/`, or the Pages workflow.
 
 ## Browser support
-Desktop **Chrome / Edge / Opera** only (Web Serial isn't in Firefox/Safari and
-mobile support is thin).
+
+Desktop **Chrome / Edge / Opera** only. Web Serial is not available in
+Firefox/Safari, and mobile browser support is limited.
 
 ## Local testing
-Serve the folder over http (Web Serial needs a secure context; `localhost`
-counts) and provide a `-usb.bin` via the file picker:
-```
-cd web-flasher && python -m http.server 8000
-# open http://localhost:8000
+
+Serve the folder over http. Web Serial needs a secure context, and `localhost`
+counts:
+
+```bash
+cd web-flasher
+python -m http.server 8000
 ```
 
-## Roadmap
-- RAK4631 (nRF52): add a `.uf2` build output + drag-drop flow, or in-browser
-  serial DFU.
-- Pull versioned builds from GitHub Releases instead of only "latest".
+Then open `http://localhost:8000`.
+
+## Supported targets
+
+- Heltec V4 / ESP32-S3
+- Heltec V3 / ESP32-S3
+- LILYGO T-Deck / ESP32-S3
+- RAK4631 / nRF52
+- LILYGO T-Echo / nRF52

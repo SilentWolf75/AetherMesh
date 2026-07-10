@@ -50,6 +50,9 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ 21, /* clock=*/ 18
 #include <U8g2lib.h>
 #include <SPI.h>
 
+static uint16_t tdeckFrame[320UL * 240UL];
+static uint8_t tdeckTxLine[320 * 2];
+
 // Direct, lightweight ST7789 driver over shared Hardware SPI to enable physical screen output on LILYGO T-Deck
 inline void st7789_write_cmd(uint8_t cmd) {
     digitalWrite(11, LOW); // DC LOW
@@ -96,18 +99,97 @@ inline void st7789_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
 }
 
 inline void st7789_clear(uint16_t color) {
-    st7789_set_window(0, 0, 319, 239);
-    digitalWrite(11, HIGH); // DC HIGH
-    digitalWrite(12, LOW);  // CS LOW
-    SPI.beginTransaction(SPISettings(20000000, MSBFIRST, SPI_MODE0));
-    uint8_t high = color >> 8;
-    uint8_t low = color & 0xFF;
     for (uint32_t i = 0; i < 320UL * 240UL; i++) {
-        SPI.transfer(high);
-        SPI.transfer(low);
+        tdeckFrame[i] = color;
+    }
+}
+
+inline void st7789_fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    if (w <= 0 || h <= 0 || x >= 320 || y >= 240 || x + w <= 0 || y + h <= 0) {
+        return;
+    }
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 320) w = 320 - x;
+    if (y + h > 240) h = 240 - y;
+    if (w <= 0 || h <= 0) return;
+
+    for (int16_t row = 0; row < h; row++) {
+        uint16_t* dst = &tdeckFrame[(uint32_t)(y + row) * 320UL + x];
+        for (int16_t col = 0; col < w; col++) {
+            dst[col] = color;
+        }
+    }
+}
+
+inline void st7789_push_frame() {
+    st7789_set_window(0, 0, 319, 239);
+    digitalWrite(11, HIGH);
+    digitalWrite(12, LOW);
+    SPI.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
+    for (uint16_t y = 0; y < 240; y++) {
+        const uint16_t* src = &tdeckFrame[(uint32_t)y * 320UL];
+        for (uint16_t x = 0; x < 320; x++) {
+            uint16_t color = src[x];
+            tdeckTxLine[x * 2] = (uint8_t)(color >> 8);
+            tdeckTxLine[x * 2 + 1] = (uint8_t)(color & 0xFF);
+        }
+        SPI.transferBytes(tdeckTxLine, nullptr, sizeof(tdeckTxLine));
     }
     SPI.endTransaction();
-    digitalWrite(12, HIGH); // CS HIGH
+    digitalWrite(12, HIGH);
+}
+
+inline void st7789_draw_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    st7789_fill_rect(x, y, w, 1, color);
+    st7789_fill_rect(x, y + h - 1, w, 1, color);
+    st7789_fill_rect(x, y, 1, h, color);
+    st7789_fill_rect(x + w - 1, y, 1, h, color);
+}
+
+inline void st7789_draw_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    int16_t dx = abs(x1 - x0);
+    int16_t sx = x0 < x1 ? 1 : -1;
+    int16_t dy = -abs(y1 - y0);
+    int16_t sy = y0 < y1 ? 1 : -1;
+    int16_t err = dx + dy;
+    while (true) {
+        st7789_fill_rect(x0, y0, 2, 2, color);
+        if (x0 == x1 && y0 == y1) break;
+        int16_t e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+inline void st7789_fill_circle(int16_t cx, int16_t cy, int16_t r, uint16_t color) {
+    for (int16_t y = -r; y <= r; y++) {
+        int16_t x = 0;
+        while (x * x + y * y <= r * r) x++;
+        x--;
+        st7789_fill_rect(cx - x, cy + y, x * 2 + 1, 1, color);
+    }
+}
+
+inline void st7789_draw_circle(int16_t cx, int16_t cy, int16_t r, uint16_t color) {
+    int16_t x = -r;
+    int16_t y = 0;
+    int16_t err = 2 - 2 * r;
+    do {
+        st7789_fill_rect(cx - x, cy + y, 1, 1, color);
+        st7789_fill_rect(cx - y, cy - x, 1, 1, color);
+        st7789_fill_rect(cx + x, cy - y, 1, 1, color);
+        st7789_fill_rect(cx + y, cy + x, 1, 1, color);
+        int16_t e2 = err;
+        if (e2 <= y) {
+            y++;
+            err += y * 2 + 1;
+        }
+        if (e2 > x || err > y) {
+            x++;
+            err += x * 2 + 1;
+        }
+    } while (x < 0);
 }
 
 inline void init_st7789() {
@@ -145,6 +227,7 @@ inline void init_st7789() {
     delay(100);
     
     st7789_clear(0x0000); // Clear screen to black
+    st7789_push_frame();
 }
 
 class MyU8G2 : public U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI {
@@ -156,6 +239,7 @@ public:
 extern MyU8G2 u8g2;
 
 inline void st7789_refresh() {
+    st7789_clear(0x0841);
     st7789_set_window(32, 56, 287, 183);
     
     digitalWrite(11, HIGH); // DC HIGH
@@ -448,6 +532,27 @@ struct RecentMsg { uint32_t sender; char text[40]; uint32_t atMs; };
 RecentMsg recentMsgs[4] = {};
 uint8_t recentMsgHead = 0;
 uint8_t recentMsgCount = 0;
+
+#if defined(LILYGO_T_DECK)
+static const uint8_t TDECK_KEYBOARD_ADDR = 0x55;
+static const uint8_t TDECK_KEYBOARD_SDA = 18;
+static const uint8_t TDECK_KEYBOARD_SCL = 8;
+static const uint8_t TDECK_KEYBOARD_INT = 46;
+static const uint8_t TDECK_KB_BRIGHTNESS_CMD = 0x01;
+static const uint8_t TDECK_KB_MODE_KEY_CMD = 0x04;
+static const uint8_t TDECK_COMPOSE_MAX = 120;
+static bool tdeckKeyboardPresent = false;
+static bool tdeckComposeActive = false;
+static char tdeckComposeText[TDECK_COMPOSE_MAX + 1] = "";
+static uint8_t tdeckComposeLen = 0;
+static char tdeckKeyboardStatus[32] = "KB CHECK";
+static char tdeckKeyboardNotice[36] = "TYPE TO CHAT";
+static uint32_t tdeckKeyboardNoticeUntil = 0;
+static bool tdeckDisplayDirty = true;
+static bool tdeckComposeFrameDrawn = false;
+static uint8_t tdeckLastRenderMode = 0xFF;
+static uint32_t tdeckLastRenderSig = 0;
+#endif
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
 
@@ -825,9 +930,16 @@ uint8_t readBatteryLevel() {
 }
 
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+#if defined(LILYGO_T_DECK)
+static void drawTDeckBootSplash(uint8_t wavePhase);
+#endif
 // Boot splash: mesh glyph + wordmark + firmware version. wavePhase pulses the
 // radio arcs while setup runs.
 void drawBootSplash(uint8_t wavePhase) {
+#if defined(LILYGO_T_DECK)
+    drawTDeckBootSplash(wavePhase);
+    return;
+#endif
     u8g2.clearBuffer();
 
     // Mesh glyph: three linked nodes, radio waves rippling from the top one
@@ -883,6 +995,632 @@ static void formatAge(uint32_t ageMs, char* out, size_t n) {
     else if (s < 3600) snprintf(out, n, "%lum", (unsigned long)(s / 60));
     else snprintf(out, n, "%luh", (unsigned long)(s / 3600));
 }
+
+#if defined(LILYGO_T_DECK)
+static const uint16_t TDECK_BG = 0x0841;
+static const uint16_t TDECK_PANEL = 0x10C4;
+static const uint16_t TDECK_PANEL_2 = 0x1927;
+static const uint16_t TDECK_LINE = 0x31A9;
+static const uint16_t TDECK_TEXT = 0xE75C;
+static const uint16_t TDECK_MUTED = 0x8C71;
+static const uint16_t TDECK_GRID = 0x1083;
+static const uint16_t TDECK_SHADOW = 0x0020;
+static const uint16_t TDECK_CYAN = 0x05FF;
+static const uint16_t TDECK_GREEN = 0x07E0;
+static const uint16_t TDECK_AMBER = 0xFEA0;
+static const uint16_t TDECK_RED = 0xF986;
+static const uint16_t TDECK_BLUE = 0x4B5F;
+static const uint16_t TDECK_MAGENTA = 0xD2BF;
+
+static void tdeckDrawUpperArc(int16_t cx, int16_t cy, int16_t r, uint16_t color);
+
+static uint16_t tdeckBatteryColor(uint8_t pct) {
+    if (pct <= 20) return TDECK_RED;
+    if (pct <= 50) return TDECK_AMBER;
+    return TDECK_GREEN;
+}
+
+static void tdeckDrawText(int16_t x, int16_t y, const uint8_t* font, const char* text, uint16_t color, uint8_t scale = 1) {
+    if (!text || text[0] == '\0') return;
+    u8g2.clearBuffer();
+    u8g2.setFont(font);
+    int16_t ascent = u8g2.getAscent();
+    int16_t descent = u8g2.getDescent();
+    if (descent > 0) descent = 0;
+    uint8_t height = (uint8_t)(ascent - descent + 2);
+    if (height > 64) height = 64;
+    uint16_t width = u8g2.getStrWidth(text) + 2;
+    if (width > 128) width = 128;
+    u8g2.drawStr(0, ascent + 1, text);
+
+    uint8_t* buf = u8g2.getBufferPtr();
+    for (uint8_t row = 0; row < height; row++) {
+        for (uint8_t rep = 0; rep < scale; rep++) {
+            int16_t runStart = -1;
+            for (uint16_t col = 0; col < width; col++) {
+                uint16_t idx = (row / 8) * 128 + col;
+                bool pixel = (buf[idx] & (1 << (row & 7))) != 0;
+                if (pixel && runStart < 0) {
+                    runStart = col;
+                } else if (!pixel && runStart >= 0) {
+                    st7789_fill_rect(x + runStart * scale, y + row * scale + rep, (col - runStart) * scale, 1, color);
+                    runStart = -1;
+                }
+            }
+            if (runStart >= 0) {
+                st7789_fill_rect(x + runStart * scale, y + row * scale + rep, (width - runStart) * scale, 1, color);
+            }
+        }
+    }
+}
+
+static void tdeckDrawBackground(uint16_t accent) {
+    st7789_clear(TDECK_BG);
+    st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
+    for (int16_t x = 8; x < 320; x += 32) {
+        st7789_fill_rect(x, 44, 1, 196, TDECK_GRID);
+    }
+    for (int16_t y = 56; y < 240; y += 32) {
+        st7789_fill_rect(0, y, 320, 1, TDECK_GRID);
+    }
+    st7789_fill_rect(0, 0, 320, 42, 0x1083);
+    st7789_fill_rect(0, 40, 320, 2, accent);
+    st7789_fill_rect(0, 42, 320, 1, TDECK_LINE);
+}
+
+static void tdeckDrawPill(int16_t x, int16_t y, int16_t w, const char* text, uint16_t accent) {
+    st7789_fill_rect(x, y, w, 18, TDECK_PANEL_2);
+    st7789_draw_rect(x, y, w, 18, accent);
+    tdeckDrawText(x + 8, y + 6, u8g2_font_5x7_tf, text, accent, 1);
+}
+
+static void tdeckDrawHeader(const char* title, uint8_t page, uint16_t accent) {
+    tdeckDrawText(12, 8, u8g2_font_ncenB14_tr, title, TDECK_TEXT, 1);
+    char pg[10];
+    snprintf(pg, sizeof(pg), "%u/%u", (unsigned)(page + 1), (unsigned)OLED_PAGE_COUNT);
+    tdeckDrawPill(276, 12, 32, pg, accent);
+    st7789_fill_circle(248, 21, 4, accent);
+    st7789_fill_circle(260, 21, 2, TDECK_MUTED);
+}
+
+static void tdeckDrawCard(int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint16_t accent) {
+    st7789_fill_rect(x + 2, y + 2, w, h, TDECK_SHADOW);
+    st7789_fill_rect(x, y, w, h, TDECK_PANEL);
+    st7789_fill_rect(x, y, w, 2, accent);
+    st7789_fill_rect(x, y + h - 2, w, 2, TDECK_PANEL_2);
+    st7789_draw_rect(x, y, w, h, TDECK_LINE);
+    tdeckDrawText(x + 10, y + 10, u8g2_font_5x7_tf, label, TDECK_MUTED, 1);
+}
+
+static void tdeckDrawProgressBar(int16_t x, int16_t y, int16_t w, uint8_t pct, uint16_t accent) {
+    if (pct > 100) pct = 100;
+    st7789_draw_rect(x, y, w, 8, TDECK_LINE);
+    int16_t fill = (int16_t)((uint32_t)(w - 4) * pct / 100);
+    st7789_fill_rect(x + 2, y + 2, fill, 4, accent);
+}
+
+static void tdeckDrawSignalBars(int16_t x, int16_t y, uint8_t bars, uint16_t accent) {
+    if (bars > 5) bars = 5;
+    for (uint8_t i = 0; i < 5; i++) {
+        int16_t h = 5 + i * 4;
+        uint16_t color = (i < bars) ? accent : TDECK_LINE;
+        st7789_fill_rect(x + i * 8, y + 22 - h, 5, h, color);
+    }
+}
+
+static void tdeckDrawMiniSignalBars(int16_t x, int16_t y, uint8_t bars, uint16_t accent) {
+    if (bars > 5) bars = 5;
+    for (uint8_t i = 0; i < 5; i++) {
+        int16_t h = 3 + i * 3;
+        uint16_t color = (i < bars) ? accent : TDECK_LINE;
+        st7789_fill_rect(x + i * 5, y + 15 - h, 3, h, color);
+    }
+}
+
+static void tdeckDrawNodeTrace(int16_t x, int16_t y, uint16_t accent) {
+    st7789_draw_line(x + 9, y + 2, x + 2, y + 14, TDECK_LINE);
+    st7789_draw_line(x + 9, y + 2, x + 20, y + 14, TDECK_LINE);
+    st7789_draw_line(x + 2, y + 14, x + 20, y + 14, TDECK_LINE);
+    st7789_fill_circle(x + 9, y + 2, 3, accent);
+    st7789_fill_circle(x + 2, y + 14, 3, TDECK_BLUE);
+    st7789_fill_circle(x + 20, y + 14, 3, TDECK_GREEN);
+}
+
+static void tdeckDrawStatusDot(int16_t x, int16_t y, uint16_t accent, bool active) {
+    st7789_draw_circle(x, y, 4, accent);
+    if (active) {
+        st7789_fill_circle(x, y, 2, accent);
+    }
+}
+
+static void tdeckDrawMeshGlyph(int16_t x, int16_t y, uint16_t accent) {
+    st7789_draw_line(x + 32, y + 4, x + 9, y + 30, TDECK_LINE);
+    st7789_draw_line(x + 32, y + 4, x + 56, y + 30, TDECK_LINE);
+    st7789_draw_line(x + 9, y + 30, x + 56, y + 30, TDECK_LINE);
+    st7789_fill_circle(x + 32, y + 4, 7, accent);
+    st7789_fill_circle(x + 9, y + 30, 6, TDECK_BLUE);
+    st7789_fill_circle(x + 56, y + 30, 6, TDECK_GREEN);
+    tdeckDrawUpperArc(x + 32, y + 4, 18, accent);
+}
+
+static void tdeckDrawEnvelopeIcon(int16_t x, int16_t y, uint16_t accent) {
+    st7789_draw_rect(x, y, 34, 22, accent);
+    st7789_draw_line(x + 1, y + 1, x + 17, y + 13, accent);
+    st7789_draw_line(x + 33, y + 1, x + 17, y + 13, accent);
+    st7789_draw_line(x + 1, y + 21, x + 13, y + 11, TDECK_LINE);
+    st7789_draw_line(x + 33, y + 21, x + 21, y + 11, TDECK_LINE);
+}
+
+static void tdeckDrawGpsGlyph(int16_t x, int16_t y, uint16_t accent) {
+    st7789_fill_circle(x + 14, y + 12, 11, accent);
+    st7789_fill_circle(x + 14, y + 12, 5, TDECK_PANEL);
+    st7789_draw_line(x + 14, y + 23, x + 8, y + 35, accent);
+    st7789_draw_line(x + 14, y + 23, x + 20, y + 35, accent);
+    st7789_draw_line(x + 8, y + 35, x + 20, y + 35, accent);
+}
+
+static void tdeckDrawRadioGlyph(int16_t x, int16_t y, uint16_t accent) {
+    st7789_draw_line(x + 8, y + 28, x + 24, y + 4, accent);
+    st7789_draw_line(x + 24, y + 4, x + 40, y + 28, accent);
+    tdeckDrawUpperArc(x + 24, y + 18, 14, TDECK_BLUE);
+    tdeckDrawUpperArc(x + 24, y + 18, 24, accent);
+}
+
+static void tdeckDrawBattery(int16_t x, int16_t y, uint8_t pct, bool charging) {
+    uint16_t fillColor = tdeckBatteryColor(pct);
+    st7789_draw_rect(x, y, 42, 18, TDECK_MUTED);
+    st7789_fill_rect(x + 42, y + 5, 4, 8, TDECK_MUTED);
+    uint8_t fill = (uint8_t)(((uint16_t)pct * 34) / 100);
+    if (fill > 34) fill = 34;
+    st7789_fill_rect(x + 4, y + 4, fill, 10, fillColor);
+    if (charging) {
+        st7789_draw_line(x - 10, y + 1, x - 17, y + 10, TDECK_AMBER);
+        st7789_draw_line(x - 17, y + 10, x - 11, y + 10, TDECK_AMBER);
+        st7789_draw_line(x - 11, y + 10, x - 18, y + 20, TDECK_AMBER);
+    }
+}
+
+static void tdeckFormatUptime(char* out, size_t n) {
+    uint32_t upSec = millis() / 1000UL;
+    if (upSec < 3600) {
+        snprintf(out, n, "%lum", (unsigned long)(upSec / 60));
+    } else if (upSec < 86400) {
+        snprintf(out, n, "%luh %lum", (unsigned long)(upSec / 3600), (unsigned long)((upSec % 3600) / 60));
+    } else {
+        snprintf(out, n, "%lud %luh", (unsigned long)(upSec / 86400), (unsigned long)((upSec % 86400) / 3600));
+    }
+}
+
+static void tdeckDrawWrappedText(int16_t x, int16_t y, int16_t w, const char* text, uint16_t color, uint8_t maxLines = 5) {
+    if (!text || text[0] == '\0') return;
+
+    uint8_t charsPerLine = (uint8_t)(w / 12);
+    if (charsPerLine < 8) charsPerLine = 8;
+    if (charsPerLine > 24) charsPerLine = 24;
+
+    size_t pos = 0;
+    uint8_t lineNo = 0;
+    size_t len = strlen(text);
+    while (pos < len && lineNo < maxLines) {
+        size_t take = len - pos;
+        if (take > charsPerLine) {
+            take = charsPerLine;
+            size_t breakAt = take;
+            while (breakAt > 0 && text[pos + breakAt] != ' ') {
+                breakAt--;
+            }
+            if (breakAt >= 6) {
+                take = breakAt;
+            }
+        }
+
+        char line[25];
+        if (take >= sizeof(line)) take = sizeof(line) - 1;
+        memcpy(line, text + pos, take);
+        line[take] = '\0';
+        tdeckDrawText(x, y + (lineNo * 22), u8g2_font_6x10_tf, line, color, 2);
+
+        pos += take;
+        while (pos < len && text[pos] == ' ') pos++;
+        lineNo++;
+    }
+}
+
+static void tdeckDrawUpperArc(int16_t cx, int16_t cy, int16_t r, uint16_t color) {
+    int16_t lastX = cx - r;
+    int16_t lastY = cy;
+    for (int16_t dx = -r + 2; dx <= r; dx += 2) {
+        float inside = (float)(r * r - dx * dx);
+        if (inside < 0.0f) inside = 0.0f;
+        int16_t x = cx + dx;
+        int16_t y = cy - (int16_t)sqrtf(inside);
+        st7789_draw_line(lastX, lastY, x, y, color);
+        st7789_draw_line(lastX, lastY - 1, x, y - 1, color);
+        lastX = x;
+        lastY = y;
+    }
+}
+
+static void drawTDeckBootSplash(uint8_t wavePhase) {
+    st7789_clear(TDECK_BG);
+    st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
+    st7789_fill_circle(160, 74, 9, TDECK_CYAN);
+    st7789_fill_circle(112, 112, 7, TDECK_BLUE);
+    st7789_fill_circle(208, 112, 7, TDECK_GREEN);
+    st7789_draw_line(160, 74, 112, 112, TDECK_LINE);
+    st7789_draw_line(160, 74, 208, 112, TDECK_LINE);
+    st7789_draw_line(112, 112, 208, 112, TDECK_LINE);
+    uint8_t r = 18 + (wavePhase % 3) * 10;
+    tdeckDrawUpperArc(160, 74, r, TDECK_CYAN);
+    if (r > 18) {
+        tdeckDrawUpperArc(160, 74, r - 10, TDECK_BLUE);
+    }
+
+    tdeckDrawText(72, 138, u8g2_font_ncenB14_tr, "AetherMesh", TDECK_TEXT, 2);
+    char ver[32];
+    snprintf(ver, sizeof(ver), "v%s", AETHERMESH_FW_VERSION);
+    tdeckDrawText(92, 202, u8g2_font_6x10_tf, ver, TDECK_MUTED, 1);
+    st7789_push_frame();
+}
+
+static void drawTDeckMessagePopup() {
+    st7789_clear(TDECK_BG);
+    st7789_fill_rect(18, 28, 284, 184, TDECK_PANEL);
+    st7789_fill_rect(18, 28, 284, 6, TDECK_AMBER);
+    st7789_draw_rect(18, 28, 284, 184, TDECK_AMBER);
+    tdeckDrawText(48, 52, u8g2_font_ncenB14_tr, "New Message", TDECK_TEXT, 1);
+
+    char sender[28];
+    snprintf(sender, sizeof(sender), "From 0x%08X", (unsigned)lastMsgSender);
+    tdeckDrawText(40, 92, u8g2_font_6x10_tf, sender, TDECK_CYAN, 2);
+
+    char line[25];
+    strncpy(line, lastMsgText, 24);
+    line[24] = '\0';
+    tdeckDrawText(40, 132, u8g2_font_6x10_tf, line, TDECK_TEXT, 2);
+    if (strlen(lastMsgText) > 24) {
+        strncpy(line, lastMsgText + 24, 24);
+        line[24] = '\0';
+        tdeckDrawText(40, 162, u8g2_font_6x10_tf, line, TDECK_TEXT, 2);
+    }
+    st7789_push_frame();
+}
+
+static void drawTDeckOtaProgress(uint8_t pct, const char* label) {
+    if (pct > 100) pct = 100;
+    st7789_clear(TDECK_BG);
+    st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
+    tdeckDrawText(48, 48, u8g2_font_ncenB14_tr, "Firmware Update", TDECK_TEXT, 1);
+    tdeckDrawText(108, 82, u8g2_font_6x10_tf, label ? label : "receiving", TDECK_MUTED, 1);
+    st7789_draw_rect(34, 116, 252, 26, TDECK_LINE);
+    st7789_fill_rect(38, 120, (uint16_t)pct * 244 / 100, 18, pct >= 100 ? TDECK_GREEN : TDECK_CYAN);
+    char pctStr[16];
+    snprintf(pctStr, sizeof(pctStr), "%u%%", (unsigned)pct);
+    tdeckDrawText(134, 164, u8g2_font_ncenB14_tr, pctStr, TDECK_TEXT, 1);
+    st7789_push_frame();
+}
+
+static void drawTDeckHome() {
+    uint8_t batteryPct = readBatteryLevel();
+    char title[24];
+    if (strlen(nodeCustomName) > 0) {
+        snprintf(title, sizeof(title), "%.16s", nodeCustomName);
+    } else {
+        snprintf(title, sizeof(title), "AetherMesh");
+    }
+    tdeckDrawBackground(TDECK_CYAN);
+    tdeckDrawHeader(title, 0, TDECK_CYAN);
+    char idLine[24];
+    snprintf(idLine, sizeof(idLine), "0x%08X", (unsigned)localNodeId);
+    tdeckDrawText(14, 31, u8g2_font_5x7_tf, idLine, TDECK_MUTED, 1);
+    tdeckDrawBattery(226, 12, batteryPct, batteryCharging);
+
+    bool ble = bleMgr.isDeviceConnected();
+    tdeckDrawCard(12, 54, 142, 62, "BLE", ble ? TDECK_GREEN : TDECK_AMBER);
+    tdeckDrawText(24, 80, u8g2_font_7x14_tf, ble ? "CONNECTED" : "ADVERT", ble ? TDECK_GREEN : TDECK_AMBER, 2);
+    tdeckDrawMiniSignalBars(122, 94, ble ? 5 : 2, ble ? TDECK_GREEN : TDECK_AMBER);
+
+    tdeckDrawCard(166, 54, 142, 62, "MESH", TDECK_CYAN);
+    char meshLine[18];
+    snprintf(meshLine, sizeof(meshLine), "NODES %u", (unsigned)countActivePeers());
+    tdeckDrawText(180, 80, u8g2_font_7x14_tf, meshLine, TDECK_CYAN, 2);
+    tdeckDrawNodeTrace(278, 92, TDECK_CYAN);
+
+    tdeckDrawCard(12, 128, 296, 42, "RADIO", TDECK_BLUE);
+    char radioLine[40];
+    snprintf(radioLine, sizeof(radioLine), "SF%u  BW%d  %.1fMHz",
+             (unsigned)radioMgr.getSpreadingFactor(), (int)radioMgr.getBandwidth(), radioMgr.getFrequency());
+    tdeckDrawText(24, 148, u8g2_font_6x10_tf, radioLine, TDECK_TEXT, 2);
+    tdeckDrawMiniSignalBars(270, 148, min((uint8_t)5, radioMgr.getSpreadingFactor() > 9 ? (uint8_t)4 : (uint8_t)3), TDECK_BLUE);
+
+    tdeckDrawCard(12, 182, 142, 42, "TRAFFIC", TDECK_GREEN);
+    char traffic[24];
+    snprintf(traffic, sizeof(traffic), "RX %u  TX %u", (unsigned)rxPacketCount, (unsigned)txPacketCount);
+    tdeckDrawText(24, 202, u8g2_font_6x10_tf, traffic, TDECK_TEXT, 1);
+    tdeckDrawProgressBar(24, 214, 112, (uint8_t)((rxPacketCount + txPacketCount) % 101), TDECK_GREEN);
+
+    tdeckDrawCard(166, 182, 142, 42, "GPS", TDECK_AMBER);
+    char gpsText[24];
+    if (fixedPosition) {
+        snprintf(gpsText, sizeof(gpsText), "FIXED");
+    } else if (gps.location.isValid()) {
+        snprintf(gpsText, sizeof(gpsText), "%lu SAT", (unsigned long)gps.satellites.value());
+    } else if (hasInheritedLocation && (millis() - lastInheritedTime < 300000)) {
+        snprintf(gpsText, sizeof(gpsText), "PHONE");
+    } else if (!hasOnboardGps) {
+        snprintf(gpsText, sizeof(gpsText), "NO GPS");
+    } else if (gpsMode != 0) {
+        snprintf(gpsText, sizeof(gpsText), "OFF");
+    } else {
+        snprintf(gpsText, sizeof(gpsText), "NO LOCK");
+    }
+    tdeckDrawText(178, 202, u8g2_font_6x10_tf, gpsText, TDECK_TEXT, 1);
+    tdeckDrawStatusDot(294, 203, TDECK_AMBER, fixedPosition || gps.location.isValid() || hasInheritedLocation);
+
+    char footer[48];
+    char up[16];
+    tdeckFormatUptime(up, sizeof(up));
+    snprintf(footer, sizeof(footer), "%s  %s  v%s", (nodeRegion == 0) ? "US915" : "EU868", up, AETHERMESH_FW_VERSION);
+    tdeckDrawText(12, 229, u8g2_font_5x7_tf, footer, TDECK_MUTED, 1);
+
+    uint32_t now = millis();
+    const char* kbLine = (tdeckKeyboardNoticeUntil != 0 && (int32_t)(now - tdeckKeyboardNoticeUntil) < 0)
+                             ? tdeckKeyboardNotice
+                             : tdeckKeyboardStatus;
+    uint16_t kbColor = tdeckKeyboardPresent ? TDECK_GREEN : TDECK_AMBER;
+    tdeckDrawText(208, 229, u8g2_font_5x7_tf, kbLine, kbColor, 1);
+    st7789_push_frame();
+}
+
+static void drawTDeckCompose() {
+    if (!tdeckComposeFrameDrawn) {
+        st7789_clear(TDECK_BG);
+        st7789_fill_rect(0, 0, 320, 240, TDECK_BG);
+        st7789_fill_rect(0, 0, 320, 42, 0x1083);
+        st7789_fill_rect(0, 40, 320, 2, TDECK_GREEN);
+        tdeckDrawText(14, 10, u8g2_font_ncenB14_tr, "Compose", TDECK_TEXT, 1);
+
+        st7789_fill_rect(16, 58, 288, 124, TDECK_PANEL);
+        st7789_fill_rect(16, 58, 288, 4, TDECK_GREEN);
+        st7789_draw_rect(16, 58, 288, 124, TDECK_LINE);
+
+        st7789_fill_rect(16, 196, 288, 28, TDECK_PANEL_2);
+        st7789_draw_rect(16, 196, 288, 28, TDECK_LINE);
+        tdeckDrawText(28, 206, u8g2_font_5x7_tf, "ENTER SENDS   BKSP EDITS   ESC CANCELS", TDECK_MUTED, 1);
+        tdeckComposeFrameDrawn = true;
+    }
+
+    char count[16];
+    snprintf(count, sizeof(count), "%u/%u", (unsigned)tdeckComposeLen, (unsigned)TDECK_COMPOSE_MAX);
+    st7789_fill_rect(250, 8, 58, 24, 0x1083);
+    tdeckDrawText(260, 18, u8g2_font_5x7_tf, count, TDECK_MUTED, 1);
+
+    st7789_fill_rect(20, 66, 280, 110, TDECK_PANEL);
+
+    if (tdeckComposeLen == 0) {
+        tdeckDrawText(34, 106, u8g2_font_6x10_tf, "Start typing...", TDECK_MUTED, 2);
+    } else {
+        tdeckDrawWrappedText(30, 78, 260, tdeckComposeText, TDECK_TEXT, 5);
+    }
+    st7789_push_frame();
+}
+
+static void tdeckDrawPageChrome(const char* title, uint8_t page, uint16_t accent) {
+    tdeckDrawBackground(accent);
+    tdeckDrawHeader(title, page, accent);
+    tdeckDrawBattery(226, 12, readBatteryLevel(), batteryCharging);
+}
+
+static void drawTDeckGpsPage() {
+    tdeckDrawPageChrome("GPS", 1, TDECK_AMBER);
+    char line[48];
+    bool ownFix = gps.location.isValid();
+    bool phoneFix = hasInheritedLocation && (millis() - lastInheritedTime < 300000);
+
+    tdeckDrawCard(12, 56, 296, 48, "SOURCE", TDECK_AMBER);
+    if (fixedPosition) {
+        snprintf(line, sizeof(line), "FIXED POSITION");
+    } else if (ownFix) {
+        snprintf(line, sizeof(line), "ONBOARD FIX");
+    } else if (phoneFix) {
+        snprintf(line, sizeof(line), "PHONE SHARED");
+    } else if (!hasOnboardGps) {
+        snprintf(line, sizeof(line), "NO ONBOARD GPS");
+    } else if (gpsMode != 0) {
+        snprintf(line, sizeof(line), "GPS OFF");
+    } else {
+        snprintf(line, sizeof(line), "NO LOCK");
+    }
+    tdeckDrawText(26, 76, u8g2_font_7x14_tf, line, (ownFix || phoneFix || fixedPosition) ? TDECK_GREEN : TDECK_AMBER, 2);
+    tdeckDrawStatusDot(288, 80, (ownFix || phoneFix || fixedPosition) ? TDECK_GREEN : TDECK_AMBER, ownFix || phoneFix || fixedPosition);
+
+    tdeckDrawCard(12, 116, 296, 62, "POSITION", TDECK_CYAN);
+    if (fixedPosition || ownFix || phoneFix) {
+        double lat = fixedPosition ? fixedLat : (ownFix ? gps.location.lat() : (double)inheritedLat);
+        double lon = fixedPosition ? fixedLon : (ownFix ? gps.location.lng() : (double)inheritedLon);
+        snprintf(line, sizeof(line), "LAT %.5f", lat);
+        tdeckDrawText(26, 138, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+        snprintf(line, sizeof(line), "LON %.5f", lon);
+        tdeckDrawText(26, 156, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+    } else {
+        tdeckDrawText(26, 145, u8g2_font_6x10_tf, "WAITING FOR POSITION", TDECK_MUTED, 1);
+    }
+
+    tdeckDrawCard(12, 190, 142, 34, "SAT", TDECK_BLUE);
+    snprintf(line, sizeof(line), "%lu", (unsigned long)gps.satellites.value());
+    tdeckDrawText(26, 206, u8g2_font_6x10_tf, line, TDECK_TEXT, 2);
+    tdeckDrawMiniSignalBars(108, 202, (uint8_t)min((unsigned long)5, (unsigned long)gps.satellites.value()), TDECK_BLUE);
+
+    tdeckDrawCard(166, 190, 142, 34, "ALT/SPEED", TDECK_GREEN);
+    if (ownFix) {
+        float spd = (nodeRegion == 0) ? gps.speed.mph() : gps.speed.kmph();
+        snprintf(line, sizeof(line), "%dm %.1f%s", (int)gps.altitude.meters(), spd, (nodeRegion == 0) ? "MPH" : "KMH");
+    } else if (fixedPosition) {
+        snprintf(line, sizeof(line), "%dm", (int)fixedAlt);
+    } else {
+        snprintf(line, sizeof(line), "--");
+    }
+    tdeckDrawText(180, 206, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+    st7789_push_frame();
+}
+
+static void drawTDeckMessagesPage() {
+    tdeckDrawPageChrome("Messages", 2, TDECK_GREEN);
+    if (recentMsgCount == 0) {
+        tdeckDrawCard(22, 78, 276, 96, "INBOX", TDECK_GREEN);
+        tdeckDrawEnvelopeIcon(143, 96, TDECK_GREEN);
+        tdeckDrawText(88, 130, u8g2_font_7x14_tf, "NO MESSAGES YET", TDECK_MUTED, 1);
+        st7789_push_frame();
+        return;
+    }
+
+    uint8_t toShow = (recentMsgCount < 3) ? recentMsgCount : 3;
+    for (uint8_t k = 0; k < toShow; k++) {
+        const RecentMsg& m = recentMsgs[(recentMsgHead + 4 - 1 - k) % 4];
+        int16_t y = 54 + k * 58;
+        uint16_t accent = (m.sender == localNodeId) ? TDECK_GREEN : TDECK_CYAN;
+        tdeckDrawCard(12, y, 296, 48, (m.sender == localNodeId) ? "SENT" : "RECEIVED", accent);
+        tdeckDrawStatusDot(286, y + 24, accent, true);
+        char age[8];
+        formatAge(millis() - m.atMs, age, sizeof(age));
+        char hdr[32];
+        snprintf(hdr, sizeof(hdr), "0x%04X  %s", (unsigned)(m.sender & 0xFFFF), age);
+        tdeckDrawText(94, y + 10, u8g2_font_5x7_tf, hdr, TDECK_MUTED, 1);
+        char body[31];
+        strncpy(body, m.text, 30);
+        body[30] = '\0';
+        tdeckDrawText(24, y + 26, u8g2_font_6x10_tf, body, TDECK_TEXT, 1);
+    }
+    st7789_push_frame();
+}
+
+static void drawTDeckNodesPage() {
+    tdeckDrawPageChrome("Nodes", 3, TDECK_CYAN);
+    char count[20];
+    snprintf(count, sizeof(count), "%u ACTIVE", (unsigned)countActivePeers());
+    tdeckDrawText(18, 50, u8g2_font_7x14_tf, count, TDECK_CYAN, 2);
+    tdeckDrawNodeTrace(280, 58, TDECK_CYAN);
+
+    bool used[12] = {};
+    uint8_t shown = 0;
+    for (uint8_t row = 0; row < 5; row++) {
+        int best = -1;
+        for (int i = 0; i < 12; i++) {
+            if (used[i] || peersSeen[i].id == 0) continue;
+            if (millis() - peersSeen[i].lastMs >= PEER_ACTIVE_WINDOW_MS) continue;
+            if (best < 0 || peersSeen[i].lastMs > peersSeen[best].lastMs) best = i;
+        }
+        if (best < 0) break;
+        used[best] = true;
+        int16_t y = 82 + row * 28;
+        st7789_fill_rect(12, y, 296, 22, (row % 2 == 0) ? TDECK_PANEL : TDECK_PANEL_2);
+        char age[8];
+        formatAge(millis() - peersSeen[best].lastMs, age, sizeof(age));
+        char line[48];
+        snprintf(line, sizeof(line), "0x%08X   %.0fdB   %s", (unsigned)peersSeen[best].id, peersSeen[best].rssi, age);
+        st7789_fill_circle(22, y + 11, 4, row == 0 ? TDECK_GREEN : TDECK_CYAN);
+        tdeckDrawText(34, y + 7, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+        tdeckDrawMiniSignalBars(278, y + 4, (peersSeen[best].rssi > -70) ? 5 : (peersSeen[best].rssi > -90 ? 3 : 1), TDECK_GREEN);
+        shown++;
+    }
+    if (shown == 0) {
+        tdeckDrawCard(22, 104, 276, 72, "MESH", TDECK_CYAN);
+        tdeckDrawText(48, 134, u8g2_font_6x10_tf, "NO PEERS HEARD RECENTLY", TDECK_MUTED, 1);
+    }
+    st7789_push_frame();
+}
+
+static void drawTDeckSystemPage() {
+    tdeckDrawPageChrome("System", 4, TDECK_BLUE);
+    char line[52];
+    const char* roleName = (nodeRole == 1) ? "Router" : (nodeRole == 2) ? "Repeater" : "Client";
+
+    tdeckDrawCard(12, 54, 296, 40, "NODE", TDECK_BLUE);
+    snprintf(line, sizeof(line), "0x%08X  %s", (unsigned)localNodeId, roleName);
+    tdeckDrawText(24, 74, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+
+    tdeckDrawCard(12, 106, 142, 46, "POWER", TDECK_GREEN);
+    snprintf(line, sizeof(line), "%u%%  %.2fV%s", (unsigned)readBatteryLevel(), batteryVoltage, batteryCharging ? " CHG" : "");
+    tdeckDrawText(24, 128, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+    tdeckDrawProgressBar(24, 140, 112, readBatteryLevel(), tdeckBatteryColor(readBatteryLevel()));
+
+    tdeckDrawCard(166, 106, 142, 46, "REGION", TDECK_AMBER);
+    snprintf(line, sizeof(line), "%s  %ddBm", (nodeRegion == 0) ? "US915" : "EU868", (int)loraTxPower);
+    tdeckDrawText(178, 128, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+
+    tdeckDrawCard(12, 164, 142, 46, "MEMORY", TDECK_CYAN);
+    snprintf(line, sizeof(line), "%luk HEAP", (unsigned long)(ESP.getFreeHeap() / 1024));
+    tdeckDrawText(24, 186, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
+    tdeckDrawProgressBar(24, 198, 112, (uint8_t)min(100UL, (unsigned long)(ESP.getFreeHeap() / 2048)), TDECK_CYAN);
+
+    tdeckDrawCard(166, 164, 142, 46, "FIRMWARE", TDECK_BLUE);
+    snprintf(line, sizeof(line), "v%s", AETHERMESH_FW_VERSION);
+    tdeckDrawText(178, 186, u8g2_font_5x7_tf, line, TDECK_TEXT, 1);
+
+    if (positionPrecisionM > 0) {
+        snprintf(line, sizeof(line), "POS +/-%um", (unsigned)positionPrecisionM);
+        tdeckDrawText(16, 224, u8g2_font_5x7_tf, line, TDECK_MUTED, 1);
+    }
+    st7789_push_frame();
+}
+
+static void tdeckHashMix(uint32_t& hash, uint32_t value) {
+    hash ^= value + 0x9E3779B9UL + (hash << 6) + (hash >> 2);
+}
+
+static void tdeckHashText(uint32_t& hash, const char* text) {
+    if (!text) return;
+    while (*text) {
+        tdeckHashMix(hash, (uint8_t)*text++);
+    }
+}
+
+static uint32_t tdeckHomeRenderSignature(uint32_t now) {
+    (void)now;
+    uint32_t hash = 0xA37E2D51UL;
+    tdeckHashText(hash, nodeCustomName);
+    tdeckHashMix(hash, localNodeId);
+    tdeckHashMix(hash, bleMgr.isDeviceConnected() ? 1 : 0);
+    tdeckHashMix(hash, radioMgr.getSpreadingFactor());
+    tdeckHashMix(hash, (uint32_t)radioMgr.getBandwidth());
+    tdeckHashMix(hash, (uint32_t)(radioMgr.getFrequency() * 10.0f));
+    tdeckHashMix(hash, nodeRegion);
+    tdeckHashMix(hash, fixedPosition ? 1 : 0);
+    tdeckHashMix(hash, hasOnboardGps ? 1 : 0);
+    tdeckHashMix(hash, gpsMode);
+    tdeckHashMix(hash, tdeckKeyboardPresent ? 1 : 0);
+    tdeckHashText(hash, tdeckKeyboardStatus);
+    if (tdeckKeyboardNoticeUntil != 0 && (int32_t)(now - tdeckKeyboardNoticeUntil) < 0) {
+        tdeckHashText(hash, tdeckKeyboardNotice);
+    }
+    return hash;
+}
+
+static uint32_t tdeckComposeRenderSignature() {
+    uint32_t hash = 0xC0520A11UL;
+    tdeckHashMix(hash, tdeckComposeLen);
+    tdeckHashText(hash, tdeckComposeText);
+    return hash;
+}
+
+static uint32_t tdeckPopupRenderSignature() {
+    uint32_t hash = 0x9017E551UL;
+    tdeckHashMix(hash, lastMsgSender);
+    tdeckHashMix(hash, lastMsgReceivedTime);
+    tdeckHashText(hash, lastMsgText);
+    return hash;
+}
+
+static bool tdeckShouldRedraw(uint8_t mode, uint32_t sig) {
+    if (!tdeckDisplayDirty && mode == tdeckLastRenderMode && sig == tdeckLastRenderSig) {
+        return false;
+    }
+    tdeckDisplayDirty = false;
+    tdeckLastRenderMode = mode;
+    tdeckLastRenderSig = sig;
+    return true;
+}
+#endif
 
 // Shared header for the non-HOME pages: title left, "2/5" page indicator right
 static void drawPageHeader(const char* title, uint8_t page) {
@@ -1075,14 +1813,19 @@ void updateDisplay() {
         return; // drawOtaProgress() renders during firmware updates
     }
     if (nodeRole == 2) {
+#if defined(LILYGO_T_DECK)
+        setBacklight(false);
+#else
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
         setBacklight(false);
+#endif
         displayIsOn = false;
         return;
     }
 
     unsigned long now = millis();
     bool shouldBeOn = true;
+    bool popupActive = hasNewMsgPopup && (now - lastMsgReceivedTime < 10000);
     // Power save caps the screen-on window at 10s, but never overrides "Always Off"
     // (0) and downgrades "Always On" (0xFFFFFFFF) to the 10s window.
     uint32_t activeTimeout = screenTimeoutSecs;
@@ -1097,26 +1840,62 @@ void updateDisplay() {
         shouldBeOn = (now - lastDisplayActivityTime < activeTimeout * 1000UL);
     }
     
-    if (hasNewMsgPopup && (now - lastMsgReceivedTime < 10000)) {
+    if (popupActive) {
         // Always wake screen up for message popup overlay
         shouldBeOn = true;
     }
 
     if (!shouldBeOn) {
+#if defined(LILYGO_T_DECK)
+        setBacklight(false);
+#else
         u8g2.setPowerSave(1); // Put display to sleep/off to save power
         setBacklight(false);
+#endif
         displayIsOn = false;
         return;
     }
     if (!displayIsOn) {
+#if !defined(LILYGO_T_DECK)
         oledPage = 0; // waking from off always lands on the HOME page
+#endif
     }
+#if defined(LILYGO_T_DECK)
+    setBacklight(true);
+#else
     u8g2.setPowerSave(0); // Ensure awake if not repeater
     setBacklight(true);
+#endif
     displayIsOn = true;
+
+#if defined(LILYGO_T_DECK)
+    uint8_t tdeckMode = tdeckComposeActive ? 10 : (popupActive ? 11 : oledPage);
+    uint32_t tdeckSig;
+    if (tdeckComposeActive) {
+        tdeckSig = tdeckComposeRenderSignature();
+    } else if (popupActive) {
+        tdeckSig = tdeckPopupRenderSignature();
+    } else if (oledPage == 0) {
+        tdeckSig = tdeckHomeRenderSignature(now);
+    } else {
+        tdeckSig = (uint32_t)oledPage << 24;
+    }
+    if (!tdeckShouldRedraw(tdeckMode, tdeckSig)) {
+        return;
+    }
+
+    if (tdeckComposeActive) {
+        drawTDeckCompose();
+        return;
+    }
+#endif
     
     // Check if we should render message popup overlay
-    if (hasNewMsgPopup && (now - lastMsgReceivedTime < 10000)) {
+    if (popupActive) {
+#if defined(LILYGO_T_DECK)
+        drawTDeckMessagePopup();
+        return;
+#endif
         u8g2.clearBuffer();
         
         // Draw double border
@@ -1158,6 +1937,16 @@ void updateDisplay() {
     } else {
         hasNewMsgPopup = false;
     }
+
+#if defined(LILYGO_T_DECK)
+    switch (oledPage) {
+        case 1: drawTDeckGpsPage(); return;
+        case 2: drawTDeckMessagesPage(); return;
+        case 3: drawTDeckNodesPage(); return;
+        case 4: drawTDeckSystemPage(); return;
+        default: drawTDeckHome(); return;
+    }
+#endif
 
     switch (oledPage) {
         case 1: drawGpsPage(); return;
@@ -1233,6 +2022,234 @@ void updateDisplay() {
     u8g2.sendBuffer();
 #endif
 }
+
+#if defined(LILYGO_T_DECK)
+static bool tdeckKeyboardProbe() {
+    Wire.beginTransmission(TDECK_KEYBOARD_ADDR);
+    return Wire.endTransmission() == 0;
+}
+
+static void tdeckKeyboardCommand(uint8_t cmd) {
+    Wire.beginTransmission(TDECK_KEYBOARD_ADDR);
+    Wire.write(cmd);
+    Wire.endTransmission();
+}
+
+static void tdeckSetKeyboardBrightness(uint8_t level) {
+    Wire.beginTransmission(TDECK_KEYBOARD_ADDR);
+    Wire.write(TDECK_KB_BRIGHTNESS_CMD);
+    Wire.write(level);
+    Wire.endTransmission();
+}
+
+static void initTDeckKeyboard() {
+    Wire.begin(TDECK_KEYBOARD_SDA, TDECK_KEYBOARD_SCL);
+    pinMode(TDECK_KEYBOARD_INT, INPUT_PULLUP);
+
+    tdeckKeyboardPresent = tdeckKeyboardProbe();
+    if (tdeckKeyboardPresent) {
+        tdeckKeyboardCommand(TDECK_KB_MODE_KEY_CMD);
+        tdeckSetKeyboardBrightness(48);
+        strncpy(tdeckKeyboardStatus, "KB READY", sizeof(tdeckKeyboardStatus) - 1);
+        tdeckKeyboardStatus[sizeof(tdeckKeyboardStatus) - 1] = '\0';
+        tdeckDisplayDirty = true;
+        Serial.println("T-Deck keyboard detected.");
+    } else {
+        strncpy(tdeckKeyboardStatus, "KB OFFLINE", sizeof(tdeckKeyboardStatus) - 1);
+        tdeckKeyboardStatus[sizeof(tdeckKeyboardStatus) - 1] = '\0';
+        tdeckDisplayDirty = true;
+        Serial.println("T-Deck keyboard not detected.");
+    }
+}
+
+static int tdeckReadKey() {
+    static uint32_t lastProbeMs = 0;
+    uint32_t now = millis();
+    if (!tdeckKeyboardPresent && (now - lastProbeMs > 2500)) {
+        lastProbeMs = now;
+        tdeckKeyboardPresent = tdeckKeyboardProbe();
+        if (tdeckKeyboardPresent) {
+            tdeckKeyboardCommand(TDECK_KB_MODE_KEY_CMD);
+            tdeckSetKeyboardBrightness(48);
+            strncpy(tdeckKeyboardStatus, "KB READY", sizeof(tdeckKeyboardStatus) - 1);
+            tdeckKeyboardStatus[sizeof(tdeckKeyboardStatus) - 1] = '\0';
+            tdeckDisplayDirty = true;
+        }
+    }
+    if (!tdeckKeyboardPresent) {
+        return -1;
+    }
+
+    Wire.beginTransmission(TDECK_KEYBOARD_ADDR);
+    if (Wire.endTransmission() != 0) {
+        tdeckKeyboardPresent = false;
+        strncpy(tdeckKeyboardStatus, "KB OFFLINE", sizeof(tdeckKeyboardStatus) - 1);
+        tdeckKeyboardStatus[sizeof(tdeckKeyboardStatus) - 1] = '\0';
+        tdeckDisplayDirty = true;
+        return -1;
+    }
+
+    if (Wire.requestFrom((int)TDECK_KEYBOARD_ADDR, 1) != 1) {
+        return -1;
+    }
+    return Wire.read();
+}
+
+static void tdeckSetNotice(const char* text, uint32_t durationMs = 2500) {
+    strncpy(tdeckKeyboardNotice, text, sizeof(tdeckKeyboardNotice) - 1);
+    tdeckKeyboardNotice[sizeof(tdeckKeyboardNotice) - 1] = '\0';
+    tdeckKeyboardNoticeUntil = millis() + durationMs;
+    tdeckDisplayDirty = true;
+}
+
+static void tdeckStoreRecentOutgoing(const char* text) {
+    RecentMsg& slot = recentMsgs[recentMsgHead];
+    slot.sender = localNodeId;
+    size_t out = 0;
+    for (size_t i = 0; text && text[i] != '\0' && out < sizeof(slot.text) - 1; i++) {
+        char c = text[i];
+        slot.text[out++] = (c >= 32 && c <= 126) ? c : '?';
+    }
+    slot.text[out] = '\0';
+    slot.atMs = millis();
+    recentMsgHead = (recentMsgHead + 1) % 4;
+    if (recentMsgCount < 4) recentMsgCount++;
+}
+
+static void tdeckBeginCompose() {
+    tdeckComposeActive = true;
+    tdeckComposeFrameDrawn = false;
+    hasNewMsgPopup = false;
+    oledPage = 0;
+}
+
+static void tdeckCancelCompose() {
+    tdeckComposeActive = false;
+    tdeckComposeFrameDrawn = false;
+    tdeckComposeLen = 0;
+    tdeckComposeText[0] = '\0';
+    tdeckSetNotice("CANCELLED");
+}
+
+static void tdeckSendCompose() {
+    if (tdeckComposeLen == 0) {
+        tdeckCancelCompose();
+        return;
+    }
+
+    bool sent = router.sendText(0xFFFFFFFF, tdeckComposeText);
+    if (sent) {
+        tdeckStoreRecentOutgoing(tdeckComposeText);
+        tdeckSetNotice("SENT");
+    } else {
+        tdeckSetNotice("SEND FAILED", 4000);
+    }
+    tdeckComposeActive = false;
+    tdeckComposeFrameDrawn = false;
+    tdeckComposeLen = 0;
+    tdeckComposeText[0] = '\0';
+}
+
+static void tdeckBackspaceCompose() {
+    if (tdeckComposeLen > 0) {
+        tdeckComposeLen--;
+        tdeckComposeText[tdeckComposeLen] = '\0';
+    } else {
+        tdeckCancelCompose();
+    }
+}
+
+static void tdeckAppendCompose(char c) {
+    if (tdeckComposeLen >= TDECK_COMPOSE_MAX) {
+        tdeckSetNotice("MESSAGE FULL");
+        return;
+    }
+    tdeckComposeText[tdeckComposeLen++] = c;
+    tdeckComposeText[tdeckComposeLen] = '\0';
+}
+
+static bool tdeckHandleControlKey(uint8_t key) {
+    if (key == '\r' || key == '\n') {
+        if (tdeckComposeActive) {
+            tdeckSendCompose();
+        } else {
+            tdeckBeginCompose();
+        }
+        return true;
+    }
+    if (key == 0x08 || key == 0x7F) {
+        if (tdeckComposeActive) {
+            tdeckBackspaceCompose();
+        } else if (oledPage > 0) {
+            oledPage--;
+        }
+        return true;
+    }
+    if (key == 0x1B) {
+        if (tdeckComposeActive) {
+            tdeckCancelCompose();
+        } else if (hasNewMsgPopup) {
+            hasNewMsgPopup = false;
+        }
+        return true;
+    }
+    if (key == '\t' && !tdeckComposeActive) {
+        oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
+        return true;
+    }
+    return false;
+}
+
+static void handleTDeckKey(uint8_t key) {
+    if (key == 0 || key == 0xFF) {
+        return;
+    }
+
+    lastDisplayActivityTime = millis();
+
+    if (tdeckHandleControlKey(key)) {
+        updateDisplay();
+        return;
+    }
+
+    if (key >= 32 && key <= 126) {
+        if (!tdeckComposeActive) {
+            tdeckBeginCompose();
+        }
+        tdeckAppendCompose((char)key);
+        updateDisplay();
+    }
+}
+
+static void pollTDeckKeyboard() {
+    static int heldKey = -1;
+    static uint32_t lastKeyMs = 0;
+
+    int key = tdeckReadKey();
+    uint32_t now = millis();
+    if (key <= 0) {
+        heldKey = -1;
+        return;
+    }
+
+    if (key == 0xFF) {
+        heldKey = -1;
+        return;
+    }
+
+    if (key == heldKey) {
+        return;
+    }
+
+    if (now - lastKeyMs < 35) {
+        return;
+    }
+
+    heldKey = key;
+    lastKeyMs = now;
+    handleTDeckKey((uint8_t)key);
+}
+#endif
 
 // Callback: LoRa -> Phone / Router
 void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
@@ -1393,6 +2410,10 @@ void sendOtaStatus(aethermesh_OtaStatus_State state, uint32_t nextOffset, const 
 
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
 void drawOtaProgress(uint8_t pct, const char* label) {
+#if defined(LILYGO_T_DECK)
+    drawTDeckOtaProgress(pct, label);
+    return;
+#endif
     u8g2.setPowerSave(0);
     setBacklight(true);
     u8g2.clearBuffer();
@@ -1863,6 +2884,7 @@ void setup() {
     pinMode(6, OUTPUT);
     digitalWrite(6, HIGH); // Release screen reset pin
 
+    initTDeckKeyboard();
     u8g2.begin();
     init_st7789();
     drawBootSplash(0);
@@ -2008,6 +3030,9 @@ void loop() {
     }
 
     static uint32_t lastBleActiveTime = millis();
+#if defined(LILYGO_T_DECK)
+    pollTDeckKeyboard();
+#endif
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
     static bool lastButtonState = HIGH;
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
