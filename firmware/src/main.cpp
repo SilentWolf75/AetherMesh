@@ -3350,7 +3350,7 @@ void setup() {
     // once here (after the rest of setup) and then only at a slow cadence.
     Serial.println("Initializing T-Echo e-paper (SSD1681, SW SPI)...");
     epd.begin();
-    epd.setRotation(3); // T-Echo panel orientation (adjust if mirrored/rotated)
+    epd.setRotation(0); // T-Echo panel orientation (90 deg CW from the initial 3)
     echoDisplayReady = true;
 #endif
 
