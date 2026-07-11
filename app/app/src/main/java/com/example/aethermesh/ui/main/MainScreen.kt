@@ -6475,10 +6475,10 @@ fun ConnectionView(
                                     modifier = Modifier
                                         .size(8.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0xFFEF4444)) // Pulse red
+                                        .background(AccentMint)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("ACTIVE", color = Color(0xFFEF4444), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("ACTIVE", color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
