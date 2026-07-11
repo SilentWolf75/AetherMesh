@@ -464,72 +464,105 @@ fun MainScreen(
             )
 
             // Content Area based on Tab Selection
-            Box(
+            Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                when (activeTab) {
-                    TabItem.CHATS -> ChatView(
-                        messages = messages,
-                        channels = channels,
-                        selectedChannel = selectedChannel,
-                        localNodeId = viewModel.connectedNodeId,
-                        activeChatId = activeChatId,
-                        nodes = nodes,
-                        onSelectChannel = { viewModel.selectChannel(it) },
-                        onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
-                        onCreateChannel = { viewModel.createChannel(it) },
-                        onSendMessage = { viewModel.sendMessage(it) },
-                        onRetryMessage = { viewModel.retryMessage(it) },
-                        getChatKey = { viewModel.getChatKey(it) },
-                        saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) }
-                    )
-                    TabItem.NODES -> NodesView(
-                        nodes = nodes,
-                        observedRoutes = observedRoutes,
-                        phoneLocation = phoneLocation,
-                        appLanguage = appLanguage,
-                        useImperialUnits = useImperialUnitsSetting,
-                        onNodeClick = { nodeId ->
-                            viewModel.selectDirectMessage(nodeId)
-                            activeTab = TabItem.CHATS
-                        },
-                        onRenameNode = { nodeId, longName, shortName ->
-                            viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
-                        },
-                        getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
-                        connectedNodeId = viewModel.connectedNodeId,
-                        traceRouteState = traceRouteState,
-                        onTraceRoute = { viewModel.startTraceRoute(it) },
-                        onDismissTrace = { viewModel.clearTraceRouteResult() }
-                    )
-                    TabItem.MAP -> MapViewCompose(
-                        nodes = nodes,
-                        observedRoutes = observedRoutes,
-                        traceRouteState = traceRouteState,
-                        viewModel = viewModel,
-                        appLanguage = appLanguage,
-                        useImperialUnits = useImperialUnitsSetting,
-                        phoneLocation = phoneLocation,
-                        onPhoneLocationChanged = { gp ->
-                            phoneLocation = gp
-                            if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
-                                viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
-                            }
-                        },
-                        onNavigateToChats = { activeTab = TabItem.CHATS }
-                    )
-                    TabItem.SETTINGS -> SettingsView(
-                        viewModel = viewModel,
-                        isConnected = isConnected
-                    )
-                    TabItem.CONNECTION -> ConnectionView(
-                        viewModel = viewModel,
-                        isConnected = isConnected,
-                        nodes = nodes,
-                        scannedDevices = scannedDevices
-                    )
+                if (!isConnected && activeTab != TabItem.CONNECTION) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0x25EF4444))
+                            .border(BorderStroke(0.5.dp, Color(0x50EF4444)))
+                            .clickable { activeTab = TabItem.CONNECTION }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Disconnected",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (appLanguage == "Spanish") "Desconectado. Toque para volver a conectar." else "Disconnected from node. Tap to reconnect.",
+                            color = Color(0xFFFCA5A5),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    when (activeTab) {
+                        TabItem.CHATS -> ChatView(
+                            messages = messages,
+                            channels = channels,
+                            selectedChannel = selectedChannel,
+                            localNodeId = viewModel.connectedNodeId,
+                            activeChatId = activeChatId,
+                            nodes = nodes,
+                            onSelectChannel = { viewModel.selectChannel(it) },
+                            onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
+                            onCreateChannel = { viewModel.createChannel(it) },
+                            onSendMessage = { viewModel.sendMessage(it) },
+                            onRetryMessage = { viewModel.retryMessage(it) },
+                            getChatKey = { viewModel.getChatKey(it) },
+                            saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) }
+                        )
+                        TabItem.NODES -> NodesView(
+                            nodes = nodes,
+                            observedRoutes = observedRoutes,
+                            phoneLocation = phoneLocation,
+                            appLanguage = appLanguage,
+                            useImperialUnits = useImperialUnitsSetting,
+                            onNodeClick = { nodeId ->
+                                viewModel.selectDirectMessage(nodeId)
+                                activeTab = TabItem.CHATS
+                            },
+                            onRenameNode = { nodeId, longName, shortName ->
+                                viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
+                            },
+                            getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
+                            connectedNodeId = viewModel.connectedNodeId,
+                            traceRouteState = traceRouteState,
+                            onTraceRoute = { viewModel.startTraceRoute(it) },
+                            onDismissTrace = { viewModel.clearTraceRouteResult() }
+                        )
+                        TabItem.MAP -> MapViewCompose(
+                            nodes = nodes,
+                            observedRoutes = observedRoutes,
+                            traceRouteState = traceRouteState,
+                            viewModel = viewModel,
+                            appLanguage = appLanguage,
+                            useImperialUnits = useImperialUnitsSetting,
+                            phoneLocation = phoneLocation,
+                            onPhoneLocationChanged = { gp ->
+                                phoneLocation = gp
+                                if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
+                                    viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
+                                }
+                            },
+                            onNavigateToChats = { activeTab = TabItem.CHATS }
+                        )
+                        TabItem.SETTINGS -> SettingsView(
+                            viewModel = viewModel,
+                            isConnected = isConnected
+                        )
+                        TabItem.CONNECTION -> ConnectionView(
+                            viewModel = viewModel,
+                            isConnected = isConnected,
+                            nodes = nodes,
+                            scannedDevices = scannedDevices
+                        )
+                    }
                 }
             }
 
@@ -1752,17 +1785,38 @@ fun MapViewCompose(
     var showRemoteConfigDialog by remember { mutableStateOf<MeshNode?>(null) }
     val context = LocalContext.current
     val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
-    val breadcrumbs = remember { mutableStateListOf<GeoPoint>() }
+    val breadcrumbs = viewModel.breadcrumbs
     val mapPrefs = remember { context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE) }
     var darkMapTiles by remember { mutableStateOf(mapPrefs.getBoolean("dark_tiles", false)) }
     var showLayersMenu by remember { mutableStateOf(false) }
 
     // Remembered MapView to avoid reloading tiles on recomposition
     val mapView = remember {
+        // Initialize osmdroid Configuration safely
+        val osmConfig = org.osmdroid.config.Configuration.getInstance()
+        osmConfig.userAgentValue = context.packageName
+        osmConfig.osmdroidBasePath = java.io.File(context.filesDir, "osmdroid")
+        osmConfig.osmdroidTileCache = java.io.File(context.cacheDir, "osmdroid/tiles")
+        osmConfig.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
+            zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(12.0)
+            
+            // Disallow parent layout from intercepting touch gestures during map drags
+            setOnTouchListener { v, event ->
+                when (event.action) {
+                    android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE -> {
+                        v.parent.requestDisallowInterceptTouchEvent(true)
+                    }
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                        v.parent.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                false
+            }
 
             // Add built-in "My Location" overlay with location change hook
             val myLocationOverlay = object : MyLocationNewOverlay(GpsMyLocationProvider(context), this) {
@@ -1772,16 +1826,7 @@ fun MapViewCompose(
                     if (myLoc != null) {
                         post {
                             onPhoneLocationChanged(myLoc)
-                            if (breadcrumbs.isEmpty() || calculateDistance(
-                                    breadcrumbs.last().latitude, breadcrumbs.last().longitude,
-                                    myLoc.latitude, myLoc.longitude
-                                ) > 0.005
-                            ) {
-                                breadcrumbs.add(myLoc)
-                                if (breadcrumbs.size > 200) {
-                                    breadcrumbs.removeAt(0)
-                                }
-                            }
+                            viewModel.addBreadcrumb(myLoc.latitude, myLoc.longitude)
                         }
                     }
                 }
@@ -1795,9 +1840,7 @@ fun MapViewCompose(
                     if (myLoc != null) {
                         post {
                             onPhoneLocationChanged(myLoc)
-                            if (breadcrumbs.isEmpty()) {
-                                breadcrumbs.add(myLoc)
-                            }
+                            viewModel.addBreadcrumb(myLoc.latitude, myLoc.longitude)
                             if (!hasCentered) {
                                 controller.animateTo(myLoc)
                                 controller.setZoom(15.0)
@@ -1820,6 +1863,27 @@ fun MapViewCompose(
                 setScaleBarOffset((16 * d).toInt(), (24 * d).toInt())
             }
             overlays.add(scaleBar)
+        }
+    }
+
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            try {
+                val osmdroidDir = java.io.File(context.filesDir, "osmdroid").apply { mkdirs() }
+                val destFile = java.io.File(osmdroidDir, "offline_map.zip")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                android.widget.Toast.makeText(context, "Offline map imported successfully! Restart map to view.", android.widget.Toast.LENGTH_LONG).show()
+                mapView.invalidate()
+            } catch (e: Exception) {
+                android.util.Log.e("MapView", "Failed to import offline map", e)
+                android.widget.Toast.makeText(context, "Failed to import: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1882,7 +1946,7 @@ fun MapViewCompose(
                     strokeCap = Paint.Cap.ROUND
                     pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f) // Dotted trail
                 }
-                setPoints(breadcrumbs.toList())
+                setPoints(breadcrumbs.map { org.osmdroid.util.GeoPoint(it.first, it.second) })
             }
             mapView.overlays.add(breadcrumbPolyline)
         }
@@ -2325,6 +2389,42 @@ fun MapViewCompose(
                         fontSize = 10.sp,
                         modifier = Modifier.padding(top = 4.dp)
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider(color = BorderDark)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    
+                    // Import offline map button
+                    Button(
+                        onClick = { importLauncher.launch("application/zip") },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan.copy(alpha = 0.2f), contentColor = AccentCyan),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Importar Mapa (.zip)" else "Import Map (.zip)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // Export tracklog button
+                    Button(
+                        onClick = { exportBreadcrumbsToKml(context, breadcrumbs) },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentMint.copy(alpha = 0.2f), contentColor = AccentMint),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Exportar KML" else "Export Track (.kml)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -7739,4 +7839,56 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("All Messages CSV", csv.toString()))
     android.widget.Toast.makeText(context, "All messages exported to CSV and copied to clipboard!", android.widget.Toast.LENGTH_LONG).show()
+}
+
+fun exportBreadcrumbsToKml(context: Context, breadcrumbs: List<Pair<Double, Double>>) {
+    if (breadcrumbs.isEmpty()) {
+        android.widget.Toast.makeText(context, "No breadcrumbs to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val kml = StringBuilder()
+        kml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        kml.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n")
+        kml.append("  <Document>\n")
+        kml.append("    <name>AetherMesh Tracklog</name>\n")
+        kml.append("    <Style id=\"yellowLineGreenPoly\">\n")
+        kml.append("      <LineStyle>\n")
+        kml.append("        <color>7f00ffff</color>\n")
+        kml.append("        <width>4</width>\n")
+        kml.append("      </LineStyle>\n")
+        kml.append("    </Style>\n")
+        kml.append("    <Placemark>\n")
+        kml.append("      <name>Track Path</name>\n")
+        kml.append("      <styleUrl>#yellowLineGreenPoly</styleUrl>\n")
+        kml.append("      <LineString>\n")
+        kml.append("        <extrude>1</extrude>\n")
+        kml.append("        <tessellate>1</tessellate>\n")
+        kml.append("        <coordinates>\n")
+        for (pt in breadcrumbs) {
+            kml.append("          ${pt.second},${pt.first},0\n")
+        }
+        kml.append("        </coordinates>\n")
+        kml.append("      </LineString>\n")
+        kml.append("    </Placemark>\n")
+        kml.append("  </Document>\n")
+        kml.append("</kml>\n")
+
+        val filename = "aethermesh_track_${System.currentTimeMillis()}.kml"
+        val outDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = java.io.File(outDir, filename)
+        file.writeText(kml.toString())
+
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "application/vnd.google-earth.kml+xml"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "Share KML Tracklog"))
+    } catch (e: java.lang.Exception) {
+        android.widget.Toast.makeText(context, "Export failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+    }
 }
