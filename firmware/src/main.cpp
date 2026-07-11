@@ -548,6 +548,7 @@ MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /*
 #define EINK_DC    28   // P0.28
 #define EINK_RST    2   // P0.02
 #define EINK_BUSY   3   // P0.03
+#define EINK_BL    11   // P0.11 e-paper frontlight (active HIGH via MOSFET)
 // (width, height, SID/MOSI, SCLK, DC, RST, CS, SRAM_CS=-1, MISO=-1, BUSY)
 Adafruit_SSD1681 epd(200, 200, EINK_MOSI, EINK_SCLK, EINK_DC, EINK_RST, EINK_CS, -1, -1, EINK_BUSY);
 bool echoDisplayReady = false;
@@ -3351,6 +3352,11 @@ void setup() {
     Serial.println("Initializing T-Echo e-paper (SSD1681, SW SPI)...");
     epd.begin();
     epd.setRotation(0); // T-Echo panel orientation (90 deg CW from the initial 3)
+    // Turn on the e-paper frontlight. Kept simple (always-on) for now so it's
+    // verifiable; can be moved to button-toggle / a timeout once the pin is
+    // confirmed on hardware.
+    pinMode(EINK_BL, OUTPUT);
+    digitalWrite(EINK_BL, HIGH);
     echoDisplayReady = true;
 #endif
 
