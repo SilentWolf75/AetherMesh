@@ -548,7 +548,8 @@ MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /*
 #define EINK_DC    28   // P0.28
 #define EINK_RST    2   // P0.02
 #define EINK_BUSY   3   // P0.03
-#define EINK_BL    11   // P0.11 e-paper frontlight (active HIGH via MOSFET)
+#define EINK_BL    43   // P1.11 e-paper frontlight (PIN_EINK_EN, active HIGH)
+#define TECHO_POWER_EN 12  // P0.12 gates peripheral power (GPS + battery sense)
 // (width, height, SID/MOSI, SCLK, DC, RST, CS, SRAM_CS=-1, MISO=-1, BUSY)
 Adafruit_SSD1681 epd(200, 200, EINK_MOSI, EINK_SCLK, EINK_DC, EINK_RST, EINK_CS, -1, -1, EINK_BUSY);
 bool echoDisplayReady = false;
@@ -3350,6 +3351,11 @@ void setup() {
     // Bring up the e-paper. Its refresh is slow, so the status screen is drawn
     // once here (after the rest of setup) and then only at a slow cadence.
     Serial.println("Initializing T-Echo e-paper (SSD1681, SW SPI)...");
+    // Enable the T-Echo peripheral power rail FIRST - it gates the GPS module
+    // and the battery-sense divider (both read 0/dead without it).
+    pinMode(TECHO_POWER_EN, OUTPUT);
+    digitalWrite(TECHO_POWER_EN, HIGH);
+    delay(10);
     epd.begin();
     epd.setRotation(0); // T-Echo panel orientation (90 deg CW from the initial 3)
     // Turn on the e-paper frontlight. Kept simple (always-on) for now so it's
@@ -3389,12 +3395,15 @@ void setup() {
 #elif defined(LILYGO_T_ECHO)
     if (gpsMode == 0) {
         Serial.println("Initializing GNSS Module (Lilygo T-Echo L76K)...");
-        pinMode(37, OUTPUT); // GPS_RESET
-        pinMode(34, OUTPUT); // GPS_WAKEUP
+        pinMode(37, OUTPUT); // P1.5 GPS reinit/reset (release)
+        pinMode(34, OUTPUT); // P1.2 GPS standby/enable
         digitalWrite(37, HIGH);
         digitalWrite(34, HIGH);
         delay(100);
-        Serial1.begin(9600); // 9600 baud, default pins P1.8/P1.9 via variant
+        // The generic board profile's Serial1 defaults to the wrong pins; the
+        // T-Echo's L76K UART is RX=41 (P1.9), TX=40 (P1.8).
+        Serial1.setPins(41, 40);
+        Serial1.begin(9600);
     } else {
         Serial.println("GNSS disabled by config (gps_mode=1) - module unpowered.");
         pinMode(37, OUTPUT);
