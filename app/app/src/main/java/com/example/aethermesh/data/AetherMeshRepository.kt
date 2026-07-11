@@ -9,6 +9,7 @@ import com.example.aethermesh.proto.TextMessage
 import com.example.aethermesh.proto.Telemetry
 import com.example.aethermesh.proto.Ack
 import com.example.aethermesh.proto.DeliveryStatus
+import com.example.aethermesh.proto.TraceRoute
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,6 +33,24 @@ data class RouteHopInfo(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class TraceHop(
+    val nodeId: Long,
+    val rssi: Int,
+    val snr: Float
+)
+
+data class TraceRouteState(
+    val visible: Boolean = false,
+    val active: Boolean = false,
+    val targetId: Long = 0L,
+    val traceId: Int = 0,
+    val forward: List<TraceHop> = emptyList(),
+    val returning: List<TraceHop> = emptyList(),
+    val forwardTruncated: Boolean = false,
+    val returnTruncated: Boolean = false,
+    val error: String? = null
+)
+
 class AetherMeshRepository(private val context: Context) {
 
     companion object {
@@ -44,6 +63,7 @@ class AetherMeshRepository(private val context: Context) {
         private const val MAX_CHANNEL_LENGTH = 31
         private const val MESSAGE_ACK_TIMEOUT_MS = 15_000L
         private const val RANGE_PING_TIMEOUT_MS = 15_000L
+        private const val TRACE_ROUTE_TIMEOUT_MS = 30_000L
         private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
     }
 
@@ -116,6 +136,10 @@ class AetherMeshRepository(private val context: Context) {
     // Observed routes from packet headers
     private val _observedRoutes = MutableStateFlow<Map<Long, RouteHopInfo>>(emptyMap())
     val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = _observedRoutes.asStateFlow()
+
+    private val _traceRouteState = MutableStateFlow(TraceRouteState())
+    val traceRouteState: StateFlow<TraceRouteState> = _traceRouteState.asStateFlow()
+    private var traceRouteJob: Job? = null
 
     // Device Authentication flows
     private val _isDeviceAuthenticated = MutableStateFlow(false)
@@ -342,10 +366,11 @@ class AetherMeshRepository(private val context: Context) {
                 // Correct the connectedNodeId in bleManager with the actual hardware node ID from the node
                 bleManager.connectedNodeId = senderId
                 
-                // Clean up duplicate old MAC-based node ID from the database if they differ
+                // Preserve the placeholder record while moving it to the authenticated
+                // 32-bit hardware identity. This retains user names and history.
                 if (oldNodeId != 0L && oldNodeId != senderId) {
-                    dbHelper.deleteNode(oldNodeId)
-                    Log.d(TAG, "Deleted old duplicate MAC-based node ID: 0x${oldNodeId.toString(16).uppercase()}")
+                    dbHelper.migrateNodeIdentity(oldNodeId, senderId)
+                    Log.d(TAG, "Migrated BLE placeholder ID to hardware ID 0x${senderId.toString(16).uppercase()}")
                 }
                 
                 _isDeviceAuthenticated.value = true
@@ -360,10 +385,14 @@ class AetherMeshRepository(private val context: Context) {
                 
                 // Update local node in SQLite database
                 val nodePrefs = context.getSharedPreferences("node_settings_$senderId", Context.MODE_PRIVATE)
-                val localName = nodePrefs.getString("node_name", "")?.takeIf { it.isNotEmpty() } ?: bleManager.connectedDeviceName ?: "Wolf Base"
-                val localShortName = nodePrefs.getString("node_short_name", "")?.takeIf { it.isNotEmpty() } ?: 
-                    localName.replace("AetherMesh-", "").replace("Node ", "").replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase().ifEmpty { String.format("%04X", (senderId and 0xFFFFL).toInt()) }
-                dbHelper.updateNodeNameAndShortName(senderId, localName, localShortName)
+                val savedName = nodePrefs.getString("node_name", "")?.takeIf { it.isNotBlank() }
+                if (savedName != null) {
+                    val savedShortName = nodePrefs.getString("node_short_name", "")?.takeIf { it.isNotBlank() }
+                        ?: savedName.replace("AetherMesh-", "").replace("Node ", "")
+                            .replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
+                            .ifEmpty { String.format("%04X", (senderId and 0xFFFFL).toInt()) }
+                    dbHelper.updateNodeNameAndShortName(senderId, savedName, savedShortName)
+                }
 
                 refreshData()
             } else {
@@ -536,13 +565,61 @@ class AetherMeshRepository(private val context: Context) {
                     rssi = packet.rxRssi,
                     snr = packet.rxSnr,
                     voltage = telemetry.batteryVoltage,
-                    positionPrecision = telemetry.positionPrecision
+                    positionPrecision = telemetry.positionPrecision,
+                    advertisedName = telemetry.nodeName
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
                 notifyLowBattery(senderId, telemetry.batteryLevel, telemetry.isCharging)
                 retryQueuedDirectMessages(senderId)
                 refreshData()
+            }
+            MeshPacket.PayloadCase.TRACE_ROUTE -> {
+                val trace = packet.traceRoute
+                val current = _traceRouteState.value
+                if (trace.type == TraceRoute.Type.RESPONSE && trace.traceId == current.traceId &&
+                    trace.originId.toLong().and(0xFFFFFFFFL) == localNodeId
+                ) {
+                    val forward = trace.forwardNodeIdsList.mapIndexed { index, id ->
+                        TraceHop(
+                            nodeId = id.toLong() and 0xFFFFFFFFL,
+                            rssi = trace.forwardRssiList.getOrElse(index) { 0 },
+                            snr = trace.forwardSnrQuarterDbList.getOrElse(index) { 0 } / 4f
+                        )
+                    }
+                    val returning = trace.returnNodeIdsList.mapIndexed { index, id ->
+                        TraceHop(
+                            nodeId = id.toLong() and 0xFFFFFFFFL,
+                            rssi = trace.returnRssiList.getOrElse(index) { 0 },
+                            snr = trace.returnSnrQuarterDbList.getOrElse(index) { 0 } / 4f
+                        )
+                    }.toMutableList()
+                    if (returning.lastOrNull()?.nodeId != localNodeId) {
+                        returning += TraceHop(localNodeId, packet.rxRssi.toInt(), packet.rxSnr)
+                    }
+
+                    traceRouteJob?.cancel()
+                    _traceRouteState.value = current.copy(
+                        active = false,
+                        forward = forward,
+                        returning = returning,
+                        forwardTruncated = trace.forwardTruncated,
+                        returnTruncated = trace.returnTruncated,
+                        error = null
+                    )
+
+                    if (forward.isNotEmpty()) {
+                        val routes = _observedRoutes.value.toMutableMap()
+                        routes[current.targetId] = RouteHopInfo(
+                            targetId = current.targetId,
+                            nextHopId = forward.first().nodeId,
+                            hops = forward.size,
+                            lastRssi = forward.last().rssi.toFloat(),
+                            lastSnr = forward.last().snr
+                        )
+                        _observedRoutes.value = routes
+                    }
+                }
             }
             MeshPacket.PayloadCase.ACK -> {
                 val ackedId = packet.ack.ackedPacketId
@@ -583,7 +660,7 @@ class AetherMeshRepository(private val context: Context) {
         // Encrypt FIRST and refuse to send on failure — never fall back to
         // transmitting plaintext on a chat the user believes is encrypted.
         val contentToSend = if (isEncrypted) {
-            encryptAES(boundedContent, passcode!!) ?: run {
+            encryptAES(boundedContent, passcode) ?: run {
                 Log.e(TAG, "Encryption failed; message NOT sent.")
                 return false
             }
@@ -742,6 +819,48 @@ class AetherMeshRepository(private val context: Context) {
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
         dbHelper.updateNodeNameAndShortName(nodeId, name, shortName)
         refreshData()
+    }
+
+    fun startTraceRoute(targetId: Long): Boolean {
+        val localNodeId = bleManager.connectedNodeId
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value || localNodeId == 0L ||
+            targetId == 0L || targetId == localNodeId
+        ) return false
+
+        val traceId = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
+        val trace = TraceRoute.newBuilder()
+            .setType(TraceRoute.Type.REQUEST)
+            .setTraceId(traceId)
+            .setOriginId(localNodeId.toInt())
+            .setTargetId(targetId.toInt())
+            .build()
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(targetId.toInt())
+            .setPacketId(traceId)
+            .setHopLimit(7)
+            .setWantAck(false)
+            .setPrevHopId(localNodeId.toInt())
+            .setTraceRoute(trace)
+            .build()
+
+        if (!bleManager.sendPacket(packet.toByteArray())) return false
+
+        traceRouteJob?.cancel()
+        _traceRouteState.value = TraceRouteState(visible = true, active = true, targetId = targetId, traceId = traceId)
+        traceRouteJob = repositoryScope.launch {
+            delay(TRACE_ROUTE_TIMEOUT_MS)
+            val pending = _traceRouteState.value
+            if (pending.active && pending.traceId == traceId) {
+                _traceRouteState.value = pending.copy(active = false, error = "No route response received")
+            }
+        }
+        return true
+    }
+
+    fun clearTraceRouteResult() {
+        traceRouteJob?.cancel()
+        _traceRouteState.value = _traceRouteState.value.copy(visible = false, active = false)
     }
 
     fun sendRemoteConfig(
@@ -1014,7 +1133,7 @@ class AetherMeshRepository(private val context: Context) {
         val found = kotlinx.coroutines.CompletableDeferred<String?>()
         val callback = object : android.bluetooth.le.ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
-                Log.d(TAG, "DFU scan hit: ${result.device.address} (${result.device.name ?: "?"})")
+                Log.d(TAG, "DFU scan hit: ${result.device.address}")
                 found.complete(result.device.address)
             }
 
@@ -1076,7 +1195,9 @@ class AetherMeshRepository(private val context: Context) {
                 dfuSawActivity = false
                 _otaState.value = OtaState(active = true, status = "Starting DFU transfer...")
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    no.nordicsemi.android.dfu.DfuServiceInitiator.createDfuNotificationChannel(context)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        no.nordicsemi.android.dfu.DfuServiceInitiator.createDfuNotificationChannel(context)
+                    }
                     dfuController = no.nordicsemi.android.dfu.DfuServiceInitiator(dfuMac)
                         .setDeviceName(deviceName)
                         .setKeepBond(false)

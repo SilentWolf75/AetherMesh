@@ -30,6 +30,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val selectedChannel: StateFlow<String> = repository.selectedChannel
     val activeChatId: StateFlow<Long?> = repository.activeChatId
     val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = repository.observedRoutes
+    val traceRouteState = repository.traceRouteState
     val isDeviceAuthenticated: StateFlow<Boolean> = repository.isDeviceAuthenticated
     val authenticationRequired: StateFlow<Boolean?> = repository.authenticationRequired
 
@@ -150,6 +151,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
         repository.updateNodeNameAndShortName(nodeId, name, shortName)
     }
+
+    fun startTraceRoute(nodeId: Long): Boolean = repository.startTraceRoute(nodeId)
+
+    fun clearTraceRouteResult() = repository.clearTraceRouteResult()
 
     fun sendRemoteConfig(
         nodeId: Long,

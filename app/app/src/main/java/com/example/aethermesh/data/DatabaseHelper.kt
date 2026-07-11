@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 13
+        private const val DATABASE_VERSION = 14
 
         // Telemetry history (append-only) for per-node battery/voltage graphs
         const val TABLE_TELEMETRY = "telemetry_history"
@@ -39,6 +39,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_ID = "node_id"
         const val COL_NODE_NAME = "name"
         const val COL_NODE_SHORT_NAME = "short_name"
+        const val COL_NODE_NAME_CUSTOM = "name_is_custom"
         const val COL_NODE_BATTERY = "battery"
         const val COL_NODE_LATITUDE = "latitude"
         const val COL_NODE_LONGITUDE = "longitude"
@@ -113,6 +114,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_ID INTEGER PRIMARY KEY,
                 $COL_NODE_NAME TEXT,
                 $COL_NODE_SHORT_NAME TEXT DEFAULT '',
+                $COL_NODE_NAME_CUSTOM INTEGER DEFAULT 0,
                 $COL_NODE_BATTERY INTEGER,
                 $COL_NODE_LATITUDE REAL,
                 $COL_NODE_LONGITUDE REAL,
@@ -321,6 +323,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 android.util.Log.e("DatabaseHelper", "Failed to add position precision column: ${e.message}")
             }
         }
+        if (oldVersion < 14) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_NAME_CUSTOM INTEGER DEFAULT 0")
+                db.execSQL(
+                    "UPDATE $TABLE_NODES SET $COL_NODE_NAME_CUSTOM = 1 " +
+                        "WHERE $COL_NODE_NAME IS NOT NULL AND $COL_NODE_NAME != '' " +
+                        "AND $COL_NODE_NAME NOT LIKE 'Node %' AND $COL_NODE_NAME NOT LIKE 'AetherMesh-%'"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add node name ownership column: ${e.message}")
+            }
+        }
     }
 
     // Append a telemetry sample and prune old rows for that node.
@@ -386,45 +400,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         } catch (e: Exception) {
             android.util.Log.e("DatabaseHelper", "Failed to migrate default channel name: ${e.message}")
         }
-        deduplicateNodes(db)
-    }
-
-    fun deduplicateNodes(db: SQLiteDatabase) {
-        val cursor = db.rawQuery("SELECT $COL_NODE_ID FROM $TABLE_NODES ORDER BY $COL_NODE_ID DESC", null)
-        val seenLower16 = mutableSetOf<Long>()
-        val duplicatesToRemove = mutableListOf<Long>()
-        
-        if (cursor.moveToFirst()) {
-            do {
-                val nodeId = cursor.getLong(0)
-                val lower16 = nodeId and 0xFFFFL
-                if (seenLower16.contains(lower16)) {
-                    duplicatesToRemove.add(nodeId)
-                } else {
-                    seenLower16.add(lower16)
-                }
-            } while (cursor.moveToNext())
-        }
-        cursor.close()
-        
-        duplicatesToRemove.forEach { dupId ->
-            val lower16 = dupId and 0xFFFFL
-            val canonicalCursor = db.rawQuery(
-                "SELECT $COL_NODE_ID FROM $TABLE_NODES WHERE ($COL_NODE_ID & 65535) = CAST(? AS INTEGER) AND $COL_NODE_ID != CAST(? AS INTEGER)",
-                arrayOf(lower16.toString(), dupId.toString())
-            )
-            if (canonicalCursor.moveToFirst()) {
-                val canonicalId = canonicalCursor.getLong(0)
-                db.delete(TABLE_NODES, "$COL_NODE_ID = ?", arrayOf(dupId.toString()))
-                
-                val msgValues = ContentValues().apply { put(COL_MSG_SENDER, canonicalId) }
-                db.update(TABLE_MESSAGES, msgValues, "$COL_MSG_SENDER = ?", arrayOf(dupId.toString()))
-                
-                val rxValues = ContentValues().apply { put(COL_MSG_RECIPIENT, canonicalId) }
-                db.update(TABLE_MESSAGES, rxValues, "$COL_MSG_RECIPIENT = ?", arrayOf(dupId.toString()))
-            }
-            canonicalCursor.close()
-        }
+        // Identity is the full 32-bit hardware ID. Older builds matched only the
+        // low 16 bits, which could merge unrelated nodes; explicit BLE-to-hardware
+        // migration now handles the one legitimate ID transition.
     }
 
     // Message insertion
@@ -708,34 +686,61 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     // Resolve canonical node ID (handles merging 16-bit and 32-bit representations of the same physical node)
     fun resolveCanonicalNodeId(db: android.database.sqlite.SQLiteDatabase, nodeId: Long): Long {
-        if (nodeId == 0L) return 0L
-        val incomingLower16 = nodeId and 0xFFFFL
-        
-        val cursor = db.rawQuery(
-            "SELECT $COL_NODE_ID FROM $TABLE_NODES WHERE ($COL_NODE_ID & 65535) = CAST(? AS INTEGER)",
-            arrayOf(incomingLower16.toString())
-        )
-        var canonicalId = nodeId
-        if (cursor.moveToFirst()) {
-            val existingId = cursor.getLong(0)
-            if (existingId != nodeId) {
-                if (existingId > 0xFFFF && nodeId <= 0xFFFF) {
-                    canonicalId = existingId
-                } else if (nodeId > 0xFFFF && existingId <= 0xFFFF) {
-                    db.delete(TABLE_NODES, "$COL_NODE_ID = ?", arrayOf(existingId.toString()))
-                    
-                    val msgValues = ContentValues().apply { put(COL_MSG_SENDER, nodeId) }
-                    db.update(TABLE_MESSAGES, msgValues, "$COL_MSG_SENDER = ?", arrayOf(existingId.toString()))
-                    
-                    val rxValues = ContentValues().apply { put(COL_MSG_RECIPIENT, nodeId) }
-                    db.update(TABLE_MESSAGES, rxValues, "$COL_MSG_RECIPIENT = ?", arrayOf(existingId.toString()))
-                    
-                    canonicalId = nodeId
+        return nodeId
+    }
+
+    fun migrateNodeIdentity(oldNodeId: Long, hardwareNodeId: Long) {
+        if (oldNodeId == 0L || hardwareNodeId == 0L || oldNodeId == hardwareNodeId) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val oldCursor = db.rawQuery(
+                "SELECT $COL_NODE_NAME, $COL_NODE_SHORT_NAME, $COL_NODE_NAME_CUSTOM FROM $TABLE_NODES WHERE $COL_NODE_ID = ?",
+                arrayOf(oldNodeId.toString())
+            )
+            val hasOld = oldCursor.moveToFirst()
+            val oldName = if (hasOld) oldCursor.getString(0) ?: "" else ""
+            val oldShortName = if (hasOld) oldCursor.getString(1) ?: "" else ""
+            val oldCustom = hasOld && oldCursor.getInt(2) != 0
+            oldCursor.close()
+
+            if (hasOld) {
+                val newCursor = db.rawQuery(
+                    "SELECT $COL_NODE_NAME_CUSTOM FROM $TABLE_NODES WHERE $COL_NODE_ID = ?",
+                    arrayOf(hardwareNodeId.toString())
+                )
+                val hasNew = newCursor.moveToFirst()
+                val newCustom = hasNew && newCursor.getInt(0) != 0
+                newCursor.close()
+
+                if (!hasNew) {
+                    val idValues = ContentValues().apply { put(COL_NODE_ID, hardwareNodeId) }
+                    db.update(TABLE_NODES, idValues, "$COL_NODE_ID = ?", arrayOf(oldNodeId.toString()))
+                } else {
+                    if (oldCustom && !newCustom) {
+                        val nameValues = ContentValues().apply {
+                            put(COL_NODE_NAME, oldName)
+                            put(COL_NODE_SHORT_NAME, oldShortName)
+                            put(COL_NODE_NAME_CUSTOM, 1)
+                        }
+                        db.update(TABLE_NODES, nameValues, "$COL_NODE_ID = ?", arrayOf(hardwareNodeId.toString()))
+                    }
+                    db.delete(TABLE_NODES, "$COL_NODE_ID = ?", arrayOf(oldNodeId.toString()))
                 }
             }
+
+            val senderValues = ContentValues().apply { put(COL_MSG_SENDER, hardwareNodeId) }
+            db.update(TABLE_MESSAGES, senderValues, "$COL_MSG_SENDER = ?", arrayOf(oldNodeId.toString()))
+            val recipientValues = ContentValues().apply { put(COL_MSG_RECIPIENT, hardwareNodeId) }
+            db.update(TABLE_MESSAGES, recipientValues, "$COL_MSG_RECIPIENT = ?", arrayOf(oldNodeId.toString()))
+            val rangeValues = ContentValues().apply { put(COL_LOG_TARGET_ID, hardwareNodeId) }
+            db.update(TABLE_RANGE_TEST_LOGS, rangeValues, "$COL_LOG_TARGET_ID = ?", arrayOf(oldNodeId.toString()))
+            val telemetryValues = ContentValues().apply { put(COL_TEL_NODE_ID, hardwareNodeId) }
+            db.update(TABLE_TELEMETRY, telemetryValues, "$COL_TEL_NODE_ID = ?", arrayOf(oldNodeId.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        cursor.close()
-        return canonicalId
     }
 
     // Retrieve single node name helper
@@ -743,8 +748,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = this.readableDatabase
         var name: String? = null
         val cursor = db.rawQuery(
-            "SELECT $COL_NODE_NAME FROM $TABLE_NODES WHERE $COL_NODE_ID = ? OR ($COL_NODE_ID & 65535) = CAST(? AS INTEGER)",
-            arrayOf(nodeId.toString(), (nodeId and 0xFFFFL).toString())
+            "SELECT $COL_NODE_NAME FROM $TABLE_NODES WHERE $COL_NODE_ID = ?",
+            arrayOf(nodeId.toString())
         )
         if (cursor.moveToFirst()) {
             name = cursor.getString(0)
@@ -760,6 +765,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val canonicalId = resolveCanonicalNodeId(db, nodeId)
         val values = ContentValues().apply {
             put(COL_NODE_NAME, name)
+            put(COL_NODE_NAME_CUSTOM, 1)
         }
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
         if (rows == 0) {
@@ -786,7 +792,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         rssi: Float = 0f,
         snr: Float = 0f,
         voltage: Float = 0f,
-        positionPrecision: Int = 0
+        positionPrecision: Int = 0,
+        advertisedName: String = ""
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -794,18 +801,27 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
         var existingName = ""
         var existingShortName = ""
+        var existingNameIsCustom = false
         val cursorName = db.rawQuery(
-            "SELECT $COL_NODE_NAME, $COL_NODE_SHORT_NAME FROM $TABLE_NODES WHERE $COL_NODE_ID = ?",
+            "SELECT $COL_NODE_NAME, $COL_NODE_SHORT_NAME, $COL_NODE_NAME_CUSTOM FROM $TABLE_NODES WHERE $COL_NODE_ID = ?",
             arrayOf(canonicalId.toString())
         )
         if (cursorName.moveToFirst()) {
             existingName = cursorName.getString(0) ?: ""
             existingShortName = cursorName.getString(1) ?: ""
+            existingNameIsCustom = cursorName.getInt(2) != 0
         }
         cursorName.close()
 
-        val nameToUse = if (existingName.isNotEmpty()) existingName else "Node ${String.format("%04X", (canonicalId and 0xFFFF).toInt())}"
-        val shortNameToUse = if (existingShortName.isNotEmpty()) existingShortName else {
+        val defaultName = "Node ${String.format("%08X", canonicalId)}"
+        val nameToUse = when {
+            existingNameIsCustom && existingName.isNotEmpty() -> existingName
+            advertisedName.isNotBlank() -> advertisedName.take(16)
+            existingName.isNotEmpty() -> existingName
+            else -> defaultName
+        }
+        val shouldRegenerateShortName = !existingNameIsCustom && advertisedName.isNotBlank()
+        val shortNameToUse = if (existingShortName.isNotEmpty() && !shouldRegenerateShortName) existingShortName else {
             val clean = nameToUse.replace("AetherMesh-", "").replace("Node ", "").replace(Regex("[^a-zA-Z0-9]"), "")
             clean.take(4).uppercase().ifEmpty { String.format("%04X", (canonicalId and 0xFFFF).toInt()) }
         }
@@ -818,6 +834,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_NODE_MODEL, model)
             put(COL_NODE_NAME, nameToUse)
             put(COL_NODE_SHORT_NAME, shortNameToUse)
+            put(COL_NODE_NAME_CUSTOM, if (existingNameIsCustom) 1 else 0)
             put(COL_NODE_UPTIME, uptimeSeconds)
             put(COL_NODE_FW_VERSION, firmwareVersion)
             put(COL_NODE_IS_CHARGING, if (isCharging) 1 else 0)
@@ -881,6 +898,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val values = ContentValues().apply {
             put(COL_NODE_NAME, name)
             put(COL_NODE_SHORT_NAME, shortName)
+            put(COL_NODE_NAME_CUSTOM, 1)
         }
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
         if (rows == 0) {

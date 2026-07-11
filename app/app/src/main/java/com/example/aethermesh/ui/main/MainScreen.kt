@@ -41,6 +41,7 @@ import com.example.aethermesh.AetherMeshApplication
 import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
 import com.example.aethermesh.data.MeshNode
+import com.example.aethermesh.data.TraceRouteState
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -349,6 +350,7 @@ fun MainScreen(
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
     var phoneLocation by remember { mutableStateOf<GeoPoint?>(null) }
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
+    val traceRouteState by viewModel.traceRouteState.collectAsStateWithLifecycle()
 
     val channels by viewModel.channels.collectAsStateWithLifecycle()
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
@@ -497,10 +499,15 @@ fun MainScreen(
                             viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
                         },
                         getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
-                        connectedNodeId = viewModel.connectedNodeId
+                        connectedNodeId = viewModel.connectedNodeId,
+                        traceRouteState = traceRouteState,
+                        onTraceRoute = { viewModel.startTraceRoute(it) },
+                        onDismissTrace = { viewModel.clearTraceRouteResult() }
                     )
                     TabItem.MAP -> MapViewCompose(
                         nodes = nodes,
+                        observedRoutes = observedRoutes,
+                        traceRouteState = traceRouteState,
                         viewModel = viewModel,
                         appLanguage = appLanguage,
                         useImperialUnits = useImperialUnitsSetting,
@@ -1156,10 +1163,71 @@ fun NodesView(
     onNodeClick: (Long) -> Unit,
     onRenameNode: (Long, String, String) -> Unit,
     getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
-    connectedNodeId: Long = 0L
+    connectedNodeId: Long = 0L,
+    traceRouteState: TraceRouteState = TraceRouteState(),
+    onTraceRoute: (Long) -> Boolean = { false },
+    onDismissTrace: () -> Unit = {}
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var detailNode by remember { mutableStateOf<MeshNode?>(null) }
+
+    if (traceRouteState.visible && (traceRouteState.active || traceRouteState.forward.isNotEmpty() || traceRouteState.error != null)) {
+        val target = nodes.find { it.nodeId == traceRouteState.targetId }
+        val local = nodes.find { it.nodeId == connectedNodeId }
+        fun nodeLabel(id: Long): String = nodes.find { it.nodeId == id }?.name
+            ?: "0x${id.toString(16).uppercase()}"
+
+        AlertDialog(
+            onDismissRequest = { if (!traceRouteState.active) onDismissTrace() },
+            containerColor = SurfaceDark,
+            title = { Text("Route to ${target?.name ?: nodeLabel(traceRouteState.targetId)}", color = TextLight) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    if (traceRouteState.active) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = AccentCyan)
+                        Spacer(Modifier.height(12.dp))
+                        Text("Tracing the live forward and return paths...", color = TextMuted, fontSize = 13.sp)
+                    } else if (traceRouteState.error != null) {
+                        Text(traceRouteState.error ?: "Trace failed", color = Color(0xFFF87171), fontWeight = FontWeight.SemiBold)
+                    } else {
+                        @Composable
+                        fun PathSection(title: String, startName: String, hops: List<com.example.aethermesh.data.TraceHop>, truncated: Boolean) {
+                            Text(title, color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(startName, color = TextLight, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
+                            hops.forEach { hop ->
+                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = TextMuted, modifier = Modifier.size(15.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(nodeLabel(hop.nodeId), color = TextLight, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                    Text("${hop.rssi} dBm  ${"%.1f".format(hop.snr)} dB", color = TextMuted, fontSize = 11.sp)
+                                }
+                            }
+                            if (truncated) Text("Path exceeded the 8-hop capture limit", color = Color(0xFFFBBF24), fontSize = 11.sp)
+                        }
+
+                        PathSection(
+                            "Forward (${traceRouteState.forward.size} hop${if (traceRouteState.forward.size == 1) "" else "s"})",
+                            local?.name ?: nodeLabel(connectedNodeId),
+                            traceRouteState.forward,
+                            traceRouteState.forwardTruncated
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        PathSection(
+                            "Return (${traceRouteState.returning.size} hop${if (traceRouteState.returning.size == 1) "" else "s"})",
+                            target?.name ?: nodeLabel(traceRouteState.targetId),
+                            traceRouteState.returning,
+                            traceRouteState.returnTruncated
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!traceRouteState.active) {
+                    TextButton(onClick = onDismissTrace) { Text("Close", color = AccentCyan) }
+                }
+            }
+        )
+    }
 
     // Consolidated node detail: all facts about one node + actions in one place.
     detailNode?.let { selected ->
@@ -1169,7 +1237,7 @@ fun NodesView(
         val hasLiveSignal = route != null && route.lastRssi != 0f
         val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
         val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
-        val distStr = if (phoneLocation != null && node.latitude != 0.0f && node.longitude != 0.0f) {
+        val distStr = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
             val km = calculateDistance(phoneLocation.latitude, phoneLocation.longitude, node.latitude.toDouble(), node.longitude.toDouble())
             if (useImperialUnits) {
                 val mi = km * 0.621371
@@ -1207,7 +1275,7 @@ fun NodesView(
                     if (node.uptimeSeconds > 0) DetailRow("Uptime", formatUptime(node.uptimeSeconds))
                     if (sigRssi != 0f) DetailRow("Signal", "${sigRssi.toInt()} dBm  •  ${"%.1f".format(sigSnr)} dB SNR")
                     if (distStr != null) DetailRow("Distance", distStr)
-                    if (node.latitude != 0.0f || node.longitude != 0.0f) {
+                    if (hasValidPosition(node.latitude, node.longitude)) {
                         DetailRow("Position", "%.4f, %.4f".format(node.latitude, node.longitude))
                     }
 
@@ -1261,6 +1329,21 @@ fun NodesView(
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                             shape = RoundedCornerShape(8.dp)
                         ) { Text("Rename", color = TextLight, fontSize = 12.sp) }
+                    }
+                    if (node.nodeId != connectedNodeId) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                if (onTraceRoute(node.nodeId)) detailNode = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, AccentMint),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.AltRoute, contentDescription = null, tint = AccentMint, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Trace Route", color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             },
@@ -1455,7 +1538,7 @@ fun NodeItem(
             )
             
             // Distance & Bearing calculation
-            if (phoneLocation != null && node.latitude != 0.0f && node.longitude != 0.0f) {
+            if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
                 val distanceKm = calculateDistance(
                     phoneLocation.latitude, phoneLocation.longitude,
                     node.latitude.toDouble(), node.longitude.toDouble()
@@ -1652,6 +1735,8 @@ fun createBadgeMarkerDrawable(
 @Composable
 fun MapViewCompose(
     nodes: List<MeshNode>,
+    observedRoutes: Map<Long, com.example.aethermesh.data.RouteHopInfo>,
+    traceRouteState: TraceRouteState,
     viewModel: MainScreenViewModel,
     appLanguage: String,
     useImperialUnits: Boolean,
@@ -1736,6 +1821,13 @@ fun MapViewCompose(
         }
     }
 
+    DisposableEffect(mapView) {
+        onDispose {
+            mapView.overlays.filterIsInstance<MyLocationNewOverlay>().forEach { it.disableMyLocation() }
+            mapView.onDetach()
+        }
+    }
+
     // Dark tile filter: invert tile colors so the map matches the dark UI
     LaunchedEffect(darkMapTiles) {
         if (darkMapTiles) {
@@ -1759,7 +1851,7 @@ fun MapViewCompose(
     }
 
     // Update overlays reactively whenever nodes, rangeTestLogs, phoneLocation, or breadcrumbs size changes
-    LaunchedEffect(nodes, rangeTestLogs, phoneLocation, breadcrumbs.size) {
+    LaunchedEffect(nodes, observedRoutes, traceRouteState, rangeTestLogs, phoneLocation, breadcrumbs.size) {
         // Keep the long-lived overlays (location, compass, scale bar); rebuild the rest
         val persistentOverlays = mapView.overlays.filter {
             it is MyLocationNewOverlay || it is CompassOverlay || it is ScaleBarOverlay
@@ -1805,14 +1897,15 @@ fun MapViewCompose(
             mapView.overlays.add(phoneMarker)
         }
 
-        // 1. Draw mesh link polylines (dashed cyan lines) from the local node to remote nodes
+        // 1. Draw only observed links. A known node is not automatically a
+        // direct neighbor; older builds drew a misleading local-to-everyone star.
         val localNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
-        if (localNode != null && localNode.latitude != 0.0f && localNode.longitude != 0.0f) {
+        if (localNode != null && hasValidPosition(localNode.latitude, localNode.longitude)) {
             val localPoint = GeoPoint(localNode.latitude.toDouble(), localNode.longitude.toDouble())
 
-            for (node in nodes) {
-                if (node.nodeId != localNode.nodeId && node.latitude != 0.0f && node.longitude != 0.0f) {
-                    val peerPoint = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
+            observedRoutes.values.filter { it.hops == 1 }.forEach { route ->
+                val node = nodes.find { it.nodeId == route.targetId }
+                if (node != null && node.nodeId != localNode.nodeId && hasValidPosition(node.latitude, node.longitude)) {
                     val polyline = Polyline(mapView).apply {
                         outlinePaint.apply {
                             color = AccentCyan.copy(alpha = 0.6f).toArgb()
@@ -1820,19 +1913,42 @@ fun MapViewCompose(
                             strokeCap = Paint.Cap.ROUND
                             pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f) // Dashed line effect
                         }
-                        setPoints(listOf(localPoint, peerPoint))
+                        setPoints(listOf(localPoint, GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())))
                     }
                     mapView.overlays.add(polyline)
+                }
+            }
+
+            if (traceRouteState.forward.isNotEmpty()) {
+                val tracedNodes = listOf(localNode.nodeId) + traceRouteState.forward.map { it.nodeId }
+                tracedNodes.zipWithNext().forEach { (fromId, toId) ->
+                    val from = nodes.find { it.nodeId == fromId }
+                    val to = nodes.find { it.nodeId == toId }
+                    if (from != null && to != null && hasValidPosition(from.latitude, from.longitude) &&
+                        hasValidPosition(to.latitude, to.longitude)
+                    ) {
+                        mapView.overlays.add(Polyline(mapView).apply {
+                            outlinePaint.color = AccentMint.toArgb()
+                            outlinePaint.strokeWidth = 8f
+                            setPoints(listOf(
+                                GeoPoint(from.latitude.toDouble(), from.longitude.toDouble()),
+                                GeoPoint(to.latitude.toDouble(), to.longitude.toDouble())
+                            ))
+                        })
+                    }
                 }
             }
         }
 
         // 2. Draw Range Test trace path segments (color-coded by RSSI)
         if (rangeTestLogs.isNotEmpty()) {
-            val validLogs = rangeTestLogs.filter { it.latitude != 0.0 && it.longitude != 0.0 }
-            for (i in 0 until validLogs.size - 1) {
-                val startLog = validLogs[i]
-                val endLog = validLogs[i + 1]
+            val validLogs = rangeTestLogs.filter { hasValidPosition(it.latitude, it.longitude) }
+            val pathsByTarget = validLogs.groupBy { it.targetId }.values
+            pathsByTarget.forEach { targetLogs ->
+              val orderedLogs = targetLogs.sortedBy { it.timestamp }
+              for (i in 0 until orderedLogs.size - 1) {
+                val startLog = orderedLogs[i]
+                val endLog = orderedLogs[i + 1]
 
                 val startPoint = GeoPoint(startLog.latitude, startLog.longitude)
                 val endPoint = GeoPoint(endLog.latitude, endLog.longitude)
@@ -1854,6 +1970,7 @@ fun MapViewCompose(
                     setPoints(listOf(startPoint, endPoint))
                 }
                 mapView.overlays.add(polyline)
+              }
             }
 
             // Draw Range Test target node markers with sequence pins.
@@ -1894,7 +2011,7 @@ fun MapViewCompose(
         // 3. Draw custom initials-badge markers for each active node.
         // Nodes sitting at (nearly) the same spot get fanned out on a small ring so
         // every badge stays visible and tappable instead of stacking.
-        val placedNodes = nodes.filter { it.latitude != 0.0f && it.longitude != 0.0f }
+        val placedNodes = nodes.filter { hasValidPosition(it.latitude, it.longitude) }
         val nodeGroups = mutableListOf<MutableList<MeshNode>>()
         for (node in placedNodes) {
             val group = nodeGroups.find { g ->
@@ -1968,7 +2085,7 @@ fun MapViewCompose(
 
         // Auto-center on first valid node if we haven't already centered
         if (!hasCentered && nodes.isNotEmpty()) {
-            val validNode = nodes.firstOrNull { it.latitude != 0.0f && it.longitude != 0.0f }
+            val validNode = nodes.firstOrNull { hasValidPosition(it.latitude, it.longitude) }
             if (validNode != null) {
                 mapView.controller.setCenter(GeoPoint(validNode.latitude.toDouble(), validNode.longitude.toDouble()))
                 mapView.controller.setZoom(15.0)
@@ -1986,7 +2103,7 @@ fun MapViewCompose(
         )
 
         // expandable Heard (No GPS) Nodes overlay Card
-        val noGpsNodes = nodes.filter { it.latitude == 0.0f || it.longitude == 0.0f }
+        val noGpsNodes = nodes.filterNot { hasValidPosition(it.latitude, it.longitude) }
         var showNoGpsNodesList by remember { mutableStateOf(false) }
         
         if (noGpsNodes.isNotEmpty()) {
@@ -2129,7 +2246,7 @@ fun MapViewCompose(
             // Center on Mesh (Home)
             FloatingActionButton(
                 onClick = {
-                    val validNodes = nodes.filter { it.latitude != 0.0f && it.longitude != 0.0f }
+                    val validNodes = nodes.filter { hasValidPosition(it.latitude, it.longitude) }
                     if (validNodes.isNotEmpty()) {
                         val points = validNodes.map {
                             GeoPoint(it.latitude.toDouble(), it.longitude.toDouble())
@@ -2399,7 +2516,7 @@ fun MapViewCompose(
 
         // Ping detail card — shown when a range-test pin is tapped
         if (activeMapNode == null) selectedPingLog?.let { log ->
-            val validLogs = rangeTestLogs.filter { it.latitude != 0.0 && it.longitude != 0.0 }
+            val validLogs = rangeTestLogs.filter { hasValidPosition(it.latitude, it.longitude) }
             val pingNumber = validLogs.indexOfFirst { it.id == log.id } + 1
             val statusColor = if (log.success) AccentMint else AccentRed
             Box(
@@ -2497,7 +2614,7 @@ fun MapViewCompose(
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
                                     val targetNode = nodes.find {
-                                        it.nodeId == log.targetId && it.latitude != 0.0f && it.longitude != 0.0f
+                                        it.nodeId == log.targetId && hasValidPosition(it.latitude, it.longitude)
                                     }
                                     if (targetNode != null) {
                                         val distKm = calculateDistance(
@@ -4093,7 +4210,7 @@ fun SettingsView(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    val hasLock = connectedNode != null && connectedNode.latitude != 0.0f && connectedNode.longitude != 0.0f
+                    val hasLock = connectedNode != null && hasValidPosition(connectedNode.latitude, connectedNode.longitude)
                     
                     // Status Badge row
                     Row(
@@ -6365,7 +6482,7 @@ fun ConnectionView(
                             val target = selectedRangeTargetNode
                             val fix = viewModel.lastPhoneFix()
                             if (target != null && fix != null &&
-                                target.latitude != 0.0f && target.longitude != 0.0f
+                                hasValidPosition(target.latitude, target.longitude)
                             ) {
                                 val km = calculateDistance(
                                     fix.latitude, fix.longitude,
@@ -6781,6 +6898,13 @@ fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): D
             Math.sin(dLon / 2) * Math.sin(dLon / 2)
     val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
     return r * c
+}
+
+fun hasValidPosition(latitude: Number, longitude: Number): Boolean {
+    val lat = latitude.toDouble()
+    val lon = longitude.toDouble()
+    return lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0 &&
+        !(lat == 0.0 && lon == 0.0)
 }
 
 fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): String {
@@ -7572,7 +7696,7 @@ fun exportRangeTestLogsToCsv(
         val speed = it.speedMps?.toString() ?: ""
         val accuracy = it.gpsAccuracyM?.toString() ?: ""
         val targetPos = nodePositions[it.targetId]
-        val distance = if (targetPos != null && it.latitude != 0.0 && it.longitude != 0.0 &&
+        val distance = if (targetPos != null && hasValidPosition(it.latitude, it.longitude) &&
             targetPos.first != 0.0 && targetPos.second != 0.0
         ) {
             (calculateDistance(it.latitude, it.longitude, targetPos.first, targetPos.second) * 1000).toInt().toString()
