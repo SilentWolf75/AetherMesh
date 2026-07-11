@@ -3218,6 +3218,9 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     hasNewMsgPopup = true;
 #if defined(LILYGO_T_ECHO)
     echoNeedsRefresh = true; // update the e-paper on a new message
+    echoBacklightOn = true;
+    digitalWrite(EINK_BL, HIGH);
+    lastDisplayActivityTime = millis();
 #endif
 
     // Also keep it in the recent-messages ring for the MESSAGES screen page
@@ -3641,6 +3644,16 @@ void loop() {
     }
 
 #if defined(LILYGO_T_ECHO)
+    // Automatic frontlight timeout based on screenTimeoutSecs setting
+    if (echoBacklightOn && screenTimeoutSecs != 0xFFFFFFFF) {
+        uint32_t timeoutMs = (screenTimeoutSecs == 0) ? 15000 : (screenTimeoutSecs * 1000UL);
+        if (millis() - lastDisplayActivityTime > timeoutMs) {
+            echoBacklightOn = false;
+            digitalWrite(EINK_BL, LOW);
+            Serial.println("T-Echo frontlight auto-timed out.");
+        }
+    }
+
     // E-paper refresh is slow/blocking, so run it far less often than the OLED.
     // ~45s cadence keeps the status readable without constant flashing or
     // stalling the radio for long. (No refresh during an OTA/DFU.)
