@@ -2219,7 +2219,7 @@ void drawEchoStatus() {
         float tC = bme.readTemperature();
         float rh = bme.readHumidity();
         float hpa = bme.readPressure() / 100.0f;
-        snprintf(line, sizeof(line), "%.1fC  %.0f%%RH  %.0fhPa", tC, rh, hpa);
+        snprintf(line, sizeof(line), "%.1fF (%.1fC) %.0f%% %.0fhPa", tC * 1.8f + 32.0f, tC, rh, hpa);
         epd.setCursor(6, y); epd.print(line); y += 14;
     }
 
@@ -3235,8 +3235,7 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
 #define USER_BUTTON_PIN 0
 #elif defined(LILYGO_T_ECHO)
-#define USER_BUTTON_PIN 42   // PIN_BUTTON1 = P1.10 (T-Echo user button); the
-                             // generic board profile's PIN_BUTTON1 is the DK's
+#define USER_BUTTON_PIN 11   // P0.11 (T-Echo capacitive touch button)
 #elif defined(PIN_BUTTON1)
 #define USER_BUTTON_PIN PIN_BUTTON1
 #elif defined(BUTTON_PIN1)
@@ -3278,9 +3277,15 @@ void setup() {
     
     // Check boot button for factory reset before loading settings
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
+#if defined(LILYGO_T_ECHO)
+    pinMode(USER_BUTTON_PIN, INPUT_PULLDOWN);
+    delay(100);
+    if (digitalRead(USER_BUTTON_PIN) == HIGH) {
+#else
     pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
     delay(100); // let pin voltage settle
     if (digitalRead(USER_BUTTON_PIN) == LOW) {
+#endif
         Serial.println("!!! BOOT BUTTON HELD ON STARTUP - PERFORMING FACTORY RESET !!!");
         nodeCustomName[0] = '\0';
         nodePassword[0] = '\0';
@@ -3587,9 +3592,18 @@ void loop() {
     lastTouchState = currentTouchState;
 #endif
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
+#if defined(LILYGO_T_ECHO)
+    static bool lastButtonState = LOW;
+#else
     static bool lastButtonState = HIGH;
+#endif
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
-    if (currentButtonState == LOW && lastButtonState == HIGH) {
+#if defined(LILYGO_T_ECHO)
+    bool buttonPressed = (currentButtonState == HIGH && lastButtonState == LOW);
+#else
+    bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
+#endif
+    if (buttonPressed) {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
         // Button behavior: dismiss a visible message popup first; otherwise
         // advance the page carousel while the screen is on. Pressing while the
