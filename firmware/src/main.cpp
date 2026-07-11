@@ -2207,6 +2207,8 @@ void drawEchoStatus() {
         snprintf(line, sizeof(line), "Phone GPS:");
         epd.setCursor(6, y); epd.print(line); y += 12;
         snprintf(line, sizeof(line), "%.5f, %.5f", inheritedLat, inheritedLon);
+    } else if (gpsMode != 0) {
+        snprintf(line, sizeof(line), "GPS: disabled");
     } else if (!hasOnboardGps) {
         snprintf(line, sizeof(line), "GPS: none (share phone)");
     } else {
@@ -3281,7 +3283,8 @@ void setup() {
     // Check boot button for factory reset before loading settings
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
 #if defined(LILYGO_T_ECHO)
-    pinMode(USER_BUTTON_PIN, INPUT_PULLDOWN);
+    pinMode(USER_BUTTON_PIN, INPUT_PULLDOWN); // Touch button active HIGH
+    pinMode(42, INPUT_PULLUP);                // Side function button active LOW
     delay(100);
     if (digitalRead(USER_BUTTON_PIN) == HIGH) {
 #else
@@ -3644,6 +3647,101 @@ void loop() {
     }
 
 #if defined(LILYGO_T_ECHO)
+    // Physical side function button (pin 42) handler (active LOW)
+    static uint32_t lastFuncBtnState = HIGH;
+    static uint32_t funcBtnPressStart = 0;
+    static uint32_t funcBtnClickCount = 0;
+    static uint32_t lastFuncBtnReleaseTime = 0;
+
+    bool currentFuncBtnState = digitalRead(42);
+
+    // Press detected (falling edge)
+    if (currentFuncBtnState == LOW && lastFuncBtnState == HIGH) {
+        funcBtnPressStart = millis();
+        lastDisplayActivityTime = millis(); // Wake backlight timeout
+    }
+
+    // Release detected (rising edge)
+    if (currentFuncBtnState == HIGH && lastFuncBtnState == LOW) {
+        uint32_t pressDuration = millis() - funcBtnPressStart;
+        if (pressDuration < 500) {
+            funcBtnClickCount++;
+            lastFuncBtnReleaseTime = millis();
+        }
+        funcBtnPressStart = 0;
+    }
+
+    // Check if held down for 3 seconds -> Power Shutdown
+    if (currentFuncBtnState == LOW && funcBtnPressStart > 0 && (millis() - funcBtnPressStart > 3000)) {
+        Serial.println("Func button held 3s -> Initiating T-Echo Shutdown...");
+        epd.clearBuffer();
+        epd.setTextColor(EPD_BLACK);
+        epd.setTextSize(2);
+        epd.setCursor(6, 40);
+        epd.print("Shutting Down");
+        epd.setTextSize(1);
+        epd.setCursor(6, 70);
+        epd.print("Release button to power off");
+        epd.display();
+
+        // Wait for release before entering system off to prevent instant wake
+        while (digitalRead(42) == LOW) {
+            delay(50);
+        }
+
+        // Configure wakeup sources for system off mode
+        nrf_gpio_cfg_sense_input(42, NRF_GPIO_PIN_PULLUP, NRF_GPIO_PIN_SENSE_LOW);
+        nrf_gpio_cfg_sense_input(11, NRF_GPIO_PIN_PULLDOWN, NRF_GPIO_PIN_SENSE_HIGH);
+
+        // Power down peripherals, frontlight, and GPS
+        digitalWrite(EINK_BL, LOW);
+        digitalWrite(TECHO_POWER_EN, LOW);
+        digitalWrite(37, LOW); // GPS Reset
+        digitalWrite(34, LOW); // GPS Standby
+
+        sd_power_system_off();
+        NRF_POWER->SYSTEMOFF = 1;
+        while (1) { delay(100); }
+    }
+
+    // Process click count after a quiet period of 400ms since last release
+    if (funcBtnClickCount > 0 && funcBtnPressStart == 0 && (millis() - lastFuncBtnReleaseTime > 400)) {
+        if (funcBtnClickCount == 1) {
+            // 1 Click: Toggle e-paper frontlight
+            echoBacklightOn = !echoBacklightOn;
+            digitalWrite(EINK_BL, echoBacklightOn ? HIGH : LOW);
+            echoNeedsRefresh = true;
+            Serial.println("Func Click 1x -> Toggle Backlight");
+        } else if (funcBtnClickCount == 2) {
+            // 2 Clicks: Send Mesh range-test PING
+            Serial.println("Func Click 2x -> Send Ping Broadcast");
+            router.sendText(0xFFFFFFFF, "PING");
+            echoNeedsRefresh = true;
+        } else if (funcBtnClickCount == 3) {
+            // 3 Clicks: Toggle GPS Module Power
+            if (gpsMode == 0) {
+                gpsMode = 1;
+                digitalWrite(37, LOW); // GPS Reset LOW
+                digitalWrite(34, LOW); // GPS Standby LOW
+                Serial.println("Func Click 3x -> GPS OFF");
+            } else {
+                gpsMode = 0;
+                digitalWrite(37, HIGH);
+                digitalWrite(34, HIGH);
+                Serial1.setPins(41, 40);
+                Serial1.begin(9600);
+                Serial.println("Func Click 3x -> GPS ON");
+            }
+            echoNeedsRefresh = true;
+        } else if (funcBtnClickCount >= 4) {
+            // 4+ Clicks: Force full e-paper screen refresh
+            echoNeedsRefresh = true;
+            Serial.println("Func Click 4x -> Force Redraw");
+        }
+        funcBtnClickCount = 0;
+    }
+    lastFuncBtnState = currentFuncBtnState;
+
     // Automatic frontlight timeout based on screenTimeoutSecs setting
     if (echoBacklightOn && screenTimeoutSecs != 0xFFFFFFFF) {
         uint32_t timeoutMs = (screenTimeoutSecs == 0) ? 15000 : (screenTimeoutSecs * 1000UL);
