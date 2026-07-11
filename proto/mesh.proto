@@ -16,6 +16,10 @@ message MeshPacket {
   float rx_rssi = 14;        // Received Signal Strength Indicator (LoRa last hop)
   float rx_snr = 15;         // Signal-to-Noise Ratio (LoRa last hop)
   uint32 retry_count = 16;   // Retransmit attempt for this packet_id; relays forward higher attempts.
+  uint32 protocol_version = 23; // 0/1 = legacy packet, 2 = authenticated envelope capable.
+  uint64 session_id = 24;       // Random boot/session identity used for replay protection.
+  uint32 auth_counter = 25;     // Monotonic counter within session_id; 0 when unauthenticated.
+  bytes auth_tag = 26;          // Truncated packet authentication tag; empty for V1 compatibility.
 
   oneof payload {
     TextMessage text = 6;
@@ -30,13 +34,37 @@ message MeshPacket {
     OtaData ota_data = 19;
     OtaStatus ota_status = 20;
     TraceRoute trace_route = 21;
+    MeshDiagnostics diagnostics = 22;
   }
 }
 
+// Local node health snapshot. This payload is emitted to the authenticated BLE
+// companion and is never routed over LoRa.
+message MeshDiagnostics {
+  uint32 tx_packets = 1;
+  uint32 tx_failures = 2;
+  uint32 rx_packets = 3;
+  uint32 relayed_packets = 4;
+  uint32 retries = 5;
+  uint32 acked_packets = 6;
+  uint32 ack_timeouts = 7;
+  uint32 duplicate_packets = 8;
+  uint32 cad_busy_events = 9;
+  uint32 queue_drops = 10;
+  uint32 route_changes = 11;
+  uint32 active_routes = 12;
+  uint32 rebroadcast_queue_depth = 13;
+  uint32 pending_ack_depth = 14;
+  uint32 airtime_ms = 15;
+  uint32 uptime_seconds = 16;
+  uint32 protocol_version = 17;
+}
+
 // --- BLE firmware update (OTA). These messages travel over BLE only, never
-// over LoRa. Flow: phone sends BEGIN (size+md5), node replies READY; phone
+// over LoRa. Flow: phone sends BEGIN (size+digests), node replies READY; phone
 // streams OtaData chunks in windows of OTA_WINDOW, node acks progress with
-// IN_PROGRESS every window; phone sends END, node verifies MD5, replies
+// IN_PROGRESS every window; phone sends END, node verifies SHA-256 (plus MD5
+// for legacy compatibility), replies
 // SUCCESS and reboots into the new image. ABORT (either side) cancels.
 
 message OtaControl {
@@ -51,6 +79,7 @@ message OtaControl {
   Op op = 1;
   uint32 total_size = 2;   // firmware image size in bytes (BEGIN)
   string md5 = 3;          // hex MD5 of the full image (BEGIN)
+  string sha256 = 4;       // hex SHA-256 of the full image (BEGIN, preferred)
 }
 
 message OtaData {
@@ -144,12 +173,17 @@ message DeliveryStatus {
     DELIVERED = 1;
     FAILED = 2;
     RETRYING = 3;
+    QUEUED = 4;
+    STORED = 5;
+    EXPIRED = 6;
   }
   enum Reason {
     REASON_UNSPECIFIED = 0;
     ACK_TIMEOUT = 1;
     QUEUE_EVICTED = 2;
     LOCAL_SEND_FAILED = 3;
+    STORE_FULL = 4;
+    MESSAGE_EXPIRED = 5;
   }
 
   uint32 packet_id = 1;

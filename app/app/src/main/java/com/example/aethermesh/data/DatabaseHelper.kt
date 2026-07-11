@@ -9,7 +9,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 15
+        private const val DATABASE_VERSION = 17
+
+        const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
         const val TABLE_ROUTE_OBSERVATIONS = "route_observations"
         const val COL_ROUTE_TARGET_ID = "target_id"
@@ -63,6 +65,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_SNR = "last_snr"
         const val COL_NODE_VOLTAGE = "battery_voltage"
         const val COL_NODE_POS_PRECISION = "position_precision"
+        const val COL_NODE_PROTOCOL_VERSION = "protocol_version"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -134,7 +137,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_RSSI REAL DEFAULT 0,
                 $COL_NODE_SNR REAL DEFAULT 0,
                 $COL_NODE_VOLTAGE REAL DEFAULT 0,
-                $COL_NODE_POS_PRECISION INTEGER DEFAULT 0
+                $COL_NODE_POS_PRECISION INTEGER DEFAULT 0,
+                $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1
             )
         """.trimIndent()
 
@@ -204,6 +208,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
 
+        val createMeshDiagnosticsTable = meshDiagnosticsTableSql()
+
         db.execSQL(createMessagesTable)
         db.execSQL(createNodesTable)
         db.execSQL(createTelemetryTable)
@@ -211,6 +217,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.execSQL(createRangeLogsTable)
         db.execSQL(createChannelsTable)
         db.execSQL(createRouteObservationsTable)
+        db.execSQL(createMeshDiagnosticsTable)
         db.execSQL(insertDefaultChannel)
     }
 
@@ -367,6 +374,100 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 )""".trimIndent()
             )
         }
+        if (oldVersion < 16) {
+            db.execSQL(meshDiagnosticsTableSql())
+        }
+        if (oldVersion < 17) {
+            db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1")
+        }
+    }
+
+    private fun meshDiagnosticsTableSql() = """
+        CREATE TABLE IF NOT EXISTS $TABLE_MESH_DIAGNOSTICS (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            tx_packets INTEGER NOT NULL,
+            tx_failures INTEGER NOT NULL,
+            rx_packets INTEGER NOT NULL,
+            relayed_packets INTEGER NOT NULL,
+            retries INTEGER NOT NULL,
+            acked_packets INTEGER NOT NULL,
+            ack_timeouts INTEGER NOT NULL,
+            duplicate_packets INTEGER NOT NULL,
+            cad_busy_events INTEGER NOT NULL,
+            queue_drops INTEGER NOT NULL,
+            route_changes INTEGER NOT NULL,
+            active_routes INTEGER NOT NULL,
+            rebroadcast_queue_depth INTEGER NOT NULL,
+            pending_ack_depth INTEGER NOT NULL,
+            airtime_ms INTEGER NOT NULL,
+            uptime_seconds INTEGER NOT NULL,
+            protocol_version INTEGER NOT NULL
+        )
+    """.trimIndent()
+
+    fun insertMeshDiagnostics(snapshot: MeshDiagnosticsSnapshot) {
+        val values = ContentValues().apply {
+            put("timestamp", snapshot.timestamp)
+            put("tx_packets", snapshot.txPackets)
+            put("tx_failures", snapshot.txFailures)
+            put("rx_packets", snapshot.rxPackets)
+            put("relayed_packets", snapshot.relayedPackets)
+            put("retries", snapshot.retries)
+            put("acked_packets", snapshot.ackedPackets)
+            put("ack_timeouts", snapshot.ackTimeouts)
+            put("duplicate_packets", snapshot.duplicatePackets)
+            put("cad_busy_events", snapshot.cadBusyEvents)
+            put("queue_drops", snapshot.queueDrops)
+            put("route_changes", snapshot.routeChanges)
+            put("active_routes", snapshot.activeRoutes)
+            put("rebroadcast_queue_depth", snapshot.rebroadcastQueueDepth)
+            put("pending_ack_depth", snapshot.pendingAckDepth)
+            put("airtime_ms", snapshot.airtimeMs)
+            put("uptime_seconds", snapshot.uptimeSeconds)
+            put("protocol_version", snapshot.protocolVersion)
+        }
+        writableDatabase.insert(TABLE_MESH_DIAGNOSTICS, null, values)
+        writableDatabase.execSQL(
+            "DELETE FROM $TABLE_MESH_DIAGNOSTICS WHERE id NOT IN " +
+                "(SELECT id FROM $TABLE_MESH_DIAGNOSTICS ORDER BY id DESC LIMIT 1000)"
+        )
+    }
+
+    fun getLatestMeshDiagnostics(): MeshDiagnosticsSnapshot? = getMeshDiagnosticsHistory(1).firstOrNull()
+
+    fun getMeshDiagnosticsHistory(limit: Int = 1000): List<MeshDiagnosticsSnapshot> {
+        val snapshots = mutableListOf<MeshDiagnosticsSnapshot>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM $TABLE_MESH_DIAGNOSTICS ORDER BY id DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 1000).toString())
+        ).use { cursor ->
+            fun long(name: String) = cursor.getLong(cursor.getColumnIndexOrThrow(name))
+            fun int(name: String) = cursor.getInt(cursor.getColumnIndexOrThrow(name))
+            while (cursor.moveToNext()) {
+                snapshots += MeshDiagnosticsSnapshot(
+                    timestamp = long("timestamp"),
+                    txPackets = long("tx_packets"),
+                    txFailures = long("tx_failures"),
+                    rxPackets = long("rx_packets"),
+                    relayedPackets = long("relayed_packets"),
+                    retries = long("retries"),
+                    ackedPackets = long("acked_packets"),
+                    ackTimeouts = long("ack_timeouts"),
+                    duplicatePackets = long("duplicate_packets"),
+                    cadBusyEvents = long("cad_busy_events"),
+                    queueDrops = long("queue_drops"),
+                    routeChanges = long("route_changes"),
+                    activeRoutes = int("active_routes"),
+                    rebroadcastQueueDepth = int("rebroadcast_queue_depth"),
+                    pendingAckDepth = int("pending_ack_depth"),
+                    airtimeMs = long("airtime_ms"),
+                    uptimeSeconds = long("uptime_seconds"),
+                    protocolVersion = int("protocol_version")
+                )
+            }
+        }
+        return snapshots
     }
 
     // Append a telemetry sample and prune old rows for that node.
@@ -829,7 +930,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         snr: Float = 0f,
         voltage: Float = 0f,
         positionPrecision: Int = 0,
-        advertisedName: String = ""
+        advertisedName: String = "",
+        protocolVersion: Int = 1
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -883,6 +985,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             // Precision is authoritative per telemetry packet: 0 legitimately
             // means "precise" (or old firmware), so always store it.
             put(COL_NODE_POS_PRECISION, positionPrecision)
+            put(COL_NODE_PROTOCOL_VERSION, protocolVersion.coerceAtLeast(1))
         }
         
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
@@ -914,7 +1017,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     rssi = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_RSSI)),
                     snr = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_SNR)),
                     voltage = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_VOLTAGE)),
-                    positionPrecision = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_POS_PRECISION))
+                    positionPrecision = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_POS_PRECISION)),
+                    protocolVersion = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_PROTOCOL_VERSION))
                 ))
             } while (cursor.moveToNext())
         }
@@ -1114,7 +1218,8 @@ data class MeshNode(
     val snr: Float = 0f,
     val voltage: Float = 0f,
     // Privacy blur radius (m) the node applies to its broadcast position; 0 = precise
-    val positionPrecision: Int = 0
+    val positionPrecision: Int = 0,
+    val protocolVersion: Int = 1
 )
 
 data class TelemetrySample(

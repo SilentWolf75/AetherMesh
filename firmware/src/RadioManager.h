@@ -32,6 +32,11 @@ public:
     float getFrequency() { return frequency; }
     uint8_t getSpreadingFactor() { return spreadingFactor; }
     float getBandwidth() { return bandwidth; }
+    uint32_t getTxPackets() const { return txPackets; }
+    uint32_t getTxFailures() const { return txFailures; }
+    uint32_t getRxPackets() const { return rxPackets; }
+    uint32_t getCadBusyEvents() const { return cadBusyEvents; }
+    uint32_t getAirtimeMs() const { return airtimeMsTotal; }
     
 private:
     // SX1262 Instance
@@ -51,6 +56,11 @@ private:
     uint32_t txTimeoutMs;   // expected airtime + margin for the in-flight packet
     uint32_t lastRxActivityTime;
     uint32_t lastHealthLogTime;
+    uint32_t txPackets;
+    uint32_t txFailures;
+    uint32_t rxPackets;
+    uint32_t cadBusyEvents;
+    uint32_t airtimeMsTotal;
     
     // Config
     float frequency;

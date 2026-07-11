@@ -16,6 +16,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  attestations: write
 
 concurrency:
   group: pages
@@ -51,9 +52,24 @@ jobs:
           pio run -e lilygo_t_deck
           pio run -e elecrow_crowpanel_35
 
-      - name: Build Android App (APK)
+      - name: Build Android app
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          AETHERMESH_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          AETHERMESH_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          AETHERMESH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         working-directory: app
-        run: ./gradlew :app:assembleDebug -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aethermesh-release.jks"
+            export AETHERMESH_ANDROID_KEYSTORE="$RUNNER_TEMP/aethermesh-release.jks"
+            ./gradlew :app:assembleRelease -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
+            echo "release" > "$RUNNER_TEMP/android-build-type"
+          else
+            echo "::warning::Android signing secrets are absent; publishing a debug-signed APK."
+            ./gradlew :app:assembleDebug -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
+            echo "debug" > "$RUNNER_TEMP/android-build-type"
+          fi
 
       - name: Merge complete USB images + write manifest
         run: |
@@ -138,16 +154,25 @@ jobs:
 
       - name: Copy Android APK to web-flasher
         run: |
-          APK_PATH=$(find app -name "app-debug.apk" | head -n1)
+          BUILD_TYPE=$(cat "$RUNNER_TEMP/android-build-type")
+          APK_PATH=$(find app -name "app-${BUILD_TYPE}.apk" | head -n1)
           if [ -n "$APK_PATH" ]; then
-            cp "$APK_PATH" web-flasher/aethermesh-app-debug.apk
+            cp "$APK_PATH" web-flasher/aethermesh-app.apk
+            echo "$BUILD_TYPE" > web-flasher/ANDROID_BUILD_TYPE.txt
             echo "Copied APK from $APK_PATH to web-flasher"
           else
             echo "ERROR: Compiled APK not found!"
             exit 1
           fi
           cd web-flasher
-          sha256sum aethermesh-app-debug.apk firmware/* > SHA256SUMS.txt
+          sha256sum aethermesh-app.apk firmware/* > SHA256SUMS.txt
+
+      - name: Attest published builds
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            web-flasher/aethermesh-app.apk
+            web-flasher/firmware/*
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -49,6 +49,8 @@ class BleConnectionManager(private val context: Context) {
     private var scanCallback: ScanCallback? = null
     private val handler = Handler(Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
+    private var connectionTimeoutRunnable: Runnable? = null
+    private var reconnectAttempt = 0
     private var mtuTimeoutRunnable: Runnable? = null
     private var pendingAutoConnectMac: String? = null
 
@@ -238,6 +240,36 @@ class BleConnectionManager(private val context: Context) {
 
         // Explicitly use TRANSPORT_LE to avoid fallback connection delays/drops on dual-mode devices
         bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        connectionTimeoutRunnable = Runnable {
+            val stalledGatt = bluetoothGatt
+            if (stalledGatt != null && !isConnected) {
+                Log.w(TAG, "Connection handshake timed out for $macAddress")
+                try {
+                    stalledGatt.disconnect()
+                    stalledGatt.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error closing timed-out GATT: ${e.message}")
+                }
+                if (bluetoothGatt == stalledGatt) bluetoothGatt = null
+                onConnectionStateChanged?.invoke(false)
+                scheduleReconnect(macAddress)
+            }
+        }
+        handler.postDelayed(connectionTimeoutRunnable!!, 15_000)
+    }
+
+    private fun scheduleReconnect(macAddress: String) {
+        if (userWantsDisconnect || suppressReconnect) return
+        reconnectRunnable?.let { handler.removeCallbacks(it) }
+        val delay = ReconnectPolicy.delayMs(reconnectAttempt, macAddress.hashCode() + reconnectAttempt)
+        reconnectAttempt++
+        Log.d(TAG, "Scheduling reconnect attempt $reconnectAttempt in ${delay}ms")
+        reconnectRunnable = Runnable {
+            reconnectRunnable = null
+            if (!isConnected && !userWantsDisconnect && !suppressReconnect) connect(macAddress)
+        }
+        handler.postDelayed(reconnectRunnable!!, delay)
     }
 
     // Set during a bootloader DFU update: our auto-reconnect must not fight the
@@ -252,6 +284,10 @@ class BleConnectionManager(private val context: Context) {
             handler.removeCallbacks(it)
             reconnectRunnable = null
         }
+        connectionTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+            connectionTimeoutRunnable = null
+        }
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
         bluetoothGatt = null
@@ -262,6 +298,7 @@ class BleConnectionManager(private val context: Context) {
 
     fun resumeAfterDfu() {
         suppressReconnect = false
+        reconnectAttempt = 0
         val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
         if (savedMac != null && !isConnected) {
             // Give the freshly flashed node a moment to boot before connecting
@@ -275,11 +312,16 @@ class BleConnectionManager(private val context: Context) {
 
     fun disconnect() {
         userWantsDisconnect = true
+        reconnectAttempt = 0
         
         // Cancel any pending reconnect attempts
         reconnectRunnable?.let {
             handler.removeCallbacks(it)
             reconnectRunnable = null
+        }
+        connectionTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+            connectionTimeoutRunnable = null
         }
         
         // Clear paired MAC when user explicitly disconnects so we don't auto-connect next time
@@ -404,6 +446,10 @@ class BleConnectionManager(private val context: Context) {
                     handler.removeCallbacks(it)
                     mtuTimeoutRunnable = null
                 }
+                connectionTimeoutRunnable?.let {
+                    handler.removeCallbacks(it)
+                    connectionTimeoutRunnable = null
+                }
                 isConnected = false
                 connectedDeviceName = null
                 connectedNodeId = 0
@@ -424,20 +470,7 @@ class BleConnectionManager(private val context: Context) {
                 if (!userWantsDisconnect && !suppressReconnect) {
                     val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
                     if (savedMac != null) {
-                        Log.d(TAG, "Unexpected disconnect. Retrying connection in 5 seconds...")
-                        
-                        // Cancel any existing reconnect runnable
-                        reconnectRunnable?.let { handler.removeCallbacks(it) }
-                        
-                        reconnectRunnable = Runnable {
-                            if (!isConnected && !userWantsDisconnect) {
-                                val currentSavedMac = prefs.getString(PREF_PAIRED_MAC, null)
-                                if (currentSavedMac != null) {
-                                    connect(currentSavedMac)
-                                }
-                            }
-                        }
-                        handler.postDelayed(reconnectRunnable!!, 5000)
+                        scheduleReconnect(savedMac)
                     }
                 }
             }
@@ -487,11 +520,11 @@ class BleConnectionManager(private val context: Context) {
                     }
                 } else {
                     Log.e(TAG, "AetherMesh service NOT found on device.")
-                    disconnect()
+                    gatt.disconnect()
                 }
             } else {
                 Log.e(TAG, "Service discovery failed: $status")
-                disconnect()
+                gatt.disconnect()
             }
         }
 
@@ -507,13 +540,23 @@ class BleConnectionManager(private val context: Context) {
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (gatt != bluetoothGatt) return
             Log.d(TAG, "onDescriptorWrite callback received: status=$status")
-            finalizeConnection(gatt)
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                finalizeConnection(gatt)
+            } else {
+                Log.e(TAG, "Notification setup failed: $status")
+                gatt.disconnect()
+            }
         }
 
         private fun finalizeConnection(gatt: BluetoothGatt) {
             if (isConnected) return // Prevent double-triggering finalization
             
             isConnected = true
+            reconnectAttempt = 0
+            connectionTimeoutRunnable?.let {
+                handler.removeCallbacks(it)
+                connectionTimeoutRunnable = null
+            }
             connectedDeviceName = safeDeviceName(gatt.device)
             
             // Save MAC address to preferences for auto-reconnection

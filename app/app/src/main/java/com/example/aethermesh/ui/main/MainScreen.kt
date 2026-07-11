@@ -36,6 +36,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.aethermesh.AetherMeshApplication
 import com.example.aethermesh.data.ChatMessage
@@ -1128,18 +1131,19 @@ fun NewChannelDialog(
 fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (ChatMessage) -> Unit) {
     // A message is "ours" when its sender matches the locally connected node.
     val isMe = localNodeId != 0L && message.senderId == localNodeId
-    val canRetry = isMe && message.status == "FAILED"
+    val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
     val statusText = when (message.status) {
         "DELIVERED" -> "✓ Delivered"
         "PENDING" -> "… Pending"
         "FAILED" -> "✗ Failed - tap to retry"
         "QUEUED" -> "… Queued"
+        "EXPIRED" -> "✗ Expired - tap to retry"
         "RETRIED" -> "↻ Retried"
         else -> "✓ Sent"
     }
     val statusColor = when (message.status) {
         "DELIVERED", "SENT" -> AccentMint
-        "FAILED" -> AccentRed
+        "FAILED", "EXPIRED" -> AccentRed
         "PENDING", "QUEUED" -> Color(0xFFFBBF24)
         "RETRIED" -> TextMuted
         else -> TextMuted
@@ -1181,7 +1185,7 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
                 text = statusText,
                 color = statusColor,
                 fontSize = 10.sp,
-                fontWeight = if (message.status == "FAILED") FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (message.status in setOf("FAILED", "EXPIRED")) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier.padding(top = 1.dp)
             )
         }
@@ -1790,9 +1794,11 @@ fun MapViewCompose(
     val mapPrefs = remember { context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE) }
     var darkMapTiles by remember { mutableStateOf(mapPrefs.getBoolean("dark_tiles", false)) }
     var showLayersMenu by remember { mutableStateOf(false) }
+    var mapGeneration by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // Remembered MapView to avoid reloading tiles on recomposition
-    val mapView = remember {
+    val mapView = remember(mapGeneration) {
         // Initialize osmdroid Configuration safely
         val osmConfig = org.osmdroid.config.Configuration.getInstance()
         osmConfig.userAgentValue = context.packageName
@@ -1879,10 +1885,10 @@ fun MapViewCompose(
                 } ?: error("Could not open selected map archive")
                 android.widget.Toast.makeText(
                     context,
-                    "Offline map imported (${info.entries} entries). Restart map to view.",
+                    "Offline map loaded (${info.entries} entries).",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
-                mapView.invalidate()
+                mapGeneration++
             } catch (e: Exception) {
                 android.util.Log.e("MapView", "Failed to import offline map", e)
                 android.widget.Toast.makeText(context, "Failed to import: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
@@ -1890,9 +1896,22 @@ fun MapViewCompose(
         }
     }
 
-    DisposableEffect(mapView) {
+    DisposableEffect(mapView, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            mapView.onResume()
+        }
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.overlays.filterIsInstance<MyLocationNewOverlay>().forEach { it.disableMyLocation() }
+            mapView.onPause()
             mapView.onDetach()
         }
     }
@@ -6371,6 +6390,7 @@ fun ConnectionView(
 
             // 1.5 Mesh Routing Diagnostics Card (only visible when connected)
             val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
+            val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                 shape = RoundedCornerShape(16.dp),
@@ -6385,6 +6405,46 @@ fun ConnectionView(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(12.dp))
+
+                    meshDiagnostics?.let { diagnostics ->
+                        val deliveryAttempts = diagnostics.ackedPackets + diagnostics.ackTimeouts
+                        val deliveryRate = if (deliveryAttempts > 0) {
+                            diagnostics.ackedPackets * 100 / deliveryAttempts
+                        } else 0
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("TX / RX", color = TextMuted, fontSize = 10.sp)
+                                Text("${diagnostics.txPackets} / ${diagnostics.rxPackets}", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Delivery", color = TextMuted, fontSize = 10.sp)
+                                Text("$deliveryRate%", color = if (diagnostics.ackTimeouts == 0L) AccentMint else Color(0xFFFACC15), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Drops / Busy", color = TextMuted, fontSize = 10.sp)
+                                Text("${diagnostics.queueDrops} / ${diagnostics.cadBusyEvents}", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Relayed ${diagnostics.relayedPackets}  Retries ${diagnostics.retries}  Airtime ${diagnostics.airtimeMs / 1000}s  Protocol V${diagnostics.protocolVersion}",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                        TextButton(
+                            onClick = { exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory()) },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Export mesh health CSV", fontSize = 11.sp)
+                        }
+                        HorizontalDivider(color = BorderDark)
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
                     
                     if (observedRoutes.isEmpty()) {
                         Text(
@@ -7828,6 +7888,50 @@ fun exportRangeTestLogsToCsv(
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Range Test Logs", csv.toString()))
         android.widget.Toast.makeText(context, "Share failed (${e.message}); CSV copied to clipboard instead.", android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
+fun exportMeshDiagnosticsToCsv(
+    context: Context,
+    snapshots: List<com.example.aethermesh.data.MeshDiagnosticsSnapshot>
+) {
+    if (snapshots.isEmpty()) {
+        android.widget.Toast.makeText(context, "No mesh health data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    val csv = StringBuilder(
+        "timestamp_ms,tx_packets,tx_failures,rx_packets,relayed,retries,acked,ack_timeouts," +
+            "duplicates,cad_busy,queue_drops,route_changes,active_routes,rebroadcast_depth," +
+            "pending_ack_depth,airtime_ms,uptime_seconds,protocol_version\n"
+    )
+    snapshots.sortedBy { it.timestamp }.forEach { value ->
+        csv.append(
+            "${value.timestamp},${value.txPackets},${value.txFailures},${value.rxPackets}," +
+                "${value.relayedPackets},${value.retries},${value.ackedPackets},${value.ackTimeouts}," +
+                "${value.duplicatePackets},${value.cadBusyEvents},${value.queueDrops},${value.routeChanges}," +
+                "${value.activeRoutes},${value.rebroadcastQueueDepth},${value.pendingAckDepth}," +
+                "${value.airtimeMs},${value.uptimeSeconds},${value.protocolVersion}\n"
+        )
+    }
+    try {
+        val exportDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        val file = java.io.File(exportDir, "aethermesh_mesh_health_$stamp.csv")
+        file.writeText(csv.toString())
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Mesh Health Export")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "Export Mesh Health CSV"))
+    } catch (e: Exception) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Mesh Health", csv.toString()))
+        android.widget.Toast.makeText(context, "Share failed; CSV copied to clipboard.", android.widget.Toast.LENGTH_LONG).show()
     }
 }
 

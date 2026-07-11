@@ -39,21 +39,49 @@ typedef enum _aethermesh_DeliveryStatus_State {
     aethermesh_DeliveryStatus_State_UNKNOWN = 0,
     aethermesh_DeliveryStatus_State_DELIVERED = 1,
     aethermesh_DeliveryStatus_State_FAILED = 2,
-    aethermesh_DeliveryStatus_State_RETRYING = 3
+    aethermesh_DeliveryStatus_State_RETRYING = 3,
+    aethermesh_DeliveryStatus_State_QUEUED = 4,
+    aethermesh_DeliveryStatus_State_STORED = 5,
+    aethermesh_DeliveryStatus_State_EXPIRED = 6
 } aethermesh_DeliveryStatus_State;
 
 typedef enum _aethermesh_DeliveryStatus_Reason {
     aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED = 0,
     aethermesh_DeliveryStatus_Reason_ACK_TIMEOUT = 1,
     aethermesh_DeliveryStatus_Reason_QUEUE_EVICTED = 2,
-    aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED = 3
+    aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED = 3,
+    aethermesh_DeliveryStatus_Reason_STORE_FULL = 4,
+    aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED = 5
 } aethermesh_DeliveryStatus_Reason;
 
 /* Struct definitions */
+/* Local node health snapshot. This payload is emitted to the authenticated BLE
+ companion and is never routed over LoRa. */
+typedef struct _aethermesh_MeshDiagnostics {
+    uint32_t tx_packets;
+    uint32_t tx_failures;
+    uint32_t rx_packets;
+    uint32_t relayed_packets;
+    uint32_t retries;
+    uint32_t acked_packets;
+    uint32_t ack_timeouts;
+    uint32_t duplicate_packets;
+    uint32_t cad_busy_events;
+    uint32_t queue_drops;
+    uint32_t route_changes;
+    uint32_t active_routes;
+    uint32_t rebroadcast_queue_depth;
+    uint32_t pending_ack_depth;
+    uint32_t airtime_ms;
+    uint32_t uptime_seconds;
+    uint32_t protocol_version;
+} aethermesh_MeshDiagnostics;
+
 typedef struct _aethermesh_OtaControl {
     aethermesh_OtaControl_Op op;
     uint32_t total_size; /* firmware image size in bytes (BEGIN) */
     char md5[33]; /* hex MD5 of the full image (BEGIN) */
+    char sha256[65]; /* hex SHA-256 of the full image (BEGIN, preferred) */
 } aethermesh_OtaControl;
 
 typedef PB_BYTES_ARRAY_T(224) aethermesh_OtaData_data_t;
@@ -178,6 +206,7 @@ typedef struct _aethermesh_AuthResponse {
     bool password_not_set;
 } aethermesh_AuthResponse;
 
+typedef PB_BYTES_ARRAY_T(17) aethermesh_MeshPacket_auth_tag_t;
 /* Wrapper for all packets sent over LoRa or BLE */
 typedef struct _aethermesh_MeshPacket {
     uint32_t sender_id; /* Unique 32-bit ID (derived from MCU MAC address) */
@@ -199,11 +228,16 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_OtaData ota_data;
         aethermesh_OtaStatus ota_status;
         aethermesh_TraceRoute trace_route;
+        aethermesh_MeshDiagnostics diagnostics;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
     float rx_snr; /* Signal-to-Noise Ratio (LoRa last hop) */
     uint32_t retry_count; /* Retransmit attempt for this packet_id; relays forward higher attempts. */
+    uint32_t protocol_version; /* 0/1 = legacy packet, 2 = authenticated envelope capable. */
+    uint64_t session_id; /* Random boot/session identity used for replay protection. */
+    uint32_t auth_counter; /* Monotonic counter within session_id; 0 when unauthenticated. */
+    aethermesh_MeshPacket_auth_tag_t auth_tag; /* Truncated packet authentication tag; empty for V1 compatibility. */
 } aethermesh_MeshPacket;
 
 
@@ -229,12 +263,13 @@ extern "C" {
 #define _aethermesh_RouteDiscovery_Type_ARRAYSIZE ((aethermesh_RouteDiscovery_Type)(aethermesh_RouteDiscovery_Type_REPLY+1))
 
 #define _aethermesh_DeliveryStatus_State_MIN aethermesh_DeliveryStatus_State_UNKNOWN
-#define _aethermesh_DeliveryStatus_State_MAX aethermesh_DeliveryStatus_State_RETRYING
-#define _aethermesh_DeliveryStatus_State_ARRAYSIZE ((aethermesh_DeliveryStatus_State)(aethermesh_DeliveryStatus_State_RETRYING+1))
+#define _aethermesh_DeliveryStatus_State_MAX aethermesh_DeliveryStatus_State_EXPIRED
+#define _aethermesh_DeliveryStatus_State_ARRAYSIZE ((aethermesh_DeliveryStatus_State)(aethermesh_DeliveryStatus_State_EXPIRED+1))
 
 #define _aethermesh_DeliveryStatus_Reason_MIN aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED
-#define _aethermesh_DeliveryStatus_Reason_MAX aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED
-#define _aethermesh_DeliveryStatus_Reason_ARRAYSIZE ((aethermesh_DeliveryStatus_Reason)(aethermesh_DeliveryStatus_Reason_LOCAL_SEND_FAILED+1))
+#define _aethermesh_DeliveryStatus_Reason_MAX aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED
+#define _aethermesh_DeliveryStatus_Reason_ARRAYSIZE ((aethermesh_DeliveryStatus_Reason)(aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED+1))
+
 
 
 #define aethermesh_OtaControl_op_ENUMTYPE aethermesh_OtaControl_Op
@@ -257,8 +292,9 @@ extern "C" {
 
 
 /* Initializer values for message structs */
-#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0}
-#define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, ""}
+#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
+#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
@@ -270,8 +306,9 @@ extern "C" {
 #define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
-#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0}
-#define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, ""}
+#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
+#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
@@ -285,9 +322,27 @@ extern "C" {
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
 /* Field tags (for use in manual encoding/decoding) */
+#define aethermesh_MeshDiagnostics_tx_packets_tag 1
+#define aethermesh_MeshDiagnostics_tx_failures_tag 2
+#define aethermesh_MeshDiagnostics_rx_packets_tag 3
+#define aethermesh_MeshDiagnostics_relayed_packets_tag 4
+#define aethermesh_MeshDiagnostics_retries_tag   5
+#define aethermesh_MeshDiagnostics_acked_packets_tag 6
+#define aethermesh_MeshDiagnostics_ack_timeouts_tag 7
+#define aethermesh_MeshDiagnostics_duplicate_packets_tag 8
+#define aethermesh_MeshDiagnostics_cad_busy_events_tag 9
+#define aethermesh_MeshDiagnostics_queue_drops_tag 10
+#define aethermesh_MeshDiagnostics_route_changes_tag 11
+#define aethermesh_MeshDiagnostics_active_routes_tag 12
+#define aethermesh_MeshDiagnostics_rebroadcast_queue_depth_tag 13
+#define aethermesh_MeshDiagnostics_pending_ack_depth_tag 14
+#define aethermesh_MeshDiagnostics_airtime_ms_tag 15
+#define aethermesh_MeshDiagnostics_uptime_seconds_tag 16
+#define aethermesh_MeshDiagnostics_protocol_version_tag 17
 #define aethermesh_OtaControl_op_tag             1
 #define aethermesh_OtaControl_total_size_tag     2
 #define aethermesh_OtaControl_md5_tag            3
+#define aethermesh_OtaControl_sha256_tag         4
 #define aethermesh_OtaData_offset_tag            1
 #define aethermesh_OtaData_data_tag              2
 #define aethermesh_OtaStatus_state_tag           1
@@ -369,10 +424,15 @@ extern "C" {
 #define aethermesh_MeshPacket_ota_data_tag       19
 #define aethermesh_MeshPacket_ota_status_tag     20
 #define aethermesh_MeshPacket_trace_route_tag    21
+#define aethermesh_MeshPacket_diagnostics_tag    22
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
 #define aethermesh_MeshPacket_retry_count_tag    16
+#define aethermesh_MeshPacket_protocol_version_tag 23
+#define aethermesh_MeshPacket_session_id_tag     24
+#define aethermesh_MeshPacket_auth_counter_tag   25
+#define aethermesh_MeshPacket_auth_tag_tag       26
 
 /* Struct field encoding specification for nanopb */
 #define aethermesh_MeshPacket_FIELDLIST(X, a) \
@@ -396,7 +456,12 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,delivery_status,payload.delivery_sta
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_control,payload.ota_control),  18) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_data,payload.ota_data),  19) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota_status,payload.ota_status),  20) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,trace_route,payload.trace_route),  21)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,trace_route,payload.trace_route),  21) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,diagnostics,payload.diagnostics),  22) \
+X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  23) \
+X(a, STATIC,   SINGULAR, UINT64,   session_id,       24) \
+X(a, STATIC,   SINGULAR, UINT32,   auth_counter,     25) \
+X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -411,11 +476,34 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,trace_route,payload.trace_route),  2
 #define aethermesh_MeshPacket_payload_ota_data_MSGTYPE aethermesh_OtaData
 #define aethermesh_MeshPacket_payload_ota_status_MSGTYPE aethermesh_OtaStatus
 #define aethermesh_MeshPacket_payload_trace_route_MSGTYPE aethermesh_TraceRoute
+#define aethermesh_MeshPacket_payload_diagnostics_MSGTYPE aethermesh_MeshDiagnostics
+
+#define aethermesh_MeshDiagnostics_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   tx_packets,        1) \
+X(a, STATIC,   SINGULAR, UINT32,   tx_failures,       2) \
+X(a, STATIC,   SINGULAR, UINT32,   rx_packets,        3) \
+X(a, STATIC,   SINGULAR, UINT32,   relayed_packets,   4) \
+X(a, STATIC,   SINGULAR, UINT32,   retries,           5) \
+X(a, STATIC,   SINGULAR, UINT32,   acked_packets,     6) \
+X(a, STATIC,   SINGULAR, UINT32,   ack_timeouts,      7) \
+X(a, STATIC,   SINGULAR, UINT32,   duplicate_packets,   8) \
+X(a, STATIC,   SINGULAR, UINT32,   cad_busy_events,   9) \
+X(a, STATIC,   SINGULAR, UINT32,   queue_drops,      10) \
+X(a, STATIC,   SINGULAR, UINT32,   route_changes,    11) \
+X(a, STATIC,   SINGULAR, UINT32,   active_routes,    12) \
+X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_queue_depth,  13) \
+X(a, STATIC,   SINGULAR, UINT32,   pending_ack_depth,  14) \
+X(a, STATIC,   SINGULAR, UINT32,   airtime_ms,       15) \
+X(a, STATIC,   SINGULAR, UINT32,   uptime_seconds,   16) \
+X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  17)
+#define aethermesh_MeshDiagnostics_CALLBACK NULL
+#define aethermesh_MeshDiagnostics_DEFAULT NULL
 
 #define aethermesh_OtaControl_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
 X(a, STATIC,   SINGULAR, UINT32,   total_size,        2) \
-X(a, STATIC,   SINGULAR, STRING,   md5,               3)
+X(a, STATIC,   SINGULAR, STRING,   md5,               3) \
+X(a, STATIC,   SINGULAR, STRING,   sha256,            4)
 #define aethermesh_OtaControl_CALLBACK NULL
 #define aethermesh_OtaControl_DEFAULT NULL
 
@@ -528,6 +616,7 @@ X(a, STATIC,   SINGULAR, BOOL,     password_not_set,   3)
 #define aethermesh_AuthResponse_DEFAULT NULL
 
 extern const pb_msgdesc_t aethermesh_MeshPacket_msg;
+extern const pb_msgdesc_t aethermesh_MeshDiagnostics_msg;
 extern const pb_msgdesc_t aethermesh_OtaControl_msg;
 extern const pb_msgdesc_t aethermesh_OtaData_msg;
 extern const pb_msgdesc_t aethermesh_OtaStatus_msg;
@@ -543,6 +632,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define aethermesh_MeshPacket_fields &aethermesh_MeshPacket_msg
+#define aethermesh_MeshDiagnostics_fields &aethermesh_MeshDiagnostics_msg
 #define aethermesh_OtaControl_fields &aethermesh_OtaControl_msg
 #define aethermesh_OtaData_fields &aethermesh_OtaData_msg
 #define aethermesh_OtaStatus_fields &aethermesh_OtaStatus_msg
@@ -562,9 +652,10 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
-#define aethermesh_MeshPacket_size               365
+#define aethermesh_MeshDiagnostics_size          104
+#define aethermesh_MeshPacket_size               411
 #define aethermesh_NodeConfig_size               136
-#define aethermesh_OtaControl_size               42
+#define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
 #define aethermesh_RouteDiscovery_size           14

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "RadioManager.h"
 #include "MeshRouter.h"
+#include "PacketAuth.h"
 #include "MeshMath.h"
 #include "BLEManager.h"
 #include "Version.h"
@@ -47,6 +48,7 @@ struct NodeSettings {
 
 #ifdef ESP32
 #include <Preferences.h>
+#include <SHA256.h>
 #include <Update.h>
 Preferences preferences;
 #endif
@@ -2813,6 +2815,28 @@ void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aetherme
     }
 }
 
+void sendMeshDiagnosticsToPhone() {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) return;
+
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = 0;
+    packet.packet_id = random(1, 0x7FFFFFFF);
+    packet.hop_limit = 1;
+    packet.prev_hop_id = localNodeId;
+    packet.protocol_version = 2;
+    packet.which_payload = aethermesh_MeshPacket_diagnostics_tag;
+    router.getDiagnostics(packet.payload.diagnostics);
+
+    uint8_t buffer[192];
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &packet)) {
+        bleMgr.sendToPhone(buffer, stream.bytes_written);
+    } else {
+        Serial.println("Failed to encode mesh diagnostics for BLE.");
+    }
+}
+
 // --- BLE firmware update (OTA). Heltec/ESP32 only: chunks stream over the
 // authenticated BLE link into the inactive OTA app partition (dual-slot
 // default_16MB layout), MD5-verified before reboot. Windowed flow control:
@@ -2822,6 +2846,10 @@ uint32_t otaExpectedOffset = 0;
 uint32_t otaTotalSize = 0;
 uint32_t otaLastChunkMs = 0;
 uint32_t otaChunksSinceAck = 0;
+#ifdef ESP32
+SHA256 otaSha256;
+#endif
+char otaExpectedSha256[65] = "";
 static const uint32_t OTA_WINDOW = 8;          // chunks per ack (BLE rx ring holds 16)
 static const uint32_t OTA_MAX_CHUNK = 224;     // advertised in READY.next_offset so the
                                                // app can pick fast params; firmware that
@@ -2878,6 +2906,7 @@ void otaAbort(const char* reason) {
 #endif
     otaActive = false;
     otaExpectedOffset = 0;
+    otaExpectedSha256[0] = '\0';
     Serial.printf("OTA aborted: %s\n", reason ? reason : "");
     sendOtaStatus(aethermesh_OtaStatus_State_ERROR, otaExpectedOffset, reason);
 }
@@ -2918,12 +2947,16 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             if (ctl.md5[0] != '\0') {
                 Update.setMD5(ctl.md5);
             }
+            strncpy(otaExpectedSha256, ctl.sha256, sizeof(otaExpectedSha256) - 1);
+            otaExpectedSha256[sizeof(otaExpectedSha256) - 1] = '\0';
+            otaSha256.reset();
             otaActive = true;
             otaExpectedOffset = 0;
             otaTotalSize = ctl.total_size;
             otaLastChunkMs = millis();
             otaChunksSinceAck = 0;
-            Serial.printf("OTA begin: %u bytes, md5=%s\n", ctl.total_size, ctl.md5);
+            Serial.printf("OTA begin: %u bytes, sha256=%s\n", ctl.total_size,
+                          otaExpectedSha256[0] ? otaExpectedSha256 : "legacy-md5-only");
             drawOtaProgress(0, "receiving");
             // READY.next_offset advertises our max chunk size (capability hint)
             sendOtaStatus(aethermesh_OtaStatus_State_READY, OTA_MAX_CHUNK, "");
@@ -2937,6 +2970,21 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             if (otaExpectedOffset != otaTotalSize) {
                 otaAbort("Incomplete image at END");
                 return;
+            }
+            if (otaExpectedSha256[0] != '\0') {
+                uint8_t digest[32];
+                char actual[65];
+                static const char HEX_DIGITS[] = "0123456789abcdef";
+                otaSha256.finalize(digest, sizeof(digest));
+                for (size_t i = 0; i < sizeof(digest); i++) {
+                    actual[i * 2] = HEX_DIGITS[digest[i] >> 4];
+                    actual[i * 2 + 1] = HEX_DIGITS[digest[i] & 0x0F];
+                }
+                actual[64] = '\0';
+                if (strcasecmp(actual, otaExpectedSha256) != 0) {
+                    otaAbort("SHA-256 verification failed");
+                    return;
+                }
             }
             if (Update.end(true)) {
                 otaActive = false;
@@ -2978,6 +3026,7 @@ void handleOtaData(const aethermesh_OtaData& od) {
         otaAbort(Update.errorString());
         return;
     }
+    otaSha256.update(od.data.bytes, od.data.size);
     otaExpectedOffset += od.data.size;
     otaLastChunkMs = millis();
 
@@ -3156,13 +3205,110 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
     }
 }
 
-void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
+bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t counter) {
+    if (senderId == 0 || sessionId == 0 || counter == 0) return false;
+#ifdef ESP32
+    preferences.begin("aethermesh", false);
+    int emptySlot = -1;
+    for (int i = 0; i < 8; i++) {
+        char senderKey[5], highKey[5], lowKey[5], counterKey[5];
+        snprintf(senderKey, sizeof(senderKey), "as%d", i);
+        snprintf(highKey, sizeof(highKey), "ah%d", i);
+        snprintf(lowKey, sizeof(lowKey), "al%d", i);
+        snprintf(counterKey, sizeof(counterKey), "ac%d", i);
+        uint32_t savedSender = preferences.getUInt(senderKey, 0);
+        if (savedSender == 0 && emptySlot < 0) emptySlot = i;
+        uint64_t savedSession = ((uint64_t)preferences.getUInt(highKey, 0) << 32) |
+                                preferences.getUInt(lowKey, 0);
+        if (savedSender == senderId && savedSession == sessionId) {
+            uint32_t savedCounter = preferences.getUInt(counterKey, 0);
+            if (counter <= savedCounter) {
+                preferences.end();
+                return false;
+            }
+            preferences.putUInt(counterKey, counter);
+            preferences.end();
+            return true;
+        }
+    }
+    uint32_t nextSlot = preferences.getUInt("authnext", 0) % 8;
+    int slot = emptySlot >= 0 ? emptySlot : (int)nextSlot;
+    char senderKey[5], highKey[5], lowKey[5], counterKey[5];
+    snprintf(senderKey, sizeof(senderKey), "as%d", slot);
+    snprintf(highKey, sizeof(highKey), "ah%d", slot);
+    snprintf(lowKey, sizeof(lowKey), "al%d", slot);
+    snprintf(counterKey, sizeof(counterKey), "ac%d", slot);
+    preferences.putUInt(senderKey, senderId);
+    preferences.putUInt(highKey, (uint32_t)(sessionId >> 32));
+    preferences.putUInt(lowKey, (uint32_t)sessionId);
+    preferences.putUInt(counterKey, counter);
+    preferences.putUInt("authnext", (slot + 1) % 8);
+    preferences.end();
+    return true;
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+    struct ReplayEntry {
+        uint32_t senderId;
+        uint64_t sessionId;
+        uint32_t counter;
+    };
+    struct ReplayStore {
+        uint32_t magic;
+        uint32_t nextSlot;
+        ReplayEntry entries[8];
+    };
+    static constexpr uint32_t REPLAY_STORE_MAGIC = 0x41555448; // "AUTH"
+
+    ReplayStore store = {};
+    InternalFS.begin();
+    File file(InternalFS);
+    if (file.open("/auth.bin", FILE_O_READ)) {
+        const bool complete = file.read((uint8_t*)&store, sizeof(store)) == sizeof(store);
+        file.close();
+        if (!complete || store.magic != REPLAY_STORE_MAGIC) store = {};
+    }
+    store.magic = REPLAY_STORE_MAGIC;
+
+    int emptySlot = -1;
+    int slot = -1;
+    for (int i = 0; i < 8; i++) {
+        if (store.entries[i].senderId == 0 && emptySlot < 0) emptySlot = i;
+        if (store.entries[i].senderId == senderId && store.entries[i].sessionId == sessionId) {
+            if (counter <= store.entries[i].counter) return false;
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) slot = emptySlot >= 0 ? emptySlot : (int)(store.nextSlot % 8);
+    store.entries[slot] = {senderId, sessionId, counter};
+    store.nextSlot = (uint32_t)(slot + 1) % 8;
+
+    InternalFS.remove("/auth.bin");
+    if (!file.open("/auth.bin", FILE_O_WRITE)) return false;
+    const bool written = file.write((const uint8_t*)&store, sizeof(store)) == sizeof(store);
+    file.close();
+    return written;
+#else
+    return false;
+#endif
+}
+
+void onReceivedConfig(const aethermesh_MeshPacket& packet) {
+    uint32_t senderId = packet.sender_id;
+    const aethermesh_NodeConfig& config = packet.payload.config;
     Serial.print("Received RemoteConfig packet over LoRa from 0x");
     Serial.println(senderId, HEX);
 
-    if (nodePassword[0] != '\0' && config.config_password[0] != '\0' &&
-        strcmp(config.config_password, nodePassword) == 0) {
-        Serial.println("Remote password verified successfully. Applying configuration...");
+    bool authenticated = false;
+    if (packet.protocol_version >= 2) {
+        authenticated = packetauth::verifyConfig(packet, nodePassword) &&
+                        acceptRemoteControlCounter(senderId, packet.session_id, packet.auth_counter);
+    } else {
+        authenticated = nodePassword[0] != '\0' && config.config_password[0] != '\0' &&
+                        strcmp(config.config_password, nodePassword) == 0;
+    }
+
+    if (authenticated) {
+        Serial.println("Remote control authentication verified. Applying configuration...");
 
         positionPrecisionM = config.position_precision;
         gpsMode = config.gps_mode;
@@ -3192,7 +3338,7 @@ void onReceivedConfig(uint32_t senderId, const aethermesh_NodeConfig& config) {
         sd_nvic_SystemReset();
 #endif
     } else {
-        Serial.println("Remote config rejected: Incorrect or missing password.");
+        Serial.println("Remote config rejected: invalid authentication or replayed counter.");
     }
 }
 
@@ -3999,6 +4145,12 @@ void loop() {
             
             updateDisplay();
         }
+    }
+
+    static uint32_t lastDiagnosticsMs = 0;
+    if (millis() - lastDiagnosticsMs >= 10000) {
+        lastDiagnosticsMs = millis();
+        sendMeshDiagnosticsToPhone();
     }
 
     // Check if the message popup has expired

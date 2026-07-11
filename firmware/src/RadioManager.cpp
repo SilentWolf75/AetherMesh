@@ -40,6 +40,11 @@ RadioManager::RadioManager() {
     txTimeoutMs = 2500;
     lastRxActivityTime = 0;
     lastHealthLogTime = 0;
+    txPackets = 0;
+    txFailures = 0;
+    rxPackets = 0;
+    cadBusyEvents = 0;
+    airtimeMsTotal = 0;
     
     // Default US915 configuration
     frequency = 906.875f;
@@ -317,6 +322,7 @@ void RadioManager::loop() {
             
             int state = radio->readData(buffer, len);
             if (state == RADIOLIB_ERR_NONE) {
+                rxPackets++;
                 lastRssi = radio->getRSSI();
                 lastSnr = radio->getSNR();
                 
@@ -383,6 +389,7 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
 #endif
         } else {
             Serial.println("Radio busy: transmission already in progress.");
+            txFailures++;
             return false;
         }
     }
@@ -406,8 +413,10 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
             if (cadState != RADIOLIB_LORA_DETECTED) {
                 Serial.printf("CAD failed with code %d; returning to receive mode.\n", cadState);
                 radio->startReceive();
+                txFailures++;
                 return false;
             }
+            cadBusyEvents++;
             uint32_t baseBackoff = 80 + airtimeMs / 4;
             uint32_t scaledBackoff = baseBackoff << attempt;
             if (scaledBackoff > 2000) scaledBackoff = 2000;
@@ -417,6 +426,7 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
         if (!channelFree) {
             Serial.println("Channel remained busy after 3 CAD attempts; deferring packet.");
             radio->startReceive();
+            txFailures++;
             return false;
         }
     }
@@ -441,9 +451,12 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
         setHeltecV4TransmitEnable(false);
 #endif
         radio->startReceive();
+        txFailures++;
         return false;
     }
-    
+
+    txPackets++;
+    airtimeMsTotal += airtimeMs;
     return true;
 }
 

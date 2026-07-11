@@ -92,6 +92,14 @@ void test_deadline_order_handles_millis_wrap() {
     TEST_ASSERT_TRUE(deadlineBefore(25, 75, UINT32_MAX - 25));
 }
 
+void test_route_metric_smoothing_and_backup_freshness() {
+    TEST_ASSERT_EQUAL_UINT8(10, smoothedRouteMetric(10, 10));
+    TEST_ASSERT_EQUAL_UINT8(12, smoothedRouteMetric(10, 18));
+    TEST_ASSERT_TRUE(backupRouteIsUsable(1000, 900, 100));
+    TEST_ASSERT_FALSE(backupRouteIsUsable(1001, 900, 100));
+    TEST_ASSERT_TRUE(backupRouteIsUsable(25, UINT32_MAX - 25, 100));
+}
+
 void test_blur_zero_radius_passthrough() {
     float lat, lon;
     blurPosition(38.812345f, -94.912345f, 0, lat, lon);
@@ -164,6 +172,7 @@ int main(int, char**) {
     RUN_TEST(test_packet_sequence_seed_is_deterministic_nonzero_and_well_mixed);
     RUN_TEST(test_ack_retry_delay_backs_off_and_caps_route_penalty);
     RUN_TEST(test_deadline_order_handles_millis_wrap);
+    RUN_TEST(test_route_metric_smoothing_and_backup_freshness);
     RUN_TEST(test_blur_zero_radius_passthrough);
     RUN_TEST(test_blur_no_fix_passthrough);
     RUN_TEST(test_blur_within_radius_per_axis);

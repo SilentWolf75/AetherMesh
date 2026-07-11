@@ -4,6 +4,7 @@ import urllib.request
 import zipfile
 import subprocess
 import shutil
+import glob
 
 def main():
     proto_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,11 +37,28 @@ def main():
     
     # 3. Locate nanopb_generator
     # Look in standard paths or AppData
-    appdata = os.environ.get("APPDATA")
+    appdata = os.environ.get("APPDATA", "")
     nanopb_gen = os.path.join(appdata, "Python", "Python313", "Scripts", "nanopb_generator.exe")
+    command_prefix = []
     if not os.path.exists(nanopb_gen):
-        # Fallback to checking path
-        nanopb_gen = "nanopb_generator.exe"
+        bundled = glob.glob(os.path.join(
+            project_root, "firmware", ".pio", "libdeps", "*", "Nanopb",
+            "generator", "nanopb_generator.py"
+        ))
+        if bundled:
+            nanopb_gen = bundled[0]
+            platformio_python = os.path.join(
+                os.path.expanduser("~"), ".platformio", "penv", "Scripts",
+                "python.exe" if os.name == "nt" else "python"
+            )
+            command_prefix = [platformio_python if os.path.exists(platformio_python) else sys.executable]
+        else:
+            resolved = shutil.which("nanopb_generator.exe") or shutil.which("nanopb_generator")
+            if not resolved:
+                raise FileNotFoundError(
+                    "nanopb generator not found; build one firmware target first or install nanopb"
+                )
+            nanopb_gen = resolved
         
     print(f"Using nanopb generator: {nanopb_gen}")
     
@@ -49,7 +67,7 @@ def main():
     os.environ["PATH"] = protoc_bin_dir + os.pathsep + os.environ.get("PATH", "")
     
     # 4. Execute generator
-    cmd = [
+    cmd = command_prefix + [
         nanopb_gen,
         "-I", proto_dir,
         "-D", firmware_src,

@@ -68,6 +68,15 @@ inline bool deadlineBefore(uint32_t left, uint32_t right, uint32_t now) {
     return (int32_t)(left - now) < (int32_t)(right - now);
 }
 
+inline uint8_t smoothedRouteMetric(uint8_t previous, uint8_t sample) {
+    return (uint8_t)(((uint16_t)previous * 3u + sample + 2u) / 4u);
+}
+
+inline bool backupRouteIsUsable(uint32_t nowMs, uint32_t seenAtMs,
+                                uint32_t timeoutMs) {
+    return (uint32_t)(nowMs - seenAtMs) <= timeoutMs;
+}
+
 // Position privacy blur: snap lat/lon to the center of a grid cell sized
 // 2*radiusM, so the true position stays within +/-radiusM per axis of what
 // gets broadcast. Deterministic on purpose: the same true position always

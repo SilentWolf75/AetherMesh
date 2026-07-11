@@ -33,6 +33,27 @@ data class RouteHopInfo(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class MeshDiagnosticsSnapshot(
+    val timestamp: Long = System.currentTimeMillis(),
+    val txPackets: Long = 0,
+    val txFailures: Long = 0,
+    val rxPackets: Long = 0,
+    val relayedPackets: Long = 0,
+    val retries: Long = 0,
+    val ackedPackets: Long = 0,
+    val ackTimeouts: Long = 0,
+    val duplicatePackets: Long = 0,
+    val cadBusyEvents: Long = 0,
+    val queueDrops: Long = 0,
+    val routeChanges: Long = 0,
+    val activeRoutes: Int = 0,
+    val rebroadcastQueueDepth: Int = 0,
+    val pendingAckDepth: Int = 0,
+    val airtimeMs: Long = 0,
+    val uptimeSeconds: Long = 0,
+    val protocolVersion: Int = 1
+)
+
 data class TraceHop(
     val nodeId: Long,
     val rssi: Int,
@@ -63,7 +84,7 @@ class AetherMeshRepository(private val context: Context) {
         // 76 plaintext bytes keeps the encoded protobuf string below its 168B cap.
         private const val MAX_ENCRYPTED_CONTENT_LENGTH = 76
         private const val MAX_CHANNEL_LENGTH = 31
-        private const val MESSAGE_ACK_TIMEOUT_MS = 15_000L
+        private const val MESSAGE_ACK_TIMEOUT_MS = 45_000L
         private const val RANGE_PING_TIMEOUT_MS = 15_000L
         private const val TRACE_ROUTE_TIMEOUT_MS = 30_000L
         private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
@@ -138,6 +159,9 @@ class AetherMeshRepository(private val context: Context) {
     // Observed routes from packet headers
     private val _observedRoutes = MutableStateFlow<Map<Long, RouteHopInfo>>(emptyMap())
     val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = _observedRoutes.asStateFlow()
+
+    private val _meshDiagnostics = MutableStateFlow<MeshDiagnosticsSnapshot?>(null)
+    val meshDiagnostics: StateFlow<MeshDiagnosticsSnapshot?> = _meshDiagnostics.asStateFlow()
 
     private val _traceRouteState = MutableStateFlow(TraceRouteState())
     val traceRouteState: StateFlow<TraceRouteState> = _traceRouteState.asStateFlow()
@@ -250,6 +274,7 @@ class AetherMeshRepository(private val context: Context) {
                 db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
                 db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
                 _observedRoutes.value = dbHelper.getRouteObservations().associateBy { it.targetId }
+                _meshDiagnostics.value = dbHelper.getLatestMeshDiagnostics()
                 // Range-test control rows stored as chat messages by older builds:
                 // once marked FAILED they were auto-resent as DMs forever.
                 db.execSQL("DELETE FROM messages WHERE content LIKE 'PING@_%' ESCAPE '@' OR content LIKE 'PONG@_%' ESCAPE '@'")
@@ -429,6 +454,8 @@ class AetherMeshRepository(private val context: Context) {
                 DeliveryStatus.State.DELIVERED -> "DELIVERED"
                 DeliveryStatus.State.FAILED -> "FAILED"
                 DeliveryStatus.State.RETRYING -> "PENDING"
+                DeliveryStatus.State.QUEUED, DeliveryStatus.State.STORED -> "QUEUED"
+                DeliveryStatus.State.EXPIRED -> "EXPIRED"
                 else -> null
             }
             if (newStatus != null) {
@@ -444,6 +471,32 @@ class AetherMeshRepository(private val context: Context) {
         // guard below - the same as AuthResponse and DeliveryStatus above.
         if (packet.payloadCase == MeshPacket.PayloadCase.OTA_STATUS) {
             otaStatusChannel.trySend(packet.otaStatus)
+            return
+        }
+
+        if (packet.payloadCase == MeshPacket.PayloadCase.DIAGNOSTICS) {
+            val value = packet.diagnostics
+            val snapshot = MeshDiagnosticsSnapshot(
+                txPackets = value.txPackets.toLong(),
+                txFailures = value.txFailures.toLong(),
+                rxPackets = value.rxPackets.toLong(),
+                relayedPackets = value.relayedPackets.toLong(),
+                retries = value.retries.toLong(),
+                ackedPackets = value.ackedPackets.toLong(),
+                ackTimeouts = value.ackTimeouts.toLong(),
+                duplicatePackets = value.duplicatePackets.toLong(),
+                cadBusyEvents = value.cadBusyEvents.toLong(),
+                queueDrops = value.queueDrops.toLong(),
+                routeChanges = value.routeChanges.toLong(),
+                activeRoutes = value.activeRoutes,
+                rebroadcastQueueDepth = value.rebroadcastQueueDepth,
+                pendingAckDepth = value.pendingAckDepth,
+                airtimeMs = value.airtimeMs.toLong(),
+                uptimeSeconds = value.uptimeSeconds.toLong(),
+                protocolVersion = value.protocolVersion
+            )
+            dbHelper.insertMeshDiagnostics(snapshot)
+            _meshDiagnostics.value = snapshot
             return
         }
 
@@ -576,7 +629,8 @@ class AetherMeshRepository(private val context: Context) {
                     snr = packet.rxSnr,
                     voltage = telemetry.batteryVoltage,
                     positionPrecision = telemetry.positionPrecision,
-                    advertisedName = telemetry.nodeName
+                    advertisedName = telemetry.nodeName,
+                    protocolVersion = packet.protocolVersion.coerceAtLeast(1)
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
@@ -938,9 +992,10 @@ class AetherMeshRepository(private val context: Context) {
 
         val localNodeId = bleManager.connectedNodeId
 
-        val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
+        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val config = com.example.aethermesh.proto.NodeConfig.newBuilder()
             .setNodeName(name)
-            .setConfigPassword(password)
+            .setConfigPassword(if (supportsV2) "" else password)
             .setLoraSf(sf)
             .setLoraBw(bw)
             .setLoraTxPower(txPower)
@@ -955,18 +1010,28 @@ class AetherMeshRepository(private val context: Context) {
             .setFixedLatitude(fixedLatitude)
             .setFixedLongitude(fixedLongitude)
             .setFixedAltitude(fixedAltitude)
+            .build()
 
-        val packet = MeshPacket.newBuilder()
+        val packetBuilder = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(nodeId.toInt())
             .setPacketId(PacketIdGenerator.next())
             .setHopLimit(4)
             .setWantAck(true)
             .setPrevHopId(localNodeId.toInt())
-            .setConfig(configBuilder)
-            .build()
+            .setConfig(config)
 
-        return bleManager.sendPacket(packet.toByteArray())
+        if (supportsV2) {
+            val identity = ControlAuthSession.next()
+            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, password)
+            packetBuilder
+                .setProtocolVersion(2)
+                .setSessionId(identity.sessionId)
+                .setAuthCounter(identity.counter)
+                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
+        }
+
+        return bleManager.sendPacket(packetBuilder.build().toByteArray())
     }
 
     // --- BLE firmware update (OTA) sender ---
@@ -997,6 +1062,8 @@ class AetherMeshRepository(private val context: Context) {
 
                 val md5 = MessageDigest.getInstance("MD5").digest(firmware)
                     .joinToString("") { "%02x".format(it) }
+                val sha256 = MessageDigest.getInstance("SHA-256").digest(firmware)
+                    .joinToString("") { "%02x".format(it) }
 
                 // Drain stale statuses from a previous attempt
                 while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
@@ -1007,7 +1074,7 @@ class AetherMeshRepository(private val context: Context) {
                 // So allow a generous window and retry BEGIN once.
                 var chunkHint = -1
                 for (attempt in 1..2) {
-                    sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5)
+                    sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5, sha256)
                     try {
                         chunkHint = awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.READY, 25_000, "start acknowledgment")
                         break
@@ -1279,11 +1346,18 @@ class AetherMeshRepository(private val context: Context) {
         if (!_otaState.value.active) _otaState.value = OtaState()
     }
 
-    private fun sendOtaControl(nodeId: Long, op: com.example.aethermesh.proto.OtaControl.Op, size: Int, md5: String) {
+    private fun sendOtaControl(
+        nodeId: Long,
+        op: com.example.aethermesh.proto.OtaControl.Op,
+        size: Int,
+        md5: String,
+        sha256: String = ""
+    ) {
         val ctl = com.example.aethermesh.proto.OtaControl.newBuilder()
             .setOp(op)
             .setTotalSize(size)
             .setMd5(md5)
+            .setSha256(sha256)
         val pkt = MeshPacket.newBuilder()
             .setSenderId(nodeId.toInt())
             .setRecipientId(nodeId.toInt())
@@ -1779,6 +1853,9 @@ class AetherMeshRepository(private val context: Context) {
     fun getAllRangeTestLogs(): List<RangeTestLog> {
         return dbHelper.getAllRangeTestLogs()
     }
+
+    fun getMeshDiagnosticsHistory(): List<MeshDiagnosticsSnapshot> =
+        dbHelper.getMeshDiagnosticsHistory()
 
     /** Latest phone GPS fix (fresh only while a range test is running). */
     fun lastPhoneFix(): android.location.Location? = lastPhoneLocation

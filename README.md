@@ -141,7 +141,7 @@ Useful local release checks:
 
 ```bash
 python tools/validate_release_targets.py
-python -m unittest tools.test_mesh_simulator tools.test_write_firmware_manifest
+python -m unittest tools.test_mesh_simulator tools.test_write_firmware_manifest tools.test_hardware_qualification
 node tools/check_web_flasher.js
 ```
 
@@ -199,12 +199,12 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
 
 ## Release Trust
 
-The public workflow produces reproducible checksums and verifies every browser
-download before flashing. A production-signed Android APK and cryptographically
-signed firmware require maintainer-owned signing keys in GitHub Secrets; no
-private production key is stored in this repository. Until those keys are
-provisioned, checksums protect against damaged or mismatched downloads but are
-not a substitute for a maintainer signature.
+The public workflow produces SHA-256 checksums, verifies every browser download,
+and publishes GitHub build-provenance attestations. It produces a release-signed
+Android APK when maintainer-owned signing secrets are configured and labels the
+fallback debug build otherwise. ESP32 BLE OTA validates SHA-256 before finalizing
+an update. See `docs/SECURE-RELEASES.md`; no private production key is stored in
+this repository.
 
 ## Status
 

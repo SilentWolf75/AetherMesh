@@ -1,5 +1,13 @@
 import com.google.protobuf.gradle.*
 
+val releaseSigningValues = mapOf(
+    "storeFile" to System.getenv("AETHERMESH_ANDROID_KEYSTORE"),
+    "storePassword" to System.getenv("AETHERMESH_ANDROID_STORE_PASSWORD"),
+    "keyAlias" to System.getenv("AETHERMESH_ANDROID_KEY_ALIAS"),
+    "keyPassword" to System.getenv("AETHERMESH_ANDROID_KEY_PASSWORD")
+)
+val releaseSigningReady = releaseSigningValues.values.all { !it.isNullOrBlank() }
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -20,9 +28,21 @@ android {
         versionName = providers.gradleProperty("versionName").orNull ?: "1.2.0"
     }
 
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = file(releaseSigningValues.getValue("storeFile")!!)
+                storePassword = releaseSigningValues.getValue("storePassword")
+                keyAlias = releaseSigningValues.getValue("keyAlias")
+                keyPassword = releaseSigningValues.getValue("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseSigningReady) signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

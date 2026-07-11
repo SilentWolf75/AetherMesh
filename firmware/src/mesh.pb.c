@@ -9,6 +9,9 @@
 PB_BIND(aethermesh_MeshPacket, aethermesh_MeshPacket, 2)
 
 
+PB_BIND(aethermesh_MeshDiagnostics, aethermesh_MeshDiagnostics, AUTO)
+
+
 PB_BIND(aethermesh_OtaControl, aethermesh_OtaControl, AUTO)
 
 

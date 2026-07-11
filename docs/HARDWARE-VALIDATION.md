@@ -38,3 +38,14 @@ test result in the release notes.
 Before and after routing changes, run `python tools/mesh_simulator.py` and attach
 its JSON output. Field runs should export the range-test CSV and note topology,
 distance, speed, antenna height, and weather so results remain comparable.
+
+## Qualification Record
+
+Generate the release checklist, fill it while testing each physical board, then
+validate it. A release is not hardware-qualified until every required row is
+`PASS`; compilation alone does not satisfy this gate.
+
+```bash
+python tools/hardware_qualification.py release-hardware.csv --create-template
+python tools/hardware_qualification.py release-hardware.csv
+```

@@ -21,6 +21,8 @@
 #define PONG_RETRY_WINDOW_MS 4000
 #define PONG_RESEND_INTERVAL_MS 2500
 #define ACK_MAX_RETRIES 3
+#define STORE_FORWARD_TTL_MS 1800000UL
+#define STORE_FORWARD_RETRY_MS 60000UL
 #define ROUTE_DISCOVERY_COOLDOWN_MS 5000
 #define PROXY_ROUTE_MAX_AGE_MS 60000
 
@@ -29,6 +31,10 @@ struct RouteEntry {
     uint32_t nextHopId;
     uint8_t metric;
     uint32_t timestamp;
+    uint32_t backupNextHopId;
+    uint8_t backupMetric;
+    uint32_t backupTimestamp;
+    bool hasBackup;
     bool active;
 };
 
@@ -42,6 +48,7 @@ struct SeenPacket {
 struct PendingRebroadcast {
     aethermesh_MeshPacket packet;
     uint32_t transmitTime;
+    uint8_t priority;
     bool active;
 };
 
@@ -50,7 +57,9 @@ struct PendingRebroadcast {
 struct PendingAck {
     aethermesh_MeshPacket packet;
     uint32_t nextRetryTime;
+    uint32_t expiresAt;
     uint8_t retriesLeft;
+    bool stored;
     bool active;
 };
 
@@ -88,12 +97,13 @@ public:
     // Callback registers
     void onReceivedTextMessage(void (*callback)(uint32_t senderId, const char* text));
     void onReceivedTelemetry(void (*callback)(uint32_t senderId, uint8_t battery, float lat, float lon));
-    void onReceivedConfig(void (*callback)(uint32_t senderId, const aethermesh_NodeConfig& config));
+    void onReceivedConfig(void (*callback)(const aethermesh_MeshPacket& packet));
     void onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr));
     
     // Routing Table Diagnostics
     uint32_t getLocalId() { return localNodeId; }
     void printRoutingTable();
+    void getDiagnostics(aethermesh_MeshDiagnostics& diagnostics) const;
 
     // True if this (sender, packet) pair is already in the dedup cache.
     // Lets callers (e.g. the BLE forward path) skip mesh rebroadcast duplicates.
@@ -106,6 +116,7 @@ private:
     RadioManager* radio;
     uint32_t localNodeId;
     uint32_t packetSequenceCounter;
+    uint64_t sessionId;
     
     // Data structures
     RouteEntry routingTable[MAX_ROUTE_TABLE_ENTRIES];
@@ -115,11 +126,18 @@ private:
     PendingAck pendingAcks[MAX_PENDING_ACKS];
     PendingPongReply pendingPongs[MAX_PENDING_PONGS];
     RouteDiscoveryState routeDiscoveries[6];
+    uint32_t relayedPackets;
+    uint32_t retryPackets;
+    uint32_t ackedPackets;
+    uint32_t ackTimeouts;
+    uint32_t duplicatePackets;
+    uint32_t queueDrops;
+    uint32_t routeChanges;
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);
     void (*telemetryCallback)(uint32_t senderId, uint8_t battery, float lat, float lon);
-    void (*configCallback)(uint32_t senderId, const aethermesh_NodeConfig& config);
+    void (*configCallback)(const aethermesh_MeshPacket& packet);
     void (*deliveryStatusCallback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr);
     
     // Private Helpers
@@ -143,6 +161,7 @@ private:
     
     // Rebroadcast Queue helpers
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
+    uint8_t packetPriority(const aethermesh_MeshPacket& packet) const;
     void cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount = UINT32_MAX);
 
     // ACK/retransmit helpers

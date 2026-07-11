@@ -30,9 +30,12 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val selectedChannel: StateFlow<String> = repository.selectedChannel
     val activeChatId: StateFlow<Long?> = repository.activeChatId
     val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = repository.observedRoutes
+    val meshDiagnostics = repository.meshDiagnostics
     val traceRouteState = repository.traceRouteState
     val isDeviceAuthenticated: StateFlow<Boolean> = repository.isDeviceAuthenticated
     val authenticationRequired: StateFlow<Boolean?> = repository.authenticationRequired
+
+    fun getMeshDiagnosticsHistory() = repository.getMeshDiagnosticsHistory()
 
     val connectedDeviceName: String?
         get() = repository.bleManager.connectedDeviceName
