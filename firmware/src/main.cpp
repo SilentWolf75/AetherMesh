@@ -542,6 +542,7 @@ MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /*
 // Pin map from the well-documented T-Echo pinout (nRF52840 P0.xx == Arduino n).
 #include <Adafruit_GFX.h>
 #include <Adafruit_EPD.h>
+#include <Adafruit_BME280.h>
 #define EINK_MOSI  29   // P0.29
 #define EINK_SCLK  31   // P0.31
 #define EINK_CS    30   // P0.30
@@ -550,9 +551,15 @@ MyU8G2 u8g2(U8G2_R0, /* clock=*/ 42, /* data=*/ 39, /* cs=*/ 40, /* dc=*/ 41, /*
 #define EINK_BUSY   3   // P0.03
 #define EINK_BL    43   // P1.11 e-paper frontlight (PIN_EINK_EN, active HIGH)
 #define TECHO_POWER_EN 12  // P0.12 gates peripheral power (GPS + battery sense)
+#define TECHO_SDA  26   // P0.26 I2C to the BME280 weather sensor
+#define TECHO_SCL  27   // P0.27
 // (width, height, SID/MOSI, SCLK, DC, RST, CS, SRAM_CS=-1, MISO=-1, BUSY)
 Adafruit_SSD1681 epd(200, 200, EINK_MOSI, EINK_SCLK, EINK_DC, EINK_RST, EINK_CS, -1, -1, EINK_BUSY);
 bool echoDisplayReady = false;
+bool echoBacklightOn = true;          // frontlight on at boot; button toggles
+volatile bool echoNeedsRefresh = false; // set on button/events -> immediate redraw
+Adafruit_BME280 bme;                  // weather sensor (temp/humidity/pressure)
+bool bmeReady = false;
 #endif
 
 // Instances
@@ -2207,6 +2214,15 @@ void drawEchoStatus() {
     }
     epd.setCursor(6, y); epd.print(line); y += 16;
 
+    // Weather (BME280), when present
+    if (bmeReady) {
+        float tC = bme.readTemperature();
+        float rh = bme.readHumidity();
+        float hpa = bme.readPressure() / 100.0f;
+        snprintf(line, sizeof(line), "%.1fC  %.0f%%RH  %.0fhPa", tC, rh, hpa);
+        epd.setCursor(6, y); epd.print(line); y += 14;
+    }
+
     // Footer: uptime + firmware version
     uint32_t upSec = millis() / 1000UL;
     snprintf(line, sizeof(line), "Up %lum   v%s",
@@ -3200,6 +3216,9 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
     lastMsgText[out] = '\0';
     lastMsgReceivedTime = millis();
     hasNewMsgPopup = true;
+#if defined(LILYGO_T_ECHO)
+    echoNeedsRefresh = true; // update the e-paper on a new message
+#endif
 
     // Also keep it in the recent-messages ring for the MESSAGES screen page
     RecentMsg& slot = recentMsgs[recentMsgHead];
@@ -3215,6 +3234,9 @@ void onReceivedTextMessage(uint32_t senderId, const char* text) {
 
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
 #define USER_BUTTON_PIN 0
+#elif defined(LILYGO_T_ECHO)
+#define USER_BUTTON_PIN 42   // PIN_BUTTON1 = P1.10 (T-Echo user button); the
+                             // generic board profile's PIN_BUTTON1 is the DK's
 #elif defined(PIN_BUTTON1)
 #define USER_BUTTON_PIN PIN_BUTTON1
 #elif defined(BUTTON_PIN1)
@@ -3358,11 +3380,15 @@ void setup() {
     delay(10);
     epd.begin();
     epd.setRotation(0); // T-Echo panel orientation (90 deg CW from the initial 3)
-    // Turn on the e-paper frontlight. Kept simple (always-on) for now so it's
-    // verifiable; can be moved to button-toggle / a timeout once the pin is
-    // confirmed on hardware.
+    // e-paper frontlight (button toggles it; starts on)
     pinMode(EINK_BL, OUTPUT);
-    digitalWrite(EINK_BL, HIGH);
+    digitalWrite(EINK_BL, echoBacklightOn ? HIGH : LOW);
+    // BME280 weather sensor on the T-Echo's I2C bus (SDA26/SCL27). Optional -
+    // if it isn't populated/detected, the weather line is just omitted.
+    Wire.setPins(TECHO_SDA, TECHO_SCL);
+    Wire.begin();
+    bmeReady = bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire);
+    Serial.printf("T-Echo BME280: %s\n", bmeReady ? "detected" : "not found");
     echoDisplayReady = true;
 #endif
 
@@ -3574,6 +3600,14 @@ void loop() {
             oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
         }
 #endif
+#if defined(LILYGO_T_ECHO)
+        // On the T-Echo the button toggles the e-paper frontlight and forces an
+        // immediate screen refresh (e-paper otherwise only refreshes on a slow
+        // cadence, which reads as "the screen isn't updating").
+        echoBacklightOn = !echoBacklightOn;
+        digitalWrite(EINK_BL, echoBacklightOn ? HIGH : LOW);
+        echoNeedsRefresh = true;
+#endif
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
             lastBleActiveTime = millis();
@@ -3597,7 +3631,8 @@ void loop() {
     // ~45s cadence keeps the status readable without constant flashing or
     // stalling the radio for long. (No refresh during an OTA/DFU.)
     static uint32_t lastEchoRefresh = 0;
-    if (!otaActive && millis() - lastEchoRefresh > 45000) {
+    if (!otaActive && (echoNeedsRefresh || millis() - lastEchoRefresh > 45000)) {
+        echoNeedsRefresh = false;
         lastEchoRefresh = millis();
         drawEchoStatus();
     }
