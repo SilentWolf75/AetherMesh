@@ -45,6 +45,7 @@ jobs:
           pio run -e heltec_v3
           pio run -e rak4631
           pio run -e rak3401_1w
+          pio run -e rak19026
           pio run -e lilygo_t_echo
           pio run -e lilygo_t_deck
           pio run -e elecrow_crowpanel_35
@@ -111,21 +112,27 @@ jobs:
           NAME_RAK_1W="aethermesh-rak3401-1w-${HASH}.uf2"
           python /tmp/uf2conv.py "$BUILD_RAK_1W/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK_1W"
 
+          # RAK19026 (nRF52): same UF2 bootloader flow as RAK4631.
+          BUILD_RAK_19026=firmware/.pio/build/rak19026
+          NAME_RAK_19026="aethermesh-rak19026-${HASH}.uf2"
+          python /tmp/uf2conv.py "$BUILD_RAK_19026/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK_19026"
+
           # Lilygo T-Echo (nRF52): convert the built .bin to UF2
           BUILD_T_ECHO=firmware/.pio/build/lilygo_t_echo
           NAME_T_ECHO="aethermesh-t-echo-${HASH}.uf2"
           python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.bin" -c -b 0x26000 -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
 
           # Write manifest listing all builds
-          printf '[\n  {"name":"Heltec V4 - %s (latest)","file":"%s"},\n  {"name":"Heltec V3 - %s (latest)","file":"%s"},\n  {"name":"RAK4631 - %s (latest)","file":"%s"},\n  {"name":"RAK3401 1W - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck - %s (latest)","file":"%s"},\n  {"name":"Elecrow CrowPanel 3.5 - %s (latest)","file":"%s"}\n]\n' \
+          printf '[\n  {"name":"Heltec V4 - %s (latest)","file":"%s"},\n  {"name":"Heltec V3 - %s (latest)","file":"%s"},\n  {"name":"RAK4631 - %s (latest)","file":"%s"},\n  {"name":"RAK3401 1W - %s (latest)","file":"%s"},\n  {"name":"RAK19026 - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck - %s (latest)","file":"%s"},\n  {"name":"Elecrow CrowPanel 3.5 - %s (latest)","file":"%s"}\n]\n' \
             "$HASH" "$NAME_V4" \
             "$HASH" "$NAME_V3" \
             "$HASH" "$NAME_RAK" \
             "$HASH" "$NAME_RAK_1W" \
+            "$HASH" "$NAME_RAK_19026" \
             "$HASH" "$NAME_T_ECHO" \
             "$HASH" "$NAME_T_DECK" \
             "$HASH" "$NAME_CROWPANEL" > "$OUT/manifest.json"
-          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_T_ECHO, $NAME_T_DECK, $NAME_CROWPANEL"
+          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_RAK_19026, $NAME_T_ECHO, $NAME_T_DECK, $NAME_CROWPANEL"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

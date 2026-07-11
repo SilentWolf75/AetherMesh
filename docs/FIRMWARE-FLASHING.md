@@ -1,7 +1,7 @@
 # Flashing AetherMesh Firmware
 
 The GitHub Pages workflow builds the current web flasher bundle for Heltec V4,
-Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo, LILYGO T-Deck, Elecrow
+Heltec V3, RAK4631, RAK3401 1W, RAK19026, LILYGO T-Echo, LILYGO T-Deck, Elecrow
 CrowPanel 3.5, and the Android APK.
 
 The local staging helper is older and currently stages the Heltec V4 app/USB
@@ -64,7 +64,7 @@ Flash the merged image at offset `0x0`:
 Adjust the COM port and filename for the board. If auto-reset is unreliable,
 put the ESP32-S3 board into download mode before flashing.
 
-## RAK4631 / RAK3401 1W
+## RAK4631 / RAK3401 1W / RAK19026
 
 RAK boards use the Nordic/Adafruit DFU bootloader path.
 
@@ -123,6 +123,7 @@ The browser flasher is for first-time setup and recovery. It currently presents:
 - Elecrow CrowPanel 3.5 / ESP32-S3
 - RAK4631 / nRF52
 - RAK3401 1W / nRF52
+- RAK19026 / nRF52
 - LILYGO T-Echo / nRF52
 
 Desktop Chrome, Edge, or Opera is required for Web Serial flashing. For nRF52

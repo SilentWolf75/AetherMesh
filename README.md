@@ -43,6 +43,7 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 | Elecrow CrowPanel Advance 3.5 TFT | ESP32-S3 | Initial CrowPanel firmware target with ILI9488 color UI and SX1262 LoRa |
 | RAK WisBlock RAK4631 | nRF52840 | SX1262 LoRa, WisBlock GPS support, Nordic DFU update path |
 | RAK3401 1W | nRF52840 | High-power RAK variant using the RAK4631 target base |
+| RAK19026 | nRF52840 | WisBlock display and power-management target with UF2 web flashing |
 | LILYGO T-Echo | nRF52840 | T-Echo firmware target and web flasher UF2 flow |
 
 ## Repository Layout
@@ -126,7 +127,7 @@ It supports the current target list in the UI:
 - Heltec V4 and Heltec V3 as merged ESP32-S3 USB images.
 - LILYGO T-Deck as a merged ESP32-S3 USB image.
 - Elecrow CrowPanel 3.5 TFT as a merged ESP32-S3 USB image.
-- RAK4631, RAK3401 1W, and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
+- RAK4631, RAK3401 1W, RAK19026, and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
 
 GitHub Actions builds the firmware and Android APK, writes a flasher manifest,
 and deploys `web-flasher/` to GitHub Pages.
@@ -175,7 +176,7 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
   using a `.bin` firmware file.
 - RAK boards use their bootloader DFU path and a `.zip` package from the
   Android app.
-- RAK4631, RAK3401 1W, and T-Echo can be installed from the web flasher with UF2
+- RAK4631, RAK3401 1W, RAK19026, and T-Echo can be installed from the web flasher with UF2
   drag-and-drop builds.
 - Heltec, T-Deck, and CrowPanel ESP32-S3 targets can be installed from the web
   flasher with merged USB images.

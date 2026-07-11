@@ -8,7 +8,7 @@ Android app once a node already has OTA-capable firmware.
 
 ## How it's served
 
-`pages.yml` builds Heltec V4, Heltec V3, RAK4631, RAK3401 1W, LILYGO T-Echo,
+`pages.yml` builds Heltec V4, Heltec V3, RAK4631, RAK3401 1W, RAK19026, LILYGO T-Echo,
 LILYGO T-Deck, Elecrow CrowPanel 3.5, and the Android APK. It merges complete ESP32-S3 USB images,
 converts nRF52 builds to UF2 where needed, drops everything into `firmware/` with a
 `manifest.json`, and deploys this directory to GitHub Pages. The firmware
@@ -45,4 +45,5 @@ Then open `http://localhost:8000`.
 - Elecrow CrowPanel 3.5 / ESP32-S3
 - RAK4631 / nRF52
 - RAK3401 1W / nRF52
+- RAK19026 / nRF52
 - LILYGO T-Echo / nRF52
