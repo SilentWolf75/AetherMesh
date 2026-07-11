@@ -500,6 +500,7 @@ fun MainScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .clip(androidx.compose.ui.graphics.RectangleShape)
                 ) {
                     when (activeTab) {
                         TabItem.CHATS -> ChatView(
@@ -2162,7 +2163,7 @@ fun MapViewCompose(
         mapView.invalidate()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().clip(androidx.compose.ui.graphics.RectangleShape)) {
         AndroidView(
             factory = { mapView },
             modifier = Modifier.fillMaxSize()
