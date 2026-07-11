@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.aethermesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 2
+        versionName = providers.gradleProperty("versionName").orNull ?: "1.2.0"
     }
 
     buildTypes {

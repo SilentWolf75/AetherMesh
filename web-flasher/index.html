@@ -1845,7 +1845,7 @@
   });
 
   // Download nRF52 UF2 firmware.
-  $("download-uf2-btn").onclick = () => {
+  $("download-uf2-btn").onclick = async () => {
     const val = targetSelect.value;
     const uf2 = manifest.find(m => {
       if (!m.file || !m.file.toLowerCase().endsWith(".uf2")) return false;
@@ -1855,14 +1855,14 @@
       return m.file.toLowerCase().includes("rak4631");
     });
     if (uf2) {
-      const a = document.createElement("a");
-      a.href = "./firmware/" + uf2.file;
-      a.download = uf2.file;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
       const boardName = val === "lilygo-t-echo" ? "T-Echo" : (val === "rak3401-1w" ? "RAK3401 1W" : (val === "rak19026" ? "RAK19026" : "RAK4631"));
-      setStatus("Downloading " + uf2.file + " - drag it onto the " + boardName + " drive.", "info");
+      try {
+        setStatus("Verifying " + uf2.file + "...", "info");
+        await downloadVerifiedArtifact(uf2);
+        setStatus("Verified " + uf2.file + " - drag it onto the " + boardName + " drive.", "ok");
+      } catch (error) {
+        setStatus(error.message || "Firmware verification failed.", "err");
+      }
     } else {
       const boardName = val === "lilygo-t-echo" ? "T-Echo" : (val === "rak3401-1w" ? "RAK3401 1W" : (val === "rak19026" ? "RAK19026" : "RAK4631"));
       setStatus("No " + boardName + " UF2 build is available on this site yet.", "err");
@@ -1973,24 +1973,54 @@
     }
   };
 
+  async function verifyBundledArtifact(entry, buffer) {
+    if (entry.size && buffer.byteLength !== entry.size) {
+      throw new Error(`Size check failed for ${entry.file}.`);
+    }
+    if (entry.sha256) {
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const actual = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+      if (actual !== entry.sha256.toLowerCase()) {
+        throw new Error(`SHA-256 check failed for ${entry.file}.`);
+      }
+    }
+  }
+
+  async function fetchVerifiedArtifact(entry) {
+    const resp = await fetch("./firmware/" + entry.file);
+    if (!resp.ok) throw new Error("Could not download " + entry.file);
+    const buffer = await resp.arrayBuffer();
+    await verifyBundledArtifact(entry, buffer);
+    return buffer;
+  }
+
+  async function downloadVerifiedArtifact(entry) {
+    const buffer = await fetchVerifiedArtifact(entry);
+    const url = URL.createObjectURL(new Blob([buffer], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = entry.file;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // Download Bundled Build Action
-  downloadFwBtn.onclick = () => {
+  downloadFwBtn.onclick = async () => {
     const idx = fwSelect.value;
     if (idx === "" || !manifest[idx]) {
       setStatus("Select a bundled build from the dropdown first.", "err");
       return;
     }
-    const file = manifest[idx].file;
-    const url = "./firmware/" + file;
-    
-    // Trigger download
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = file;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setStatus(`Downloaded ${file} successfully.`, "ok");
+    const entry = manifest[idx];
+    try {
+      setStatus(`Verifying ${entry.file}...`, "info");
+      await downloadVerifiedArtifact(entry);
+      setStatus(`Downloaded and verified ${entry.file}.`, "ok");
+    } catch (error) {
+      setStatus(error.message || "Firmware verification failed.", "err");
+    }
   };
 
   async function loadFirmwareBinary() {
@@ -2005,12 +2035,7 @@
       throw new Error("Choose a bundled build or upload a .bin file first.");
     }
 
-    const url = "./firmware/" + manifest[idx].file;
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      throw new Error("Could not download " + manifest[idx].file);
-    }
-    const buf = await resp.arrayBuffer();
+    const buf = await fetchVerifiedArtifact(manifest[idx]);
     return { name: manifest[idx].file, data: toBinaryString(new Uint8Array(buf)) };
   }
 

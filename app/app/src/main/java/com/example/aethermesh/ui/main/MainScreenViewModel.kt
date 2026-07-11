@@ -233,11 +233,11 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     // E2EE Keys management
     fun getChatKey(chatIdentifier: String): String? {
-        return repository.dbHelper.getChatKey(chatIdentifier)
+        return repository.getChatKey(chatIdentifier)
     }
 
     fun saveChatKey(chatIdentifier: String, key: String) {
-        repository.dbHelper.saveChatKey(chatIdentifier, key)
+        repository.saveChatKey(chatIdentifier, key)
         repository.refreshData()
     }
 

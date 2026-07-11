@@ -16,18 +16,21 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 ## Current Highlights
 
 - Peer-to-peer LoRa mesh with broadcast, direct messages, route discovery, and
-  packet deduplication.
+  expiring packet deduplication, congestion-aware forwarding, and bounded
+  reliable delivery retries.
 - Live two-way traceroute with per-hop RSSI/SNR and route learning from the
   observed forward and return paths.
 - Android app with Chats, Nodes, Map, Settings, diagnostics, firmware updates,
   channel controls, and background BLE service support.
+- Encrypted chat secrets stored outside the SQLite database, salted PBKDF2 key
+  derivation for new encrypted messages, and authenticated AES-GCM payloads.
 - Shared protobuf wire format across Android, BLE, and LoRa packets.
 - BLE configuration for radio settings, GPS/position behavior, node naming,
   security keys, and device preferences.
 - Firmware update flows from the app: ESP32-S3 boards use chunked BLE OTA
   `.bin` updates, while RAK boards can enter Nordic DFU for `.zip` updates.
 - Browser flasher for first-time setup and recovery, published through GitHub
-  Pages and bundled by GitHub Actions.
+  Pages and bundled by GitHub Actions with artifact size and SHA-256 checks.
 - Color T-Deck interface with hardware keyboard input and multiple full-screen
   status pages.
 - Initial Elecrow CrowPanel 3.5 TFT target with SX1262 LoRa, BLE, OTA, and
@@ -107,6 +110,7 @@ heltec_v4
 heltec_v3
 rak4631
 rak3401_1w
+rak19026
 lilygo_t_echo
 lilygo_t_deck
 elecrow_crowpanel_35
@@ -130,7 +134,16 @@ It supports the current target list in the UI:
 - RAK4631, RAK3401 1W, RAK19026, and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
 
 GitHub Actions builds the firmware and Android APK, writes a flasher manifest,
-and deploys `web-flasher/` to GitHub Pages.
+verifies target parity and deterministic mesh scenarios, records artifact
+SHA-256 hashes, and deploys `web-flasher/` to GitHub Pages.
+
+Useful local release checks:
+
+```bash
+python tools/validate_release_targets.py
+python -m unittest tools.test_mesh_simulator tools.test_write_firmware_manifest
+node tools/check_web_flasher.js
+```
 
 For local testing:
 
@@ -181,6 +194,17 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
 - Heltec, T-Deck, and CrowPanel ESP32-S3 targets can be installed from the web
   flasher with merged USB images.
 - Do not flash firmware for one board family onto another board family.
+- Verify published files against `SHA256SUMS.txt`; the web flasher performs the
+  same size and SHA-256 validation automatically.
+
+## Release Trust
+
+The public workflow produces reproducible checksums and verifies every browser
+download before flashing. A production-signed Android APK and cryptographically
+signed firmware require maintainer-owned signing keys in GitHub Secrets; no
+private production key is stored in this repository. Until those keys are
+provisioned, checksums protect against damaged or mismatched downloads but are
+not a substitute for a maintainer signature.
 
 ## Status
 

@@ -13,13 +13,13 @@
 #define MAX_PENDING_REBROADCASTS 6
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
+#define SEEN_PACKET_TIMEOUT_MS 120000
 // Field data: PONGs travel the strong link direction and always delivered on
 // the FIRST attempt (~30 successes, zero via retry), while retries of already
 // delivered pongs collided with the pinger's next ping. Keep exactly one
 // insurance retry, timed to land between 5s-interval pings.
 #define PONG_RETRY_WINDOW_MS 4000
 #define PONG_RESEND_INTERVAL_MS 2500
-#define ACK_RETRY_INTERVAL_MS 3000
 #define ACK_MAX_RETRIES 3
 #define ROUTE_DISCOVERY_COOLDOWN_MS 5000
 #define PROXY_ROUTE_MAX_AGE_MS 60000

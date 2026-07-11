@@ -1819,7 +1819,7 @@ static void drawTDeckMessagesPage() {
         uint16_t accent = (m.sender == localNodeId) ? TDECK_GREEN : TDECK_CYAN;
         tdeckDrawCard(12, y, 296, 48, (m.sender == localNodeId) ? "SENT" : "RECEIVED", accent);
         tdeckDrawStatusDot(286, y + 24, accent, true);
-        char age[8];
+        char age[12];
         formatAge(millis() - m.atMs, age, sizeof(age));
         char hdr[32];
         snprintf(hdr, sizeof(hdr), "0x%04X  %s", (unsigned)(m.sender & 0xFFFF), age);
@@ -1852,7 +1852,7 @@ static void drawTDeckNodesPage() {
         used[best] = true;
         int16_t y = 82 + row * 28;
         st7789_fill_rect(12, y, 296, 22, (row % 2 == 0) ? TDECK_PANEL : TDECK_PANEL_2);
-        char age[8];
+        char age[12];
         formatAge(millis() - peersSeen[best].lastMs, age, sizeof(age));
         char line[48];
         snprintf(line, sizeof(line), "0x%08X   %.0fdB   %s", (unsigned)peersSeen[best].id, peersSeen[best].rssi, age);
@@ -2053,7 +2053,7 @@ void drawMsgsPage() {
     uint8_t toShow = (recentMsgCount < 2) ? recentMsgCount : 2;
     for (uint8_t k = 0; k < toShow; k++) {
         const RecentMsg& m = recentMsgs[(recentMsgHead + 4 - 1 - k) % 4];
-        char age[8];
+        char age[12];
         formatAge(millis() - m.atMs, age, sizeof(age));
         char hdr[28];
         snprintf(hdr, sizeof(hdr), "0x%04X  %s ago:", (unsigned)(m.sender & 0xFFFF), age);
@@ -2094,7 +2094,7 @@ void drawNodesPage() {
         }
         if (best < 0) break;
         used[best] = true;
-        char age[8];
+        char age[12];
         formatAge(millis() - peersSeen[best].lastMs, age, sizeof(age));
         char line[26];
         snprintf(line, sizeof(line), "%08X %.0fdB %s",
@@ -2350,7 +2350,7 @@ void updateDisplay() {
         // Sender Info
         u8g2.setFont(u8g2_font_6x10_tf);
         char senderStr[32];
-        snprintf(senderStr, sizeof(senderStr), "From: 0x%08X", lastMsgSender);
+        snprintf(senderStr, sizeof(senderStr), "From: 0x%08X", (unsigned)lastMsgSender);
         u8g2.drawStr(10, 35, senderStr);
         
         // Message Content (first 20 chars on line 1, next 20 on line 2)
@@ -2405,7 +2405,7 @@ void updateDisplay() {
     if (strlen(nodeCustomName) > 0) {
         snprintf(nameHeader, sizeof(nameHeader), "%.9s 0x%04X", nodeCustomName, (unsigned int)(localNodeId & 0xFFFF));
     } else {
-        snprintf(nameHeader, sizeof(nameHeader), "Node 0x%08X", localNodeId);
+        snprintf(nameHeader, sizeof(nameHeader), "Node 0x%08X", (unsigned)localNodeId);
     }
     u8g2.drawStr(0, 10, nameHeader);
     drawBatteryIcon(105, 1, readBatteryLevel(), batteryCharging);
@@ -2429,7 +2429,8 @@ void updateDisplay() {
 
     // Traffic + how many mesh peers were heard in the last 5 minutes
     char statsStr[32];
-    snprintf(statsStr, sizeof(statsStr), "RX %u TX %u Nodes %u", rxPacketCount, txPacketCount, countActivePeers());
+    snprintf(statsStr, sizeof(statsStr), "RX %u TX %u Nodes %u",
+             (unsigned)rxPacketCount, (unsigned)txPacketCount, (unsigned)countActivePeers());
     u8g2.drawStr(0, 45, statsStr);
 
     // GPS Status line

@@ -9,7 +9,15 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 14
+        private const val DATABASE_VERSION = 15
+
+        const val TABLE_ROUTE_OBSERVATIONS = "route_observations"
+        const val COL_ROUTE_TARGET_ID = "target_id"
+        const val COL_ROUTE_NEXT_HOP_ID = "next_hop_id"
+        const val COL_ROUTE_HOPS = "hops"
+        const val COL_ROUTE_RSSI = "last_rssi"
+        const val COL_ROUTE_SNR = "last_snr"
+        const val COL_ROUTE_TIMESTAMP = "timestamp"
 
         // Telemetry history (append-only) for per-node battery/voltage graphs
         const val TABLE_TELEMETRY = "telemetry_history"
@@ -185,12 +193,24 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
 
+        val createRouteObservationsTable = """
+            CREATE TABLE $TABLE_ROUTE_OBSERVATIONS (
+                $COL_ROUTE_TARGET_ID INTEGER PRIMARY KEY,
+                $COL_ROUTE_NEXT_HOP_ID INTEGER NOT NULL,
+                $COL_ROUTE_HOPS INTEGER NOT NULL,
+                $COL_ROUTE_RSSI REAL DEFAULT 0,
+                $COL_ROUTE_SNR REAL DEFAULT 0,
+                $COL_ROUTE_TIMESTAMP INTEGER NOT NULL
+            )
+        """.trimIndent()
+
         db.execSQL(createMessagesTable)
         db.execSQL(createNodesTable)
         db.execSQL(createTelemetryTable)
         db.execSQL(createKeysTable)
         db.execSQL(createRangeLogsTable)
         db.execSQL(createChannelsTable)
+        db.execSQL(createRouteObservationsTable)
         db.execSQL(insertDefaultChannel)
     }
 
@@ -334,6 +354,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             } catch (e: Exception) {
                 android.util.Log.e("DatabaseHelper", "Failed to add node name ownership column: ${e.message}")
             }
+        }
+        if (oldVersion < 15) {
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS $TABLE_ROUTE_OBSERVATIONS (
+                    $COL_ROUTE_TARGET_ID INTEGER PRIMARY KEY,
+                    $COL_ROUTE_NEXT_HOP_ID INTEGER NOT NULL,
+                    $COL_ROUTE_HOPS INTEGER NOT NULL,
+                    $COL_ROUTE_RSSI REAL DEFAULT 0,
+                    $COL_ROUTE_SNR REAL DEFAULT 0,
+                    $COL_ROUTE_TIMESTAMP INTEGER NOT NULL
+                )""".trimIndent()
+            )
         }
     }
 
@@ -554,6 +586,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         }
         cursor.close()
         return key
+    }
+
+    fun deleteChatKey(chatIdentifier: String) {
+        writableDatabase.delete(TABLE_KEYS, "$COL_KEY_CHAT_ID = ?", arrayOf(chatIdentifier))
     }
 
     // Insert Range Test diagnostics log
@@ -813,18 +849,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         }
         cursorName.close()
 
-        val defaultName = "Node ${String.format("%08X", canonicalId)}"
-        val nameToUse = when {
-            existingNameIsCustom && existingName.isNotEmpty() -> existingName
-            advertisedName.isNotBlank() -> advertisedName.take(16)
-            existingName.isNotEmpty() -> existingName
-            else -> defaultName
-        }
-        val shouldRegenerateShortName = !existingNameIsCustom && advertisedName.isNotBlank()
-        val shortNameToUse = if (existingShortName.isNotEmpty() && !shouldRegenerateShortName) existingShortName else {
-            val clean = nameToUse.replace("AetherMesh-", "").replace("Node ", "").replace(Regex("[^a-zA-Z0-9]"), "")
-            clean.take(4).uppercase().ifEmpty { String.format("%04X", (canonicalId and 0xFFFF).toInt()) }
-        }
+        val canonicalName = NodeNamePolicy.choose(
+            canonicalId,
+            existingName,
+            existingShortName,
+            existingNameIsCustom,
+            advertisedName
+        )
 
         val values = ContentValues().apply {
             put(COL_NODE_BATTERY, battery)
@@ -832,9 +863,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_NODE_LONGITUDE, lon)
             put(COL_NODE_LAST_ACTIVE, System.currentTimeMillis())
             put(COL_NODE_MODEL, model)
-            put(COL_NODE_NAME, nameToUse)
-            put(COL_NODE_SHORT_NAME, shortNameToUse)
-            put(COL_NODE_NAME_CUSTOM, if (existingNameIsCustom) 1 else 0)
+            put(COL_NODE_NAME, canonicalName.longName)
+            put(COL_NODE_SHORT_NAME, canonicalName.shortName)
+            put(COL_NODE_NAME_CUSTOM, if (canonicalName.isCustom) 1 else 0)
             put(COL_NODE_UPTIME, uptimeSeconds)
             put(COL_NODE_FW_VERSION, firmwareVersion)
             put(COL_NODE_IS_CHARGING, if (isCharging) 1 else 0)
@@ -928,6 +959,45 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = this.writableDatabase
         db.execSQL("DELETE FROM $TABLE_NODES")
         db.execSQL("DELETE FROM $TABLE_RANGE_TEST_LOGS") // Delete range test logs on directory reset
+        db.execSQL("DELETE FROM $TABLE_ROUTE_OBSERVATIONS")
+    }
+
+    fun upsertRouteObservation(route: RouteHopInfo) {
+        if (route.targetId == 0L || route.nextHopId == 0L) return
+        val values = ContentValues().apply {
+            put(COL_ROUTE_TARGET_ID, route.targetId)
+            put(COL_ROUTE_NEXT_HOP_ID, route.nextHopId)
+            put(COL_ROUTE_HOPS, route.hops)
+            put(COL_ROUTE_RSSI, route.lastRssi.toDouble())
+            put(COL_ROUTE_SNR, route.lastSnr.toDouble())
+            put(COL_ROUTE_TIMESTAMP, route.timestamp)
+        }
+        writableDatabase.insertWithOnConflict(
+            TABLE_ROUTE_OBSERVATIONS, null, values, SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun getRouteObservations(maxAgeMs: Long = 24L * 60L * 60L * 1000L): List<RouteHopInfo> {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        writableDatabase.delete(TABLE_ROUTE_OBSERVATIONS, "$COL_ROUTE_TIMESTAMP < ?", arrayOf(cutoff.toString()))
+        val cursor = readableDatabase.rawQuery(
+            "SELECT * FROM $TABLE_ROUTE_OBSERVATIONS ORDER BY $COL_ROUTE_TIMESTAMP DESC", null
+        )
+        val routes = mutableListOf<RouteHopInfo>()
+        if (cursor.moveToFirst()) {
+            do {
+                routes += RouteHopInfo(
+                    targetId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_ROUTE_TARGET_ID)),
+                    nextHopId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_ROUTE_NEXT_HOP_ID)),
+                    hops = cursor.getInt(cursor.getColumnIndexOrThrow(COL_ROUTE_HOPS)),
+                    lastRssi = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_ROUTE_RSSI)),
+                    lastSnr = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_ROUTE_SNR)),
+                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_ROUTE_TIMESTAMP))
+                )
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return routes
     }
 
     fun getChannelsList(): List<ChannelConfig> {
@@ -964,9 +1034,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_CHAN_PRECISION_MILES, channel.precisionMiles)
             put(COL_CHAN_PRIMARY, if (channel.isPrimary) 1 else 0)
         }
-        val id = db.insertWithOnConflict(TABLE_CHANNELS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        saveChatKey("CHANNEL_${channel.name}", channel.psk)
-        return id
+        return db.insertWithOnConflict(TABLE_CHANNELS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     fun updateChannel(channel: ChannelConfig) {
@@ -982,7 +1050,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_CHAN_PRIMARY, if (channel.isPrimary) 1 else 0)
         }
         db.update(TABLE_CHANNELS, values, "$COL_CHAN_ID = ?", arrayOf(channel.id.toString()))
-        saveChatKey("CHANNEL_${channel.name}", channel.psk)
+    }
+
+    fun clearChannelPsk(id: Long) {
+        val values = ContentValues().apply { put(COL_CHAN_PSK, "") }
+        writableDatabase.update(TABLE_CHANNELS, values, "$COL_CHAN_ID = ?", arrayOf(id.toString()))
     }
 
     fun deleteChannel(id: Long) {

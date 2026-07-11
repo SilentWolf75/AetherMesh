@@ -55,7 +55,8 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
 
 void MeshRouter::init(uint32_t localId) {
     localNodeId = localId;
-    packetSequenceCounter = random(1, 10000);
+    uint32_t entropy = ((uint32_t)random(1, 0x7FFFFFFF) << 1) ^ micros();
+    packetSequenceCounter = meshmath::initialPacketSequence(localId, entropy);
     
     Serial.print("MeshRouter initialized. Local Node ID: 0x");
     Serial.println(localNodeId, HEX);
@@ -65,7 +66,8 @@ void MeshRouter::loop() {
     uint32_t now = millis();
     drainPendingPongReplies();
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
-        if (pendingRebroadcasts[i].active && now >= pendingRebroadcasts[i].transmitTime) {
+        if (pendingRebroadcasts[i].active &&
+            (int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
             bool urgent = isRangeTestTextPacket(pendingRebroadcasts[i].packet);
             if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
                 pendingRebroadcasts[i].active = false;
@@ -108,7 +110,10 @@ void MeshRouter::loop() {
             pendingAcks[i].packet.retry_count++;
             if (serializeAndSend(&pendingAcks[i].packet)) {
                 pendingAcks[i].retriesLeft--;
-                pendingAcks[i].nextRetryTime = now + ACK_RETRY_INTERVAL_MS + random(0, 500);
+                RouteEntry* retryRoute = getRoute(pendingAcks[i].packet.recipient_id);
+                uint8_t retryMetric = retryRoute ? retryRoute->metric : 0;
+                pendingAcks[i].nextRetryTime = now + meshmath::ackRetryDelayMs(
+                    pendingAcks[i].packet.retry_count, retryMetric, random(0, 500));
                 Serial.printf("Retransmitting packet %u retry %u (retries left: %u)\n",
                               pendingAcks[i].packet.packet_id,
                               pendingAcks[i].packet.retry_count,
@@ -221,8 +226,10 @@ void MeshRouter::invalidateRoute(uint32_t targetId) {
 }
 
 bool MeshRouter::hasSeenPacketId(uint32_t senderId, uint32_t packetId) {
+    uint32_t now = millis();
     for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
+        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId &&
+            meshmath::seenEntryIsFresh(now, seenPackets[i].timestamp, SEEN_PACKET_TIMEOUT_MS)) {
             return true;
         }
     }
@@ -230,8 +237,10 @@ bool MeshRouter::hasSeenPacketId(uint32_t senderId, uint32_t packetId) {
 }
 
 bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
+    uint32_t now = millis();
     for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
+        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId &&
+            meshmath::seenEntryIsFresh(now, seenPackets[i].timestamp, SEEN_PACKET_TIMEOUT_MS)) {
             return retryCount <= seenPackets[i].retryCount;
         }
     }
@@ -907,16 +916,24 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
     }
     
     if (emptySlot == -1) {
-        // If queue is full, overwrite the slot with the earliest transmit time
-        uint32_t earliestTime = pendingRebroadcasts[0].transmitTime;
-        emptySlot = 0;
+        // Preserve work that is closest to transmission. A new urgent relay may
+        // replace the farthest deadline; otherwise reject it without disturbing
+        // the queue that is already draining.
+        uint32_t now = millis();
+        uint32_t farthestTime = pendingRebroadcasts[0].transmitTime;
+        int farthestSlot = 0;
         for (int i = 1; i < MAX_PENDING_REBROADCASTS; i++) {
-            if (pendingRebroadcasts[i].transmitTime < earliestTime) {
-                earliestTime = pendingRebroadcasts[i].transmitTime;
-                emptySlot = i;
+            if (meshmath::deadlineBefore(farthestTime, pendingRebroadcasts[i].transmitTime, now)) {
+                farthestTime = pendingRebroadcasts[i].transmitTime;
+                farthestSlot = i;
             }
         }
-        Serial.printf("Rebroadcast queue full. Overwriting slot %d (packet_id: %u)\n", 
+        if (!meshmath::deadlineBefore(transmitTime, farthestTime, now)) {
+            Serial.printf("Rebroadcast queue full. Dropping later packet %u.\n", packet.packet_id);
+            return;
+        }
+        emptySlot = farthestSlot;
+        Serial.printf("Rebroadcast queue full. Replacing farthest slot %d (packet_id: %u)\n",
                       emptySlot, pendingRebroadcasts[emptySlot].packet.packet_id);
     }
     
@@ -986,7 +1003,10 @@ void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     }
     pendingAcks[slot].packet = packet;
     pendingAcks[slot].retriesLeft = ACK_MAX_RETRIES;
-    pendingAcks[slot].nextRetryTime = millis() + ACK_RETRY_INTERVAL_MS + random(0, 500);
+    RouteEntry* route = getRoute(packet.recipient_id);
+    uint8_t routeMetric = route ? route->metric : 0;
+    pendingAcks[slot].nextRetryTime = millis() +
+        meshmath::ackRetryDelayMs(0, routeMetric, random(0, 500));
     pendingAcks[slot].active = true;
 }
 

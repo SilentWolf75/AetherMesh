@@ -65,6 +65,33 @@ void test_proxy_route_freshness_is_bounded() {
     TEST_ASSERT_FALSE(proxyRouteIsFresh(60001, 60000));
 }
 
+void test_seen_entry_expires_and_handles_millis_wrap() {
+    TEST_ASSERT_TRUE(seenEntryIsFresh(2000, 1000, 1000));
+    TEST_ASSERT_FALSE(seenEntryIsFresh(2001, 1000, 1000));
+    TEST_ASSERT_TRUE(seenEntryIsFresh(25, UINT32_MAX - 25, 100));
+}
+
+void test_packet_sequence_seed_is_deterministic_nonzero_and_well_mixed() {
+    uint32_t first = initialPacketSequence(0x12345678u, 0xABCDEF01u);
+    TEST_ASSERT_NOT_EQUAL(0u, first);
+    TEST_ASSERT_EQUAL_UINT32(first, initialPacketSequence(0x12345678u, 0xABCDEF01u));
+    TEST_ASSERT_NOT_EQUAL(first, initialPacketSequence(0x12345679u, 0xABCDEF01u));
+    TEST_ASSERT_NOT_EQUAL(first, initialPacketSequence(0x12345678u, 0xABCDEF02u));
+}
+
+void test_ack_retry_delay_backs_off_and_caps_route_penalty() {
+    TEST_ASSERT_EQUAL_UINT32(3000, ackRetryDelayMs(0, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(6500, ackRetryDelayMs(1, 5, 0));
+    TEST_ASSERT_EQUAL_UINT32(15123, ackRetryDelayMs(2, 40, 123));
+    TEST_ASSERT_EQUAL_UINT32(15000, ackRetryDelayMs(9, 30, 0));
+}
+
+void test_deadline_order_handles_millis_wrap() {
+    TEST_ASSERT_TRUE(deadlineBefore(1100, 1200, 1000));
+    TEST_ASSERT_FALSE(deadlineBefore(1200, 1100, 1000));
+    TEST_ASSERT_TRUE(deadlineBefore(25, 75, UINT32_MAX - 25));
+}
+
 void test_blur_zero_radius_passthrough() {
     float lat, lon;
     blurPosition(38.812345f, -94.912345f, 0, lat, lon);
@@ -133,6 +160,10 @@ int main(int, char**) {
     RUN_TEST(test_route_selection_rejects_worse_fresh_path);
     RUN_TEST(test_route_selection_replaces_aging_path);
     RUN_TEST(test_proxy_route_freshness_is_bounded);
+    RUN_TEST(test_seen_entry_expires_and_handles_millis_wrap);
+    RUN_TEST(test_packet_sequence_seed_is_deterministic_nonzero_and_well_mixed);
+    RUN_TEST(test_ack_retry_delay_backs_off_and_caps_route_penalty);
+    RUN_TEST(test_deadline_order_handles_millis_wrap);
     RUN_TEST(test_blur_zero_radius_passthrough);
     RUN_TEST(test_blur_no_fix_passthrough);
     RUN_TEST(test_blur_within_radius_per_axis);

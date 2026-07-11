@@ -20,6 +20,12 @@ feature checklist. The current routing work uses these targets.
   RSSI/SNR, truncation reporting, and route learning at every forwarding node.
 - Configured node names in telemetry, with explicit ownership metadata so local
   aliases are not overwritten by network-advertised defaults.
+- Expiring duplicate history so a sender can safely reuse a packet ID after the
+  replay window without allowing immediate duplicates through.
+- Exponential, route-aware ACK retry delays and airtime-aware channel backoff.
+- A bounded rebroadcast queue that preserves the packets nearest their send
+  deadlines when the mesh is congested.
+- Process-wide Android packet IDs seeded across the full positive 31-bit range.
 
 ## What Traceroute Means
 
@@ -56,8 +62,18 @@ Future routing changes should be tested against repeatable scenarios:
 7. Traceroute path agreement with controlled physical topologies.
 8. Name and map consistency across disconnect, app restart, and node reboot.
 
-The next protocol step should be a deterministic simulator or multi-radio test
-harness that records these metrics before and after each routing change.
+The deterministic simulator in `tools/mesh_simulator.py` covers direct,
+five-hop, lossy, and relay-failure topologies. Run it before and after routing
+changes and retain the JSON report with the test record:
+
+```bash
+python tools/mesh_simulator.py
+python -m unittest tools.test_mesh_simulator
+```
+
+The simulator is a regression gate, not a substitute for radios. Release
+candidates still require the controlled multi-radio and field checks in
+`docs/HARDWARE-VALIDATION.md`.
 
 ## Reference Designs
 

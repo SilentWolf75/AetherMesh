@@ -8,6 +8,7 @@ on:
       - 'firmware/**'
       - 'proto/**'
       - 'app/**'
+      - 'tools/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -52,7 +53,7 @@ jobs:
 
       - name: Build Android App (APK)
         working-directory: app
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleDebug -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
 
       - name: Merge complete USB images + write manifest
         run: |
@@ -122,16 +123,16 @@ jobs:
           NAME_T_ECHO="aethermesh-t-echo-${HASH}.uf2"
           python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.bin" -c -b 0x26000 -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
 
-          # Write manifest listing all builds
-          printf '[\n  {"name":"Heltec V4 - %s (latest)","file":"%s"},\n  {"name":"Heltec V3 - %s (latest)","file":"%s"},\n  {"name":"RAK4631 - %s (latest)","file":"%s"},\n  {"name":"RAK3401 1W - %s (latest)","file":"%s"},\n  {"name":"RAK19026 - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Echo - %s (latest)","file":"%s"},\n  {"name":"LILYGO T-Deck - %s (latest)","file":"%s"},\n  {"name":"Elecrow CrowPanel 3.5 - %s (latest)","file":"%s"}\n]\n' \
-            "$HASH" "$NAME_V4" \
-            "$HASH" "$NAME_V3" \
-            "$HASH" "$NAME_RAK" \
-            "$HASH" "$NAME_RAK_1W" \
-            "$HASH" "$NAME_RAK_19026" \
-            "$HASH" "$NAME_T_ECHO" \
-            "$HASH" "$NAME_T_DECK" \
-            "$HASH" "$NAME_CROWPANEL" > "$OUT/manifest.json"
+          # Write a manifest that the browser can verify before flashing.
+          python tools/write_firmware_manifest.py --output "$OUT/manifest.json" --hash "$HASH" \
+            --artifact "Heltec V4" "$OUT/$NAME_V4" \
+            --artifact "Heltec V3" "$OUT/$NAME_V3" \
+            --artifact "RAK4631" "$OUT/$NAME_RAK" \
+            --artifact "RAK3401 1W" "$OUT/$NAME_RAK_1W" \
+            --artifact "RAK19026" "$OUT/$NAME_RAK_19026" \
+            --artifact "LILYGO T-Echo" "$OUT/$NAME_T_ECHO" \
+            --artifact "LILYGO T-Deck" "$OUT/$NAME_T_DECK" \
+            --artifact "Elecrow CrowPanel 3.5" "$OUT/$NAME_CROWPANEL"
           echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_RAK_19026, $NAME_T_ECHO, $NAME_T_DECK, $NAME_CROWPANEL"
           ls -la "$OUT"
 
@@ -145,6 +146,8 @@ jobs:
             echo "ERROR: Compiled APK not found!"
             exit 1
           fi
+          cd web-flasher
+          sha256sum aethermesh-app-debug.apk firmware/* > SHA256SUMS.txt
 
       - uses: actions/upload-pages-artifact@v3
         with:

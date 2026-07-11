@@ -40,6 +40,34 @@ inline bool proxyRouteIsFresh(uint32_t routeAgeMs, uint32_t maxProxyAgeMs) {
     return routeAgeMs <= maxProxyAgeMs;
 }
 
+inline bool seenEntryIsFresh(uint32_t nowMs, uint32_t seenAtMs, uint32_t timeoutMs) {
+    return (uint32_t)(nowMs - seenAtMs) <= timeoutMs;
+}
+
+// Mix boot entropy with the stable node id so packet sequences start across the
+// full uint32 space instead of repeatedly landing in a small 1..10000 window.
+inline uint32_t initialPacketSequence(uint32_t nodeId, uint32_t entropy) {
+    uint32_t value = entropy ^ nodeId ^ 0x9E3779B9u;
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16;
+    return value == 0 ? 1u : value;
+}
+
+inline uint32_t ackRetryDelayMs(uint32_t retryCount, uint8_t routeMetric,
+                                uint32_t jitterMs) {
+    uint32_t multiplier = 1u << (retryCount > 2 ? 2 : retryCount);
+    uint32_t routePenalty = (uint32_t)routeMetric * 100u;
+    if (routePenalty > 3000u) routePenalty = 3000u;
+    return 3000u * multiplier + routePenalty + jitterMs;
+}
+
+inline bool deadlineBefore(uint32_t left, uint32_t right, uint32_t now) {
+    return (int32_t)(left - now) < (int32_t)(right - now);
+}
+
 // Position privacy blur: snap lat/lon to the center of a grid cell sized
 // 2*radiusM, so the true position stays within +/-radiusM per axis of what
 // gets broadcast. Deterministic on purpose: the same true position always

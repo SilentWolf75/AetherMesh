@@ -38,6 +38,23 @@ jobs:
         working-directory: firmware
         run: pio test -e native
 
+  mesh-simulator:
+    name: Deterministic mesh simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run simulator regression tests
+        run: python -m unittest -v tools.test_mesh_simulator tools.test_write_firmware_manifest
+      - name: Produce benchmark report
+        run: python tools/mesh_simulator.py --messages 1000
+      - name: Verify release target parity
+        run: python tools/validate_release_targets.py
+      - name: Verify web flasher JavaScript
+        run: node tools/check_web_flasher.js
+
   android:
     name: Android build + unit tests
     runs-on: ubuntu-latest

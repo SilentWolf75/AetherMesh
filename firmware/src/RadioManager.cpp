@@ -391,18 +391,34 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     setHeltecV4TransmitEnable(false);
 #endif
 
+    uint32_t airtimeMs = radio->getTimeOnAir(len) / 1000;
     if (!skipCad) {
-        // Perform CAD check before sending to avoid collisions
-        Serial.println("Performing CAD check...");
-        int cadState = radio->scanChannel();
-        if (cadState == RADIOLIB_LORA_DETECTED) {
-            Serial.println("Channel busy! Backing off...");
-            delay(random(50, 200)); // Random backoff
+        bool channelFree = false;
+        for (uint8_t attempt = 0; attempt < 3; attempt++) {
+            Serial.printf("Performing CAD check (attempt %u/3)...\n", attempt + 1);
+            int cadState = radio->scanChannel();
+            // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag.
+            operationDone = false;
+            if (cadState == RADIOLIB_CHANNEL_FREE) {
+                channelFree = true;
+                break;
+            }
+            if (cadState != RADIOLIB_LORA_DETECTED) {
+                Serial.printf("CAD failed with code %d; returning to receive mode.\n", cadState);
+                radio->startReceive();
+                return false;
+            }
+            uint32_t baseBackoff = 80 + airtimeMs / 4;
+            uint32_t scaledBackoff = baseBackoff << attempt;
+            if (scaledBackoff > 2000) scaledBackoff = 2000;
+            Serial.printf("Channel busy; backing off up to %lu ms.\n", (unsigned long)scaledBackoff);
+            delay(random(scaledBackoff / 2 + 1, scaledBackoff + 1));
         }
-        // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag that
-        // loop() would misreport as a "TX glitch" on every send. Discard it here;
-        // the radio is in standby now, so no genuine RX/TX event can be pending.
-        operationDone = false;
+        if (!channelFree) {
+            Serial.println("Channel remained busy after 3 CAD attempts; deferring packet.");
+            radio->startReceive();
+            return false;
+        }
     }
     
     Serial.print("Sending LoRa Packet. Length: ");
@@ -412,7 +428,6 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     txStartTime = millis();
     // Expected time-on-air for this packet at the current SF/BW, +50% margin.
     // At SF12/125kHz a ~50B packet is ~2.3s, so a fixed timeout would abort it.
-    uint32_t airtimeMs = radio->getTimeOnAir(len) / 1000;
     txTimeoutMs = airtimeMs + (airtimeMs / 2) + 300;
 #if defined(HELTEC_V4)
     setHeltecV4TransmitEnable(true);

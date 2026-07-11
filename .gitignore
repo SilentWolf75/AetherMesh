@@ -18,6 +18,10 @@ captures/
 # ===== Proto tooling =====
 proto/protoc.zip
 
+# ===== Python tooling =====
+__pycache__/
+*.py[cod]
+
 # ===== OS / Editor =====
 .DS_Store
 Thumbs.db

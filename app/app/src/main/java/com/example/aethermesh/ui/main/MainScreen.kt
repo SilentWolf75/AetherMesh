@@ -1874,12 +1874,14 @@ fun MapViewCompose(
             try {
                 val osmdroidDir = java.io.File(context.filesDir, "osmdroid").apply { mkdirs() }
                 val destFile = java.io.File(osmdroidDir, "offline_map.zip")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    destFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                android.widget.Toast.makeText(context, "Offline map imported successfully! Restart map to view.", android.widget.Toast.LENGTH_LONG).show()
+                val info = context.contentResolver.openInputStream(uri)?.use { input ->
+                    OfflineMapArchive.install(input, destFile)
+                } ?: error("Could not open selected map archive")
+                android.widget.Toast.makeText(
+                    context,
+                    "Offline map imported (${info.entries} entries). Restart map to view.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
                 mapView.invalidate()
             } catch (e: Exception) {
                 android.util.Log.e("MapView", "Failed to import offline map", e)
@@ -3421,8 +3423,8 @@ fun SettingsView(
             configLoadedForNode = nodeKey
             val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
             val matchedNode = nodes.find { it.nodeId == nodeKey }
-            nodeName = matchedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: nodePrefs.getString("node_name", "") ?: ""
-            nodeShortName = matchedNode?.shortName ?: nodePrefs.getString("node_short_name", "") ?: ""
+            nodeName = matchedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: ""
+            nodeShortName = matchedNode?.shortName ?: ""
             sf = nodePrefs.getInt("lora_sf", 9)
             bw = nodePrefs.getFloat("lora_bw", 125f)
             txPower = nodePrefs.getInt("lora_tx_power", 22)
@@ -3470,8 +3472,6 @@ fun SettingsView(
             if (nodeKey != 0L) {
                 val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
                 nodePrefs.edit().apply {
-                    putString("node_name", nodeName)
-                    putString("node_short_name", nodeShortName)
                     putInt("lora_sf", sf)
                     putFloat("lora_bw", bw)
                     putInt("lora_tx_power", txPower)
@@ -7848,37 +7848,12 @@ fun exportBreadcrumbsToKml(context: Context, breadcrumbs: List<Pair<Double, Doub
         return
     }
     try {
-        val kml = StringBuilder()
-        kml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-        kml.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n")
-        kml.append("  <Document>\n")
-        kml.append("    <name>AetherMesh Tracklog</name>\n")
-        kml.append("    <Style id=\"yellowLineGreenPoly\">\n")
-        kml.append("      <LineStyle>\n")
-        kml.append("        <color>7f00ffff</color>\n")
-        kml.append("        <width>4</width>\n")
-        kml.append("      </LineStyle>\n")
-        kml.append("    </Style>\n")
-        kml.append("    <Placemark>\n")
-        kml.append("      <name>Track Path</name>\n")
-        kml.append("      <styleUrl>#yellowLineGreenPoly</styleUrl>\n")
-        kml.append("      <LineString>\n")
-        kml.append("        <extrude>1</extrude>\n")
-        kml.append("        <tessellate>1</tessellate>\n")
-        kml.append("        <coordinates>\n")
-        for (pt in breadcrumbs) {
-            kml.append("          ${pt.second},${pt.first},0\n")
-        }
-        kml.append("        </coordinates>\n")
-        kml.append("      </LineString>\n")
-        kml.append("    </Placemark>\n")
-        kml.append("  </Document>\n")
-        kml.append("</kml>\n")
+        val kml = MapExport.buildKml(breadcrumbs)
 
         val filename = "aethermesh_track_${System.currentTimeMillis()}.kml"
         val outDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
         val file = java.io.File(outDir, filename)
-        file.writeText(kml.toString())
+        file.writeText(kml)
 
         val uri = androidx.core.content.FileProvider.getUriForFile(
             context, "${context.packageName}.fileprovider", file

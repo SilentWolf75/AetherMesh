@@ -59,7 +59,9 @@ class AetherMeshRepository(private val context: Context) {
         private const val MAX_TEXT_CONTENT_LENGTH = 127
         // Encrypted payloads grow: base64(12B IV + plaintext + 16B GCM tag) must
         // fit the proto's 168-byte content field -> plaintext capped lower.
-        private const val MAX_ENCRYPTED_CONTENT_LENGTH = 96
+        // v2 wire overhead: salt(16) + IV(12) + GCM tag(16), then base64 and "v2:".
+        // 76 plaintext bytes keeps the encoded protobuf string below its 168B cap.
+        private const val MAX_ENCRYPTED_CONTENT_LENGTH = 76
         private const val MAX_CHANNEL_LENGTH = 31
         private const val MESSAGE_ACK_TIMEOUT_MS = 15_000L
         private const val RANGE_PING_TIMEOUT_MS = 15_000L
@@ -247,6 +249,7 @@ class AetherMeshRepository(private val context: Context) {
                 val db = dbHelper.writableDatabase
                 db.execSQL("DELETE FROM nodes WHERE node_id <= 0")
                 db.execSQL("DELETE FROM messages WHERE sender_id <= 0 OR recipient_id <= 0")
+                _observedRoutes.value = dbHelper.getRouteObservations().associateBy { it.targetId }
                 // Range-test control rows stored as chat messages by older builds:
                 // once marked FAILED they were auto-resent as DMs forever.
                 db.execSQL("DELETE FROM messages WHERE content LIKE 'PING@_%' ESCAPE '@' OR content LIKE 'PONG@_%' ESCAPE '@'")
@@ -318,7 +321,7 @@ class AetherMeshRepository(private val context: Context) {
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(0) // Local auth
-            .setPacketId((1..100000).random())
+            .setPacketId(PacketIdGenerator.next())
             .setHopLimit(1)
             .setWantAck(false)
             .setPrevHopId(localNodeId.toInt())
@@ -341,7 +344,7 @@ class AetherMeshRepository(private val context: Context) {
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(0)
-            .setPacketId((1..100000).random())
+            .setPacketId(PacketIdGenerator.next())
             .setHopLimit(1)
             .setWantAck(false)
             .setPrevHopId(localNodeId.toInt())
@@ -392,6 +395,10 @@ class AetherMeshRepository(private val context: Context) {
                             .replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
                             .ifEmpty { String.format("%04X", (senderId and 0xFFFFL).toInt()) }
                     dbHelper.updateNodeNameAndShortName(senderId, savedName, savedShortName)
+                    nodePrefs.edit()
+                        .remove("node_name")
+                        .remove("node_short_name")
+                        .apply()
                 }
 
                 refreshData()
@@ -454,7 +461,7 @@ class AetherMeshRepository(private val context: Context) {
         if (prevHopId != 0L && packet.rxRssi != 0f) {
             val hopsCount = if (senderId == prevHopId) 1 else 2
             val currentMap = _observedRoutes.value.toMutableMap()
-            currentMap[senderId] = RouteHopInfo(
+            val observation = RouteHopInfo(
                 targetId = senderId,
                 nextHopId = prevHopId,
                 hops = hopsCount,
@@ -462,6 +469,8 @@ class AetherMeshRepository(private val context: Context) {
                 lastSnr = packet.rxSnr,
                 timestamp = System.currentTimeMillis()
             )
+            currentMap[senderId] = observation
+            dbHelper.upsertRouteObservation(observation)
             _observedRoutes.value = currentMap
         }
 
@@ -503,11 +512,12 @@ class AetherMeshRepository(private val context: Context) {
                 }
 
                 val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$targetChan" else "DM_$senderId"
+                val cryptoContext = ChatContext.authenticatedLabel(senderId, recipientId, targetChan)
                 
                 val finalContent = if (isEncrypted) {
-                    val passcode = dbHelper.getChatKey(chatIdentifier)
+                    val passcode = getChatKey(chatIdentifier)
                     if (!passcode.isNullOrEmpty()) {
-                        decryptAES(contentReceived, passcode)
+                        decryptAES(contentReceived, passcode, cryptoContext)
                     } else {
                         "[Encrypted Message - No Key Configured]"
                     }
@@ -539,7 +549,7 @@ class AetherMeshRepository(private val context: Context) {
                 var lon = telemetry.longitude
                 
                 // Retrieve the primary channel to check for location fuzzer privacy settings
-                val primaryChan = dbHelper.getChannelsList().firstOrNull { it.isPrimary }
+                val primaryChan = getChannelsList().firstOrNull { it.isPrimary }
                 if (primaryChan != null && !primaryChan.preciseLocation && primaryChan.precisionMiles > 0f) {
                     val milesToDegreesLat = primaryChan.precisionMiles / 69.0f
                     val cosLat = Math.cos(Math.toRadians(lat.toDouble()))
@@ -610,13 +620,15 @@ class AetherMeshRepository(private val context: Context) {
 
                     if (forward.isNotEmpty()) {
                         val routes = _observedRoutes.value.toMutableMap()
-                        routes[current.targetId] = RouteHopInfo(
+                        val observation = RouteHopInfo(
                             targetId = current.targetId,
                             nextHopId = forward.first().nodeId,
                             hops = forward.size,
                             lastRssi = forward.last().rssi.toFloat(),
                             lastSnr = forward.last().snr
                         )
+                        routes[current.targetId] = observation
+                        dbHelper.upsertRouteObservation(observation)
                         _observedRoutes.value = routes
                     }
                 }
@@ -647,20 +659,61 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    private fun secureChatKeyName(chatIdentifier: String): String {
+        val kind = if (chatIdentifier.startsWith("CHANNEL_")) "channel" else "dm"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(chatIdentifier.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return "chat_key_${kind}_$digest"
+    }
+
+    fun getChatKey(chatIdentifier: String): String? {
+        val prefKey = secureChatKeyName(chatIdentifier)
+        securePrefs.getString(prefKey, null)?.let { return it }
+
+        // One-time migration from the legacy plaintext SQLite key table.
+        val legacy = dbHelper.getChatKey(chatIdentifier)
+        if (!legacy.isNullOrEmpty()) {
+            securePrefs.edit().putString(prefKey, legacy).apply()
+            dbHelper.deleteChatKey(chatIdentifier)
+            return legacy
+        }
+        return null
+    }
+
+    fun saveChatKey(chatIdentifier: String, key: String) {
+        val prefKey = secureChatKeyName(chatIdentifier)
+        if (key.isBlank()) {
+            securePrefs.edit().remove(prefKey).apply()
+        } else {
+            securePrefs.edit().putString(prefKey, key).apply()
+        }
+        dbHelper.deleteChatKey(chatIdentifier)
+    }
+
+    private fun deleteChatKey(chatIdentifier: String) {
+        securePrefs.edit().remove(secureChatKeyName(chatIdentifier)).apply()
+        dbHelper.deleteChatKey(chatIdentifier)
+    }
+
     fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
-        val generatedPacketId = (1..100000).random()
+        val generatedPacketId = PacketIdGenerator.next()
+        val localNodeId = bleManager.connectedNodeId
 
         val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
-        val passcode = dbHelper.getChatKey(chatIdentifier)
+        val cryptoContext = ChatContext.authenticatedLabel(localNodeId, recipientId, boundedChannel)
+        val passcode = getChatKey(chatIdentifier)
         val isEncrypted = !passcode.isNullOrEmpty()
-        val boundedContent = content.take(if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH)
+        val boundedContent = content.takeUtf8Bytes(
+            if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH
+        )
 
         // Encrypt FIRST and refuse to send on failure — never fall back to
         // transmitting plaintext on a chat the user believes is encrypted.
         val contentToSend = if (isEncrypted) {
-            encryptAES(boundedContent, passcode) ?: run {
+            encryptAES(boundedContent, passcode, cryptoContext) ?: run {
                 Log.e(TAG, "Encryption failed; message NOT sent.")
                 return false
             }
@@ -669,7 +722,6 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         // Insert into local DB as sent by local user (store plaintext locally)
-        val localNodeId = bleManager.connectedNodeId
         dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
@@ -799,7 +851,7 @@ class AetherMeshRepository(private val context: Context) {
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(localNodeId.toInt())
-            .setPacketId((1..100000).random())
+            .setPacketId(PacketIdGenerator.next())
             .setHopLimit(1)
             .setWantAck(false)
             .setPrevHopId(localNodeId.toInt())
@@ -827,7 +879,7 @@ class AetherMeshRepository(private val context: Context) {
             targetId == 0L || targetId == localNodeId
         ) return false
 
-        val traceId = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
+        val traceId = PacketIdGenerator.next()
         val trace = TraceRoute.newBuilder()
             .setType(TraceRoute.Type.REQUEST)
             .setTraceId(traceId)
@@ -907,7 +959,7 @@ class AetherMeshRepository(private val context: Context) {
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(nodeId.toInt())
-            .setPacketId((1..100000).random())
+            .setPacketId(PacketIdGenerator.next())
             .setHopLimit(4)
             .setWantAck(true)
             .setPrevHopId(localNodeId.toInt())
@@ -1469,11 +1521,15 @@ class AetherMeshRepository(private val context: Context) {
 
     fun clearAllMessages() {
         dbHelper.clearAllMessages()
+        val editor = securePrefs.edit()
+        securePrefs.all.keys.filter { it.startsWith("chat_key_dm_") }.forEach(editor::remove)
+        editor.apply()
         refreshData()
     }
 
     fun clearAllNodes() {
         dbHelper.clearAllNodes()
+        _observedRoutes.value = emptyMap()
         if (_isRangeTestActive.value) {
             stopRangeTest()
         }
@@ -1481,8 +1537,8 @@ class AetherMeshRepository(private val context: Context) {
         refreshData()
     }
 
-    // AES-256 E2EE Cryptography Helper
-    private fun deriveKey(passcode: String): SecretKeySpec {
+    // Legacy key derivation retained only to read v1/ECB messages.
+    private fun deriveLegacyKey(passcode: String): SecretKeySpec {
         val digest = MessageDigest.getInstance("SHA-256")
         val bytes = digest.digest(passcode.toByteArray(Charsets.UTF_8))
         return SecretKeySpec(bytes, "AES")
@@ -1491,23 +1547,47 @@ class AetherMeshRepository(private val context: Context) {
     // AES-256-GCM with a random 12-byte IV prepended to the ciphertext.
     // Returns null on failure — callers must refuse to send, never fall back
     // to plaintext.
-    fun encryptAES(plainText: String, passcode: String): String? {
+    fun encryptAES(plainText: String, passcode: String, chatIdentifier: String = ""): String? {
         return try {
-            val keySpec = deriveKey(passcode)
+            val salt = ByteArray(16)
+            java.security.SecureRandom().nextBytes(salt)
+            val keySpec = ChatKeyDerivation.derive(passcode, salt)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val iv = ByteArray(12)
             java.security.SecureRandom().nextBytes(iv)
             cipher.init(Cipher.ENCRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, iv))
+            if (chatIdentifier.isNotEmpty()) {
+                cipher.updateAAD(chatIdentifier.toByteArray(Charsets.UTF_8))
+            }
             val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            Base64.encodeToString(iv + encryptedBytes, Base64.NO_WRAP)
+            "v2:" + Base64.encodeToString(salt + iv + encryptedBytes, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e(TAG, "Encryption failed: ${e.message}")
             null
         }
     }
 
-    fun decryptAES(cipherText: String, passcode: String): String {
-        val keySpec = deriveKey(passcode)
+    fun decryptAES(cipherText: String, passcode: String, chatIdentifier: String = ""): String {
+        if (cipherText.startsWith("v2:")) {
+            try {
+                val decoded = Base64.decode(cipherText.removePrefix("v2:"), Base64.NO_WRAP)
+                if (decoded.size <= 44) return "[Decryption Error - Invalid Message]"
+                val salt = decoded.copyOfRange(0, 16)
+                val iv = decoded.copyOfRange(16, 28)
+                val keySpec = ChatKeyDerivation.derive(passcode, salt)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, iv))
+                if (chatIdentifier.isNotEmpty()) {
+                    cipher.updateAAD(chatIdentifier.toByteArray(Charsets.UTF_8))
+                }
+                return String(cipher.doFinal(decoded, 28, decoded.size - 28), Charsets.UTF_8)
+            } catch (e: Exception) {
+                Log.e(TAG, "v2 decryption failed: ${e.message}")
+                return "[Decryption Error - Bad Key or Context]"
+            }
+        }
+
+        val keySpec = deriveLegacyKey(passcode)
         // Current format: base64(IV[12] + ciphertext + GCM tag[16])
         try {
             val decoded = Base64.decode(cipherText, Base64.NO_WRAP)
@@ -1586,7 +1666,7 @@ class AetherMeshRepository(private val context: Context) {
 
         var generatedPacketId: Int
         do {
-            generatedPacketId = (1..100000).random()
+            generatedPacketId = PacketIdGenerator.next()
         } while (pendingRangePings.containsKey(generatedPacketId))
 
         val pending = PendingRangePing(
@@ -1706,21 +1786,41 @@ class AetherMeshRepository(private val context: Context) {
     fun getTelemetryHistory(nodeId: Long) = dbHelper.getTelemetryHistory(nodeId)
 
     fun getChannelsList(): List<ChannelConfig> {
-        return dbHelper.getChannelsList()
+        return dbHelper.getChannelsList().map { channel ->
+            val identifier = "CHANNEL_${channel.name}"
+            var secret = getChatKey(identifier)
+            if (secret.isNullOrEmpty() && channel.psk.isNotEmpty()) {
+                secret = channel.psk
+                saveChatKey(identifier, secret)
+            }
+            if (channel.psk.isNotEmpty()) {
+                dbHelper.clearChannelPsk(channel.id)
+            }
+            channel.copy(psk = secret ?: "")
+        }
     }
 
     fun insertChannel(channel: ChannelConfig): Long {
-        val id = dbHelper.insertChannel(channel)
+        saveChatKey("CHANNEL_${channel.name}", channel.psk)
+        val id = dbHelper.insertChannel(channel.copy(psk = ""))
         refreshChannelsList()
         return id
     }
 
     fun updateChannel(channel: ChannelConfig) {
-        dbHelper.updateChannel(channel)
+        val previous = getChannelsList().firstOrNull { it.id == channel.id }
+        if (previous != null && previous.name != channel.name) {
+            deleteChatKey("CHANNEL_${previous.name}")
+        }
+        saveChatKey("CHANNEL_${channel.name}", channel.psk)
+        dbHelper.updateChannel(channel.copy(psk = ""))
         refreshChannelsList()
     }
 
     fun deleteChannel(id: Long) {
+        getChannelsList().firstOrNull { it.id == id }?.let {
+            deleteChatKey("CHANNEL_${it.name}")
+        }
         dbHelper.deleteChannel(id)
         refreshChannelsList()
     }
@@ -1732,7 +1832,7 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     private fun refreshChannelsList() {
-        val list = dbHelper.getChannelsList().map { it.name }
+        val list = getChannelsList().map { it.name }
         _channels.value = if (list.isEmpty()) listOf(DEFAULT_CHANNEL) else list
     }
 
@@ -1780,7 +1880,7 @@ class AetherMeshRepository(private val context: Context) {
         var fuzzedLon = lon
 
         // Retrieve the primary channel to check for location fuzzer privacy settings
-        val primaryChan = dbHelper.getChannelsList().firstOrNull { it.isPrimary }
+        val primaryChan = getChannelsList().firstOrNull { it.isPrimary }
         if (primaryChan != null) {
             // If position sharing is disabled on the channel, do not send GPS coordinates
             if (!primaryChan.positionEnabled) {
@@ -1816,7 +1916,7 @@ class AetherMeshRepository(private val context: Context) {
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(localNodeId.toInt()) // Set recipient to local node so it intercepts it
-            .setPacketId((1..100000).random())
+            .setPacketId(PacketIdGenerator.next())
             .setHopLimit(1)
             .setWantAck(false)
             .setPrevHopId(localNodeId.toInt())
