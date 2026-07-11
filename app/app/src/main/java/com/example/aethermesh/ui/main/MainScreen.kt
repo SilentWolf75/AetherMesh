@@ -782,7 +782,8 @@ fun ChatView(
             )
         } else {
             // DM Mode: Show Horizontal Contact List
-            if (nodes.isEmpty()) {
+            val displayNodes = nodes.filter { it.nodeId != localNodeId }
+            if (displayNodes.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -798,7 +799,7 @@ fun ChatView(
                         .padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(nodes) { node ->
+                    items(displayNodes) { node ->
                         val isSelected = activeChatId == node.nodeId
                         val shortName = getShortName(node.name, node.nodeId)
                         val badgeColor = getBadgeColor(node.name)
@@ -1425,13 +1426,14 @@ fun NodesView(
         Text(t("Active Nodes Directory", appLanguage), color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(12.dp))
         
-        if (nodes.isEmpty()) {
+        val displayNodes = nodes.filter { it.nodeId != connectedNodeId }
+        if (displayNodes.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(t("No nodes discovered yet. Waiting for telemetry...", appLanguage), color = TextMuted, textAlign = TextAlign.Center)
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                items(nodes) { node ->
+                items(displayNodes) { node ->
                     NodeItem(
                         node = node,
                         observedRoutes = observedRoutes,
@@ -2011,7 +2013,7 @@ fun MapViewCompose(
         // 3. Draw custom initials-badge markers for each active node.
         // Nodes sitting at (nearly) the same spot get fanned out on a small ring so
         // every badge stays visible and tappable instead of stacking.
-        val placedNodes = nodes.filter { hasValidPosition(it.latitude, it.longitude) }
+        val placedNodes = nodes.filter { it.nodeId != viewModel.connectedNodeId && hasValidPosition(it.latitude, it.longitude) }
         val nodeGroups = mutableListOf<MutableList<MeshNode>>()
         for (node in placedNodes) {
             val group = nodeGroups.find { g ->
@@ -2103,7 +2105,7 @@ fun MapViewCompose(
         )
 
         // expandable Heard (No GPS) Nodes overlay Card
-        val noGpsNodes = nodes.filterNot { hasValidPosition(it.latitude, it.longitude) }
+        val noGpsNodes = nodes.filter { it.nodeId != viewModel.connectedNodeId }.filterNot { hasValidPosition(it.latitude, it.longitude) }
         var showNoGpsNodesList by remember { mutableStateOf(false) }
         
         if (noGpsNodes.isNotEmpty()) {
