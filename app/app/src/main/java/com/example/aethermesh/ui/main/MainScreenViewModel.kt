@@ -261,7 +261,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         repository.bleManager.retryAfterGaveUp()
     }
 
-    fun sendMessage(content: String, recipientId: Long = repository.activeChatId.value ?: 0xFFFFFFFFL): Boolean {
+    fun sendMessage(content: String, recipientId: Long = repository.activeChatId.value ?: 0xFFFFFFFFL): com.example.aethermesh.data.SendMessageResult {
         val targetChannel = if (recipientId == 0xFFFFFFFFL) repository.selectedChannel.value else ""
         return repository.sendMessage(recipientId, content, targetChannel)
     }
@@ -402,6 +402,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     }
 
     // E2EE Keys management
+    val chatKeysRevision = repository.chatKeysRevision
+
     fun getChatKey(chatIdentifier: String): String? {
         return repository.getChatKey(chatIdentifier)
     }

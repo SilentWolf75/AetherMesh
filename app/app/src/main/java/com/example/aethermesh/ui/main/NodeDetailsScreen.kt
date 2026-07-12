@@ -430,7 +430,7 @@ private fun DetailsCard(
                         )
                     }
                     if (node.uptimeSeconds > 0) {
-                        MetaItem(Icons.Default.Timer, if (appLanguage == "Spanish") "Activo" else "Uptime", formatUptime(node.uptimeSeconds))
+                        MetaItem(Icons.Default.Timer, if (appLanguage == "Spanish") "Activo" else "Uptime", formatUptime(node.uptimeSeconds, appLanguage))
                     }
                     if (node.firmwareVersion.isNotEmpty()) {
                         MetaItem(Icons.Default.Memory, if (appLanguage == "Spanish") "Firmware" else "Firmware", node.firmwareVersion)

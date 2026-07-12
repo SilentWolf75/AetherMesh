@@ -34,6 +34,12 @@ data class RouteHopInfo(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+enum class SendMessageResult {
+    Sent,
+    NotReady,
+    EncryptFailed
+}
+
 data class MeshDiagnosticsSnapshot(
     val timestamp: Long = System.currentTimeMillis(),
     val txPackets: Long = 0,
@@ -176,6 +182,9 @@ class AetherMeshRepository(private val context: Context) {
 
     private val _selectedChannel = MutableStateFlow(DEFAULT_CHANNEL)
     val selectedChannel: StateFlow<String> = _selectedChannel.asStateFlow()
+
+    private val _chatKeysRevision = MutableStateFlow(0)
+    val chatKeysRevision: StateFlow<Int> = _chatKeysRevision.asStateFlow()
 
     // activeChatId: null means showing the group channel, Long value means DM with that nodeId
     private val _activeChatId = MutableStateFlow<Long?>(null)
@@ -781,15 +790,17 @@ class AetherMeshRepository(private val context: Context) {
             securePrefs.edit().putString(prefKey, key).apply()
         }
         dbHelper.deleteChatKey(chatIdentifier)
+        _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
 
     private fun deleteChatKey(chatIdentifier: String) {
         securePrefs.edit().remove(secureChatKeyName(chatIdentifier)).apply()
         dbHelper.deleteChatKey(chatIdentifier)
+        _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
 
-    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): Boolean {
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return SendMessageResult.NotReady
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
         val generatedPacketId = PacketIdGenerator.next()
         val localNodeId = bleManager.connectedNodeId
@@ -807,7 +818,7 @@ class AetherMeshRepository(private val context: Context) {
         val contentToSend = if (isEncrypted) {
             encryptAES(boundedContent, passcode, cryptoContext) ?: run {
                 Log.e(TAG, "Encryption failed; message NOT sent.")
-                return false
+                return SendMessageResult.EncryptFailed
             }
         } else {
             boundedContent
@@ -831,7 +842,7 @@ class AetherMeshRepository(private val context: Context) {
 
         // Commit the local bubble only after Android accepted the BLE write.
         // Otherwise the composer retains the text and reports the failed handoff.
-        if (!bleManager.sendPacket(packet.toByteArray())) return false
+        if (!bleManager.sendPacket(packet.toByteArray())) return SendMessageResult.NotReady
         dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
@@ -842,12 +853,12 @@ class AetherMeshRepository(private val context: Context) {
             isEncrypted = isEncrypted
         )
         refreshData()
-        return true
+        return SendMessageResult.Sent
     }
 
     fun retryMessage(message: ChatMessage): Boolean {
         if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty()) return false
-        val sent = sendMessage(message.recipientId, message.content, "")
+        val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
         if (sent) {
             dbHelper.updateMessageStatusById(message.id, "RETRIED")
             refreshData()
@@ -874,7 +885,7 @@ class AetherMeshRepository(private val context: Context) {
             for (message in retryable) {
                 dmRetryLastAttempt[message.id] = now
                 dbHelper.updateMessageStatusById(message.id, "QUEUED")
-                val sent = sendMessage(message.recipientId, message.content, "")
+                val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
                 dbHelper.updateMessageStatusById(message.id, if (sent) "RETRIED" else "FAILED")
                 // Space resends out; a burst of tracked DMs each retrying 3x
                 // saturates the node's half-duplex radio.

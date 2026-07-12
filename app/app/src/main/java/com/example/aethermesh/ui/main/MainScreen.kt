@@ -208,6 +208,7 @@ fun localizeChatPlaceholder(content: String, appLanguage: String): String {
         "[Encrypted Message - No Key Configured]" -> "[Mensaje cifrado — sin clave configurada]"
         "[Decryption Error - Invalid Message]" -> "[Error de descifrado — mensaje inválido]"
         "[Decryption Error - Bad Key or Context]" -> "[Error de descifrado — clave o contexto incorrecto]"
+        "[Decryption Error - Bad Key]" -> "[Error de descifrado — clave incorrecta]"
         else -> content
     }
 }
@@ -406,6 +407,7 @@ fun MainScreen(
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val activeChatId by viewModel.activeChatId.collectAsStateWithLifecycle()
     val chatDeepLinkEpoch by viewModel.chatDeepLinkEpoch.collectAsStateWithLifecycle()
+    val chatKeysRevision by viewModel.chatKeysRevision.collectAsStateWithLifecycle()
 
     val pendingOpenChats by viewModel.pendingOpenChatsTab.collectAsStateWithLifecycle()
     LaunchedEffect(pendingOpenChats) {
@@ -644,7 +646,8 @@ fun MainScreen(
                             channelPreviews = viewModel.getChannelInboxPreviews(),
                             dmPreviews = viewModel.getDmInboxPreviews(viewModel.connectedNodeId),
                             onGoToConnection = { activeTab = TabItem.CONNECTION },
-                            deepLinkEpoch = chatDeepLinkEpoch
+                            deepLinkEpoch = chatDeepLinkEpoch,
+                            chatKeysRevision = chatKeysRevision
                         )
                         TabItem.NODES -> NodesView(
                             nodes = nodes,
@@ -968,14 +971,15 @@ fun ChatView(
     onSelectChannel: (String) -> Unit,
     onSelectDirectMessage: (Long) -> Unit,
     onCreateChannel: (String) -> Unit,
-    onSendMessage: (String) -> Boolean,
+    onSendMessage: (String) -> com.example.aethermesh.data.SendMessageResult,
     onRetryMessage: (ChatMessage) -> Unit,
     getChatKey: (String) -> String?,
     saveChatKey: (String, String) -> Unit,
     channelPreviews: Map<String, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
     dmPreviews: Map<Long, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
     onGoToConnection: () -> Unit = {},
-    deepLinkEpoch: Int = 0
+    deepLinkEpoch: Int = 0,
+    chatKeysRevision: Int = 0
 ) {
     var textState by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf<String?>(null) }
@@ -1236,6 +1240,9 @@ fun ChatView(
             val chatIdentifier = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
             var passcode by remember(chatIdentifier) { mutableStateOf(getChatKey(chatIdentifier)) }
             var showPasscodeDialog by remember { mutableStateOf(false) }
+            LaunchedEffect(chatIdentifier, chatKeysRevision) {
+                passcode = getChatKey(chatIdentifier)
+            }
 
             if (showPasscodeDialog) {
                 PasscodeEntryDialog(
@@ -1392,14 +1399,23 @@ fun ChatView(
                             return@IconButton
                         }
                         if (textState.trim().isNotEmpty()) {
-                            if (onSendMessage(textState)) {
-                                textState = ""
-                                sendError = null
-                            } else {
-                                sendError = if (spanish)
-                                    "No se envió. Revisa conexión BLE y autenticación."
-                                else
-                                    "Message not sent. Check BLE connection and authentication."
+                            when (onSendMessage(textState)) {
+                                com.example.aethermesh.data.SendMessageResult.Sent -> {
+                                    textState = ""
+                                    sendError = null
+                                }
+                                com.example.aethermesh.data.SendMessageResult.EncryptFailed -> {
+                                    sendError = if (spanish)
+                                        "No se pudo cifrar el mensaje. Revisa la clave del chat."
+                                    else
+                                        "Could not encrypt the message. Check the chat passcode."
+                                }
+                                com.example.aethermesh.data.SendMessageResult.NotReady -> {
+                                    sendError = if (spanish)
+                                        "No se envió. Revisa conexión BLE y autenticación."
+                                    else
+                                        "Message not sent. Check BLE connection and authentication."
+                                }
                             }
                         }
                     },
@@ -2049,6 +2065,9 @@ fun NodesView(
                     if (query.isEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
+                            if (appLanguage == "Spanish")
+                            "Conecta una radio en la pestaña Conexión — los nodos cercanos aparecen al anunciarse."
+                        else
                             "Connect a radio on the Connection tab — nearby nodes appear here as they advertise.",
                             color = TextMuted.copy(alpha = 0.8f),
                             textAlign = TextAlign.Center,
@@ -2864,13 +2883,18 @@ fun MapViewCompose(
                 } ?: error("Could not open selected map archive")
                 android.widget.Toast.makeText(
                     context,
-                    "Offline map loaded (${info.entries} entries).",
+                    if (appLanguage == "Spanish") "Mapa offline cargado (${info.entries} entradas)." else "Offline map loaded (${info.entries} entries).",
                     android.widget.Toast.LENGTH_LONG
                 ).show()
                 mapGeneration++
             } catch (e: Exception) {
                 android.util.Log.e("MapView", "Failed to import offline map", e)
-                android.widget.Toast.makeText(context, "Failed to import: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(
+                    context,
+                    if (appLanguage == "Spanish") "Error al importar: ${e.localizedMessage}"
+                    else "Failed to import: ${e.localizedMessage}",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -3560,6 +3584,17 @@ fun MapViewCompose(
                             modifier = Modifier
                         )
                     }
+                    if (showRangeTestHistory && rangeTestLogs.isEmpty()) {
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Sin pines aún — ejecuta una prueba de rango en Conexión."
+                            else
+                                "No pins yet — run a range test on Connection first.",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3722,18 +3757,30 @@ fun MapViewCompose(
                     .padding(start = 12.dp, top = 56.dp)
             ) {
                 Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                    Text("RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentMint))
-                        Spacer(Modifier.width(6.dp))
-                        Text("ACK", color = TextMuted, fontSize = 10.sp)
-                    }
-                    Spacer(Modifier.height(3.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentRed))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Timeout", color = TextMuted, fontSize = 10.sp)
+                    Text(if (appLanguage == "Spanish") "PINS DE RANGO" else "RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    if (rangeTestLogs.isEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Ejecuta una prueba de rango en Conexión primero."
+                            else
+                                "Run a range test on Connection first.",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentMint))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("ACK", color = TextMuted, fontSize = 10.sp)
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentRed))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (appLanguage == "Spanish") "Tiempo agotado" else "Timeout", color = TextMuted, fontSize = 10.sp)
+                        }
                     }
                 }
             }
@@ -4109,7 +4156,9 @@ fun MapViewCompose(
         val remotePrefs = remember(node.nodeId) {
             context.getSharedPreferences("node_settings_${node.nodeId}", Context.MODE_PRIVATE)
         }
-        var remoteName by remember(node.nodeId) { mutableStateOf(node.name) }
+        var remoteName by remember(node.nodeId) {
+            mutableStateOf(remotePrefs.getString("node_name", null) ?: node.name)
+        }
         var remotePassword by remember(node.nodeId) { mutableStateOf("") }
         var remoteSF by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_sf", 9)) }
         var remoteBW by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("lora_bw", 125f)) }
@@ -4119,6 +4168,12 @@ fun MapViewCompose(
         var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
         var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
         var remoteGpsEnabled by remember(node.nodeId) { mutableStateOf(remotePrefs.getInt("gps_mode", 0) == 0) }
+        var remoteScreenTimeout by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("screen_timeout", 30)) }
+        var remotePowerSave by remember(node.nodeId) { mutableStateOf(remotePrefs.getBoolean("power_save_mode", false)) }
+        var remoteFixedPosition by remember(node.nodeId) { mutableStateOf(remotePrefs.getBoolean("fixed_position", false)) }
+        var remoteFixedLat by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("fixed_latitude", 0f)) }
+        var remoteFixedLon by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("fixed_longitude", 0f)) }
+        var remoteFixedAlt by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("fixed_altitude", 0)) }
         var showRemoteRepeaterConfirm by remember(node.nodeId) { mutableStateOf(false) }
 
         fun applyRemoteConfig() {
@@ -4132,19 +4187,32 @@ fun MapViewCompose(
                 region = remoteRegion,
                 role = remoteRole,
                 telemetryInterval = remoteTelemetryInterval,
+                screenTimeout = remoteScreenTimeout,
+                powerSaveMode = remotePowerSave,
                 positionPrecision = remotePositionPrecision,
-                gpsMode = if (remoteGpsEnabled) 0 else 1
+                gpsMode = if (remoteGpsEnabled) 0 else 1,
+                fixedPosition = remoteFixedPosition,
+                fixedLatitude = remoteFixedLat,
+                fixedLongitude = remoteFixedLon,
+                fixedAltitude = remoteFixedAlt
             )
             if (success) {
                 remotePrefs.edit().apply {
+                    putString("node_name", remoteName.trim())
                     putInt("lora_sf", remoteSF)
                     putFloat("lora_bw", remoteBW)
                     putInt("lora_tx_power", remoteTxPower)
                     putInt("region", remoteRegion)
                     putInt("node_role", remoteRole)
                     putInt("telemetry_interval", remoteTelemetryInterval)
+                    putInt("screen_timeout", remoteScreenTimeout)
+                    putBoolean("power_save_mode", remotePowerSave)
                     putInt("position_precision", remotePositionPrecision)
                     putInt("gps_mode", if (remoteGpsEnabled) 0 else 1)
+                    putBoolean("fixed_position", remoteFixedPosition)
+                    putFloat("fixed_latitude", remoteFixedLat)
+                    putFloat("fixed_longitude", remoteFixedLon)
+                    putInt("fixed_altitude", remoteFixedAlt)
                     apply()
                 }
                 android.widget.Toast.makeText(
@@ -4615,9 +4683,23 @@ fun SettingsView(
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(json.toByteArray())
                 }
-                android.widget.Toast.makeText(context, "Settings exported successfully", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(
+                    context,
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Ajustes exportados correctamente"
+                    else
+                        "Settings exported successfully",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             } catch (e: Exception) {
-                android.widget.Toast.makeText(context, "Failed to export settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(
+                    context,
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Error al exportar ajustes: ${e.message}"
+                    else
+                        "Failed to export settings: ${e.message}",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -6638,7 +6720,7 @@ fun SettingsView(
                 // CSV Exports
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
-                        exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) })
+                        exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) }, appLanguage)
                     }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -6654,7 +6736,7 @@ fun SettingsView(
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
                         val allMsg = consoleMessages
-                        exportAllPacketsToCsv(context, allMsg)
+                        exportAllPacketsToCsv(context, allMsg, appLanguage)
                     }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -7880,7 +7962,7 @@ fun ConnectionView(
                             )
                         }
                         TextButton(
-                            onClick = { exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory()) },
+                            onClick = { exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory(), appLanguage) },
                             contentPadding = PaddingValues(0.dp)
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
@@ -8036,7 +8118,7 @@ fun ConnectionView(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Direct Signal Range Test",
+                            text = if (spanish) "Prueba de rango de señal directa" else "Direct Signal Range Test",
                             color = TextLight,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
@@ -8050,7 +8132,7 @@ fun ConnectionView(
                                         .background(AccentMint)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("ACTIVE", color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(t("ACTIVE", appLanguage), color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -8059,12 +8141,15 @@ fun ConnectionView(
                     if (!isRangeTestActive) {
                         // Configuration Panel
                         Text(
+                            if (spanish)
+                            "Solo un salto: se excluyen repetidores para que distancia y señal describan los dos nodos elegidos."
+                        else
                             "One-hop only: repeaters are excluded so distance and signal describe the two selected nodes.",
                             color = TextMuted,
                             fontSize = 11.sp
                         )
                         Spacer(modifier = Modifier.height(10.dp))
-                        Text("Target Node", color = TextMuted, fontSize = 12.sp)
+                        Text(if (spanish) "Nodo objetivo" else "Target Node", color = TextMuted, fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(4.dp))
                         Box(
                             modifier = Modifier
@@ -8075,7 +8160,7 @@ fun ConnectionView(
                                 .padding(12.dp)
                         ) {
                             Text(
-                                text = selectedRangeTargetNode?.let { "${it.name} (0x${it.nodeId.toString(16).uppercase()})" } ?: "Select Node...",
+                                text = selectedRangeTargetNode?.let { "${it.name} (0x${it.nodeId.toString(16).uppercase()})" } ?: (if (spanish) "Seleccionar nodo…" else "Select Node..."),
                                 color = TextLight,
                                 fontSize = 14.sp
                             )
@@ -8099,7 +8184,12 @@ fun ConnectionView(
                         
                         Spacer(modifier = Modifier.height(16.dp))
                         
-                        Text("Ping Interval: ${pingIntervalSec.toInt()} seconds", color = TextMuted, fontSize = 12.sp)
+                        Text(
+                            if (spanish) "Intervalo de ping: ${pingIntervalSec.toInt()} s"
+                            else "Ping Interval: ${pingIntervalSec.toInt()} seconds",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
                         Slider(
                             value = pingIntervalSec,
                             onValueChange = { pingIntervalSec = it },
@@ -8125,7 +8215,7 @@ fun ConnectionView(
                             colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text("Start Range Test", color = DarkBackground, fontWeight = FontWeight.Bold)
+                            Text(if (spanish) "Iniciar prueba de rango" else "Start Range Test", color = DarkBackground, fontWeight = FontWeight.Bold)
                         }
                         if (!isDeviceAuthenticated) {
                             Text(
@@ -8172,15 +8262,15 @@ fun ConnectionView(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                Text("PINGS SENT", color = TextMuted, fontSize = 10.sp)
+                                Text(if (spanish) "PINGS" else "PINGS SENT", color = TextMuted, fontSize = 10.sp)
                                 Text("$totalPings", color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                Text("REPLIES", color = TextMuted, fontSize = 10.sp)
+                                Text(if (spanish) "RESPUESTAS" else "REPLIES", color = TextMuted, fontSize = 10.sp)
                                 Text("$successfulPings", color = AccentMint, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                Text("SUCCESS RATE", color = TextMuted, fontSize = 10.sp)
+                                Text(if (spanish) "ÉXITO" else "SUCCESS RATE", color = TextMuted, fontSize = 10.sp)
                                 Text("$successRate%", color = if (successRate > 75) AccentMint else if (successRate > 40) Color(0xFFFBBF24) else Color(0xFFF87171), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                         }
@@ -8231,7 +8321,7 @@ fun ConnectionView(
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    "Distance to target: $distStr",
+                                    if (spanish) "Distancia al objetivo: $distStr" else "Distance to target: $distStr",
                                     color = AccentCyan,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -8311,7 +8401,7 @@ fun ConnectionView(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("✕", color = AccentRed, fontSize = 10.sp)
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("Miss", color = TextMuted, fontSize = 10.sp)
+                                Text(if (spanish) "Fallo" else "Miss", color = TextMuted, fontSize = 10.sp)
                             }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -8416,7 +8506,7 @@ fun ConnectionView(
                             }
 
                             Button(
-                                onClick = { exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) }) },
+                                onClick = { exportRangeTestLogsToCsv(context, viewModel.getAllRangeTestLogs(), viewModel.nodes.value.associate { it.nodeId to (it.latitude.toDouble() to it.longitude.toDouble()) }, appLanguage) },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF164E63)),
                                 shape = RoundedCornerShape(8.dp),
@@ -8490,11 +8580,11 @@ fun ConnectionView(
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scanning…", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
+                            Text(if (spanish) "Escaneando…" else "Scanning…", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
                         } else {
                             Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF061018))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scan for devices", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
+                            Text(if (spanish) "Buscar dispositivos" else "Scan for devices", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -8502,7 +8592,7 @@ fun ConnectionView(
         }
 
         Text(
-            "Bluetooth only for now — TCP and USB coming later.",
+            if (spanish) "Solo Bluetooth por ahora — TCP y USB llegarán después." else "Bluetooth only for now — TCP and USB coming later.",
             color = TextMuted,
             fontSize = 11.sp,
             modifier = Modifier.padding(bottom = 12.dp)
@@ -8527,11 +8617,11 @@ fun ConnectionView(
                     if (isScanning) {
                         CircularProgressIndicator(color = AccentMint, modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Stop", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(if (spanish) "Parar" else "Stop", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     } else {
                         Icon(Icons.Default.Search, contentDescription = null, tint = AccentMint, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Scan", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(if (spanish) "Escanear" else "Scan", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -8703,16 +8793,17 @@ fun ConnectionView(
     }
 }
 
-fun formatUptime(seconds: Long): String {
+fun formatUptime(seconds: Long, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
     val d = seconds / 86400
     val h = (seconds % 86400) / 3600
     val m = (seconds % 3600) / 60
     val s = seconds % 60
     return when {
-        d > 0 -> "${d}d ${h}h"
-        h > 0 -> "${h}h ${m}m"
-        m > 0 -> "${m}m ${s}s"
-        else -> "${s}s"
+        d > 0 -> if (spanish) "${d} días ${h} h" else "${d}d ${h}h"
+        h > 0 -> if (spanish) "${h} h ${m} m" else "${h}h ${m}m"
+        m > 0 -> if (spanish) "${m} m ${s} s" else "${m}m ${s}s"
+        else -> if (spanish) "${s} s" else "${s}s"
     }
 }
 
@@ -8844,10 +8935,16 @@ fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): St
 fun exportRangeTestLogsToCsv(
     context: Context,
     logs: List<com.example.aethermesh.data.RangeTestLog>,
-    nodePositions: Map<Long, Pair<Double, Double>> = emptyMap()
+    nodePositions: Map<Long, Pair<Double, Double>> = emptyMap(),
+    appLanguage: String = "English"
 ) {
+    val spanish = appLanguage == "Spanish"
     if (logs.isEmpty()) {
-        android.widget.Toast.makeText(context, "No range test data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "Aún no hay datos de prueba de rango." else "No range test data to export yet.",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
         return
     }
 
@@ -8891,21 +8988,32 @@ fun exportRangeTestLogsToCsv(
             putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Range Test Export")
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(android.content.Intent.createChooser(intent, "Export Range Test CSV"))
+        context.startActivity(android.content.Intent.createChooser(intent, if (spanish) "Exportar CSV de rango" else "Export Range Test CSV"))
     } catch (e: Exception) {
         // Fall back to the clipboard if no app can take the file
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Range Test Logs", csv.toString()))
-        android.widget.Toast.makeText(context, "Share failed (${e.message}); CSV copied to clipboard instead.", android.widget.Toast.LENGTH_LONG).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "No se pudo compartir (${e.message}); CSV copiado al portapapeles."
+            else "Share failed (${e.message}); CSV copied to clipboard instead.",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
     }
 }
 
 fun exportMeshDiagnosticsToCsv(
     context: Context,
-    snapshots: List<com.example.aethermesh.data.MeshDiagnosticsSnapshot>
+    snapshots: List<com.example.aethermesh.data.MeshDiagnosticsSnapshot>,
+    appLanguage: String = "English"
 ) {
+    val spanish = appLanguage == "Spanish"
     if (snapshots.isEmpty()) {
-        android.widget.Toast.makeText(context, "No mesh health data to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "Aún no hay datos de salud del mesh." else "No mesh health data to export yet.",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
         return
     }
     val csv = StringBuilder(
@@ -8939,15 +9047,21 @@ fun exportMeshDiagnosticsToCsv(
             putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Mesh Health Export")
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(android.content.Intent.createChooser(intent, "Export Mesh Health CSV"))
+        context.startActivity(android.content.Intent.createChooser(intent, if (spanish) "Exportar salud del mesh" else "Export Mesh Health CSV"))
     } catch (e: Exception) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Mesh Health", csv.toString()))
-        android.widget.Toast.makeText(context, "Share failed; CSV copied to clipboard.", android.widget.Toast.LENGTH_LONG).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "No se pudo compartir; CSV copiado al portapapeles."
+            else "Share failed; CSV copied to clipboard.",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
     }
 }
 
-fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>) {
+fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLanguage: String = "English") {
+    val spanish = appLanguage == "Spanish"
     val csv = StringBuilder("Timestamp,SenderId,RecipientId,Content,Channel,Status,Encrypted\n")
     messages.forEach {
         val date = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.timestamp))
@@ -8955,7 +9069,12 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>) {
     }
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("All Messages CSV", csv.toString()))
-    android.widget.Toast.makeText(context, "All messages exported to CSV and copied to clipboard!", android.widget.Toast.LENGTH_LONG).show()
+    android.widget.Toast.makeText(
+        context,
+        if (spanish) "Mensajes exportados a CSV y copiados al portapapeles."
+        else "All messages exported to CSV and copied to clipboard!",
+        android.widget.Toast.LENGTH_LONG
+    ).show()
 }
 
 fun exportBreadcrumbsToKml(
