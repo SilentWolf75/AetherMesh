@@ -925,6 +925,74 @@ class AetherMeshRepository(private val context: Context) {
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
         dbHelper.updateNodeNameAndShortName(nodeId, name, shortName)
         refreshData()
+        // Push onto the connected node so the name lives in mesh telemetry
+        // (survives a fresh app install). Remote nodes need Remote Config +
+        // admin password — phone-only renames are temporary until then.
+        if (bleManager.isConnected && _isDeviceAuthenticated.value &&
+            nodeId == bleManager.connectedNodeId
+        ) {
+            sendNameOnlyConfig(nodeId, name)
+        }
+    }
+
+    /**
+     * Writes only [name] onto a node (no radio reboot). Local BLE when
+     * [nodeId] is the connected node; otherwise authenticated remote config.
+     */
+    fun sendNameOnlyConfig(nodeId: Long, name: String, adminPassword: String = ""): Boolean {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+        val localNodeId = bleManager.connectedNodeId
+        val clipped = name.trim().take(16)
+        val isLocal = nodeId == localNodeId
+        if (!isLocal && adminPassword.isBlank()) return false
+
+        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
+            .setNodeName(clipped)
+            .setApplyNameOnly(true)
+        if (!isLocal && !supportsV2) {
+            configBuilder.setConfigPassword(adminPassword)
+        }
+        val config = configBuilder.build()
+
+        val packetBuilder = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(nodeId.toInt())
+            .setPacketId(PacketIdGenerator.next())
+            .setHopLimit(if (isLocal) 1 else 4)
+            .setWantAck(!isLocal)
+            .setPrevHopId(localNodeId.toInt())
+            .setConfig(config)
+
+        if (!isLocal && supportsV2) {
+            val identity = ControlAuthSession.next()
+            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, adminPassword)
+            packetBuilder
+                .setProtocolVersion(2)
+                .setSessionId(identity.sessionId)
+                .setAuthCounter(identity.counter)
+                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
+        }
+
+        val success = bleManager.sendPacket(packetBuilder.build().toByteArray())
+        if (success) {
+            dbHelper.updateNodeNameAndShortName(
+                nodeId,
+                clipped,
+                deriveShortName(clipped, nodeId),
+                fromMesh = true
+            )
+            refreshData()
+        }
+        return success
+    }
+
+    private fun deriveShortName(longName: String, nodeId: Long): String {
+        return longName.replace("AetherMesh-", "").replace("Node ", "")
+            .replace(Regex("[^a-zA-Z0-9]"), "")
+            .take(4)
+            .uppercase()
+            .ifEmpty { String.format("%04X", (nodeId and 0xFFFFL).toInt()) }
     }
 
     fun startTraceRoute(targetId: Long): Boolean {

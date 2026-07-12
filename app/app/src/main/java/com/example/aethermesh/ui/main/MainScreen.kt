@@ -531,8 +531,8 @@ fun MainScreen(
                                 viewModel.selectDirectMessage(nodeId)
                                 activeTab = TabItem.CHATS
                             },
-                            onRenameNode = { nodeId, longName, shortName ->
-                                viewModel.updateNodeNameAndShortName(nodeId, longName, shortName)
+                            onRenameNode = { nodeId, longName, shortName, password ->
+                                viewModel.renameNode(nodeId, longName, shortName, password)
                             },
                             getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
                             connectedNodeId = viewModel.connectedNodeId,
@@ -1213,7 +1213,7 @@ fun NodesView(
     appLanguage: String,
     useImperialUnits: Boolean,
     onNodeClick: (Long) -> Unit,
-    onRenameNode: (Long, String, String) -> Unit,
+    onRenameNode: (Long, String, String, String) -> Boolean,
     getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
     connectedNodeId: Long = 0L,
     traceRouteState: TraceRouteState = TraceRouteState(),
@@ -1316,8 +1316,11 @@ fun NodesView(
 
     if (renamingNode != null) {
         val node = renamingNode!!
+        val context = LocalContext.current
         var longName by remember { mutableStateOf(node.name) }
         var shortName by remember { mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }) }
+        var adminPassword by remember { mutableStateOf("") }
+        val isRemote = node.nodeId != connectedNodeId
         
         AlertDialog(
             onDismissRequest = { renamingNode = null },
@@ -1361,12 +1364,65 @@ fun NodesView(
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (isRemote) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Contraseña del nodo (para guardar en el mesh)"
+                            else
+                                "Node admin password (to store on the mesh)",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        TextField(
+                            value = adminPassword,
+                            onValueChange = { adminPassword = it },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = DarkBackground,
+                                unfocusedContainerColor = DarkBackground,
+                                focusedTextColor = TextLight,
+                                unfocusedTextColor = TextLight,
+                                cursorColor = AccentCyan,
+                                focusedIndicatorColor = AccentCyan,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Sin contraseña el nombre solo queda en este teléfono."
+                            else
+                                "Without a password the name stays on this phone only.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onRenameNode(node.nodeId, longName.trim(), shortName.trim())
+                        val persisted = onRenameNode(
+                            node.nodeId,
+                            longName.trim(),
+                            shortName.trim(),
+                            adminPassword
+                        )
+                        if (!persisted && isRemote) {
+                            android.widget.Toast.makeText(
+                                context,
+                                if (appLanguage == "Spanish")
+                                    "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
+                                else
+                                    "Name saved on phone only. Connect to that node or use Remote Config.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
                         renamingNode = null
                     }
                 ) {
@@ -2681,6 +2737,8 @@ fun MapViewCompose(
         var shortName by remember(node.nodeId) {
             mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) })
         }
+        var adminPassword by remember(node.nodeId) { mutableStateOf("") }
+        val isRemote = node.nodeId != viewModel.connectedNodeId
         AlertDialog(
             onDismissRequest = { renamingMapNode = null },
             title = { Text(t("Rename Node", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
@@ -2723,12 +2781,65 @@ fun MapViewCompose(
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (isRemote) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Contraseña del nodo (para guardar en el mesh)"
+                            else
+                                "Node admin password (to store on the mesh)",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        TextField(
+                            value = adminPassword,
+                            onValueChange = { adminPassword = it },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = DarkBackground,
+                                unfocusedContainerColor = DarkBackground,
+                                focusedTextColor = TextLight,
+                                unfocusedTextColor = TextLight,
+                                cursorColor = AccentCyan,
+                                focusedIndicatorColor = AccentCyan,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Sin contraseña el nombre solo queda en este teléfono."
+                            else
+                                "Without a password the name stays on this phone only.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.updateNodeNameAndShortName(node.nodeId, longName.trim(), shortName.trim())
+                        val persisted = viewModel.renameNode(
+                            node.nodeId,
+                            longName.trim(),
+                            shortName.trim(),
+                            adminPassword
+                        )
+                        if (!persisted && isRemote) {
+                            android.widget.Toast.makeText(
+                                context,
+                                if (appLanguage == "Spanish")
+                                    "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
+                                else
+                                    "Name saved on phone only. Connect to that node or use Remote Config.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
                         renamingMapNode = null
                     }
                 ) {

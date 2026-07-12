@@ -840,6 +840,7 @@ static uint32_t tdeckLastRenderSig = 0;
 #endif
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
+void applyNodeNameOnly(const char* name);
 
 void loadSettings() {
 #ifdef ESP32
@@ -1050,6 +1051,20 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         Serial.println("Failed to open settings file for writing.");
     }
 #endif
+}
+
+void applyNodeNameOnly(const char* name) {
+    if (name == nullptr) name = "";
+    strncpy(nodeCustomName, name, sizeof(nodeCustomName) - 1);
+    nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+    // Persist via the normal settings writer so ESP32 NVS and nRF InternalFS
+    // stay in sync, but keep current radio settings and skip the reboot that
+    // a full NodeConfig apply would trigger.
+    saveSettings(
+        nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword,
+        nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode
+    );
+    Serial.printf("Node name updated to '%s' (no reboot)\n", nodeCustomName);
 }
 
 // Helper to retrieve unique node ID based on hardware
@@ -3144,6 +3159,11 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         if (packet.which_payload == aethermesh_MeshPacket_config_tag && configForLocal) {
             Serial.println("Received local NodeConfig packet from phone via BLE.");
 
+            if (packet.payload.config.apply_name_only) {
+                applyNodeNameOnly(packet.payload.config.node_name);
+                return;
+            }
+
             positionPrecisionM = packet.payload.config.position_precision;
             gpsMode = packet.payload.config.gps_mode;
             fixedPosition = packet.payload.config.fixed_position;
@@ -3309,6 +3329,11 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
 
     if (authenticated) {
         Serial.println("Remote control authentication verified. Applying configuration...");
+
+        if (config.apply_name_only) {
+            applyNodeNameOnly(config.node_name);
+            return;
+        }
 
         positionPrecisionM = config.position_precision;
         gpsMode = config.gps_mode;

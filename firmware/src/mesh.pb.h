@@ -190,6 +190,9 @@ typedef struct _aethermesh_NodeConfig {
     float fixed_latitude; /* Static latitude */
     float fixed_longitude; /* Static longitude */
     int32_t fixed_altitude; /* Static altitude */
+    /* If true, only node_name is applied (radio/GPS settings ignored) and the
+ node does not reboot. Used for rename-from-phone so names live on the mesh. */
+    bool apply_name_only;
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -303,7 +306,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
@@ -317,7 +320,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -401,6 +404,7 @@ extern "C" {
 #define aethermesh_NodeConfig_fixed_latitude_tag 14
 #define aethermesh_NodeConfig_fixed_longitude_tag 15
 #define aethermesh_NodeConfig_fixed_altitude_tag 16
+#define aethermesh_NodeConfig_apply_name_only_tag 17
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -597,7 +601,8 @@ X(a, STATIC,   SINGULAR, UINT32,   gps_mode,         12) \
 X(a, STATIC,   SINGULAR, BOOL,     fixed_position,   13) \
 X(a, STATIC,   SINGULAR, FLOAT,    fixed_latitude,   14) \
 X(a, STATIC,   SINGULAR, FLOAT,    fixed_longitude,  15) \
-X(a, STATIC,   SINGULAR, INT32,    fixed_altitude,   16)
+X(a, STATIC,   SINGULAR, INT32,    fixed_altitude,   16) \
+X(a, STATIC,   SINGULAR, BOOL,     apply_name_only,  17)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -654,7 +659,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshDiagnostics_size          104
 #define aethermesh_MeshPacket_size               411
-#define aethermesh_NodeConfig_size               136
+#define aethermesh_NodeConfig_size               139
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49

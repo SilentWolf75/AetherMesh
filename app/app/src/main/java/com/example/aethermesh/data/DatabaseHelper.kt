@@ -1026,14 +1026,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
-    fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
+    fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String, fromMesh: Boolean = false) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
         val canonicalId = resolveCanonicalNodeId(db, nodeId)
         val values = ContentValues().apply {
             put(COL_NODE_NAME, name)
             put(COL_NODE_SHORT_NAME, shortName)
-            put(COL_NODE_NAME_CUSTOM, 1)
+            put(COL_NODE_NAME_CUSTOM, if (fromMesh) 0 else 1)
         }
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
         if (rows == 0) {

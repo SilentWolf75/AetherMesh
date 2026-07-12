@@ -183,6 +183,31 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         repository.updateNodeNameAndShortName(nodeId, name, shortName)
     }
 
+    /** @return true if the name was written to the node (mesh-persistent). */
+    fun renameNode(
+        nodeId: Long,
+        name: String,
+        shortName: String,
+        adminPassword: String = ""
+    ): Boolean {
+        val clipped = name.trim().take(16)
+        val short = shortName.trim().take(4).ifEmpty {
+            clipped.replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
+        }
+        if (nodeId == connectedNodeId) {
+            repository.updateNodeNameAndShortName(nodeId, clipped, short)
+            return true
+        }
+        if (adminPassword.isNotBlank()) {
+            return repository.sendNameOnlyConfig(nodeId, clipped, adminPassword)
+        }
+        repository.updateNodeNameAndShortName(nodeId, clipped, short)
+        return false
+    }
+
+    fun sendNameOnlyConfig(nodeId: Long, name: String, adminPassword: String = ""): Boolean =
+        repository.sendNameOnlyConfig(nodeId, name, adminPassword)
+
     fun startTraceRoute(nodeId: Long): Boolean = repository.startTraceRoute(nodeId)
 
     fun clearTraceRouteResult() = repository.clearTraceRouteResult()

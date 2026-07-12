@@ -214,6 +214,9 @@ message NodeConfig {
   float fixed_latitude = 14;      // Static latitude
   float fixed_longitude = 15;     // Static longitude
   int32 fixed_altitude = 16;      // Static altitude
+  // If true, only node_name is applied (radio/GPS settings ignored) and the
+  // node does not reboot. Used for rename-from-phone so names live on the mesh.
+  bool apply_name_only = 17;
 }
 
 // Authentication request sent by companion app to LoRa node

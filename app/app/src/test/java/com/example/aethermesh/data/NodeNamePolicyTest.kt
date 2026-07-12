@@ -7,8 +7,16 @@ import org.junit.Test
 
 class NodeNamePolicyTest {
     @Test
-    fun customNameAlwaysWinsOverAdvertisedDefault() {
-        val result = NodeNamePolicy.choose(0x1234, "Wolf Base", "WOLF", true, "AetherMesh-1234")
+    fun advertisedNameWinsOverPhoneOnlyCustom() {
+        val result = NodeNamePolicy.choose(0x1234, "Wolf Base", "WOLF", true, "Trail-Relay")
+        assertEquals("Trail-Relay", result.longName)
+        assertEquals("TRAI", result.shortName)
+        assertFalse(result.isCustom)
+    }
+
+    @Test
+    fun phoneCustomKeptWhenMeshHasNoNameYet() {
+        val result = NodeNamePolicy.choose(0x1234, "Wolf Base", "WOLF", true, "")
         assertEquals("Wolf Base", result.longName)
         assertEquals("WOLF", result.shortName)
         assertTrue(result.isCustom)

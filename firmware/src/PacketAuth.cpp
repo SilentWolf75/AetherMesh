@@ -46,6 +46,7 @@ size_t buildConfigCanonical(const aethermesh_MeshPacket& packet,
     uint8_t nameSize = (uint8_t)nameLength;
     uint8_t powerSave = config.power_save_mode ? 1 : 0;
     uint8_t fixedPosition = config.fixed_position ? 1 : 0;
+    uint8_t applyNameOnly = config.apply_name_only ? 1 : 0;
 
     if (!appendBytes(cursor, remaining, domain, sizeof(domain)) ||
         !appendU32(cursor, remaining, packet.sender_id) ||
@@ -67,7 +68,8 @@ size_t buildConfigCanonical(const aethermesh_MeshPacket& packet,
         !appendBytes(cursor, remaining, &fixedPosition, 1) ||
         !appendFloat(cursor, remaining, config.fixed_latitude) ||
         !appendFloat(cursor, remaining, config.fixed_longitude) ||
-        !appendU32(cursor, remaining, (uint32_t)config.fixed_altitude)) {
+        !appendU32(cursor, remaining, (uint32_t)config.fixed_altitude) ||
+        !appendBytes(cursor, remaining, &applyNameOnly, 1)) {
         return 0;
     }
     return capacity - remaining;

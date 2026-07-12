@@ -36,8 +36,8 @@ class ControlAuthTest {
     fun canonicalFormatMatchesPublishedV2Vector() {
         val identity = ControlAuthIdentity(0x0102030405060708L, 7)
         val canonical = ControlAuth.canonical(1, 2, identity, config)
-        val expectedCanonical = "414d4346473201000000020000000807060504030201070000000552656c6179090000000000fa421600000000000000010000003c0000001e00000000640000000000000000000000000000000000000000"
-        val expectedTag = "957226262a3dcaf79b6ecdbac9910595"
+        val expectedCanonical = "414d4346473201000000020000000807060504030201070000000552656c6179090000000000fa421600000000000000010000003c0000001e0000000064000000000000000000000000000000000000000000"
+        val expectedTag = "5214b8958033640dd29ffc57a5e891ad"
         assertEquals(expectedCanonical, canonical.toHex())
         assertEquals(expectedTag, ControlAuth.sign(1, 2, identity, config, "admin-key").toHex())
         assertTrue(canonical.size < 128)

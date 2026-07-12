@@ -63,6 +63,7 @@ object ControlAuth {
         output.putU32(config.fixedLatitude.toRawBits().toLong())
         output.putU32(config.fixedLongitude.toRawBits().toLong())
         output.putU32(config.fixedAltitude.toLong())
+        output.write(if (config.applyNameOnly) 1 else 0)
         return output.toByteArray()
     }
 
