@@ -375,6 +375,14 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    /** Force the unlock dialog when connected but auth prompt never appeared. */
+    fun promptDeviceAuthentication() {
+        if (_isDeviceAuthenticated.value) return
+        if (_authenticationRequired.value == null) {
+            _authenticationRequired.value = true
+        }
+    }
+
     fun sendAuthRequest(password: String): Boolean {
         if (!bleManager.isConnected) return false
         val localNodeId = bleManager.connectedNodeId

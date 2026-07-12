@@ -47,6 +47,7 @@ import com.example.aethermesh.ui.main.MainScreenViewModel
 import com.example.aethermesh.ui.main.NodeDetailsScreen
 import com.example.aethermesh.ui.main.RangeTestDialog
 import com.example.aethermesh.ui.main.RemoteConfigDialog
+import com.example.aethermesh.ui.main.RenameNodeDialog
 import com.example.aethermesh.ui.main.SurfaceDark
 import com.example.aethermesh.ui.main.TextLight
 import com.example.aethermesh.ui.main.TextMuted
@@ -108,10 +109,25 @@ fun MainNavigation() {
                                 color = TextMuted,
                                 fontSize = 11.sp
                             )
+                            Text(
+                                if (spanish) "Toca para ver progreso" else "Tap to view progress",
+                                color = AccentCyan,
+                                fontSize = 10.sp
+                            )
                         }
                     }
-                    TextButton(onClick = { viewModel.stopRangeTest() }) {
-                        Text(if (spanish) "Detener" else "Stop", color = AccentMint, fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                val id = viewModel.rangeTestTargetId
+                                if (id != 0L) viewModel.requestRangeTestDialog(id)
+                            }
+                        ) {
+                            Text(if (spanish) "Reabrir" else "Reopen", color = AccentCyan, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { viewModel.stopRangeTest() }) {
+                            Text(if (spanish) "Detener" else "Stop", color = AccentMint, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -218,92 +234,14 @@ private fun NodeDetailsRoute(
     }
 
     if (renaming) {
-        var longName by remember(node.nodeId) { mutableStateOf(node.name) }
-        var shortName by remember(node.nodeId) {
-            mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) })
-        }
-        var adminPassword by remember(node.nodeId) { mutableStateOf("") }
-        val isRemote = node.nodeId != viewModel.connectedNodeId
-        AlertDialog(
-            onDismissRequest = { renaming = false },
-            title = { Text(t("Rename Node", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(t("Long Name (max 16 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TextField(
-                        value = longName,
-                        onValueChange = { if (it.length <= 16) longName = it },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(t("Short Name (max 4 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TextField(
-                        value = shortName,
-                        onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (isRemote) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            if (appLanguage == "Spanish")
-                                "Contraseña del nodo (para guardar en el mesh)"
-                            else
-                                "Node admin password (to store on the mesh)",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        TextField(
-                            value = adminPassword,
-                            onValueChange = { adminPassword = it },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            colors = aetherTextFieldColors(),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
+        RenameNodeDialog(
+            node = node,
+            connectedNodeId = viewModel.connectedNodeId,
+            appLanguage = appLanguage,
+            onRename = { id, longName, shortName, password ->
+                viewModel.renameNode(id, longName, shortName, password)
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val persisted = viewModel.renameNode(
-                            node.nodeId,
-                            longName.trim(),
-                            shortName.trim(),
-                            adminPassword
-                        )
-                        if (!persisted && isRemote) {
-                            android.widget.Toast.makeText(
-                                context,
-                                if (appLanguage == "Spanish")
-                                    "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
-                                else
-                                    "Name saved on phone only. Connect to that node or use Remote Config.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        renaming = false
-                    }
-                ) {
-                    Text(t("Save", appLanguage), color = AccentMint, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { renaming = false }) {
-                    Text(t("Cancel", appLanguage), color = TextMuted)
-                }
-            },
-            containerColor = SurfaceDark
+            onDismiss = { renaming = false }
         )
     }
 

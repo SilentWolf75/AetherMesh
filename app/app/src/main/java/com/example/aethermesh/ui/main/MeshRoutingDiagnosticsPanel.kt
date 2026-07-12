@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -42,11 +44,13 @@ fun MeshRoutingDiagnosticsPanel(
     nodes: List<MeshNode>,
     isConnected: Boolean,
     isDeviceAuthenticated: Boolean,
-    appLanguage: String = "English"
+    appLanguage: String = "English",
+    onUnlockDevice: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
     val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
+    val spanish = appLanguage == "Spanish"
 
     if (isConnected && !isDeviceAuthenticated) {
         Card(
@@ -57,21 +61,35 @@ fun MeshRoutingDiagnosticsPanel(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    if (appLanguage == "Spanish") "Herramientas bloqueadas"
-                    else "Tools locked",
+                    if (spanish) "Herramientas bloqueadas" else "Tools locked",
                     color = AccentAmber,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    if (appLanguage == "Spanish")
-                        "Autentica el nodo conectado para usar modo silencioso y diagnósticos en vivo."
+                    if (spanish)
+                        "Autentica el nodo conectado para ver diagnósticos en vivo. El modo silencioso es solo estado (se activa en prueba de rango)."
                     else
-                        "Authenticate the connected node to use quiet mode and live diagnostics.",
+                        "Authenticate the connected node to view live diagnostics. Quiet mode is status-only (enabled during range test).",
                     color = TextMuted,
                     fontSize = 12.sp
                 )
+                if (onUnlockDevice != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = onUnlockDevice,
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            if (spanish) "Desbloquear dispositivo" else "Unlock device",
+                            color = DarkBackground,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
         }
         return
@@ -123,9 +141,15 @@ fun MeshRoutingDiagnosticsPanel(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    DiagnosticCard("TX / RX", "${diagnostics.txPackets} / ${diagnostics.rxPackets}", AccentCyan, Modifier.weight(1f), compact = true)
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "ACK %" else "ACK %",
+                        if (spanish) "TX / RX" else "TX / RX",
+                        "${diagnostics.txPackets} / ${diagnostics.rxPackets}",
+                        AccentCyan,
+                        Modifier.weight(1f),
+                        compact = true
+                    )
+                    DiagnosticCard(
+                        "ACK %",
                         deliveryLabel,
                         deliveryColor,
                         Modifier.weight(1f),
@@ -135,7 +159,7 @@ fun MeshRoutingDiagnosticsPanel(
                 if (deliveryAttempts == 0L) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        if (appLanguage == "Spanish")
+                        if (spanish)
                             "ACK % solo cuenta DMs con recibo — no pruebas de rango ni canales."
                         else
                             "ACK % counts DMs with receipts — not range tests or channel chats.",
@@ -145,7 +169,10 @@ fun MeshRoutingDiagnosticsPanel(
                 } else {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        "ACK ${diagnostics.ackedPackets} · timeout ${diagnostics.ackTimeouts}",
+                        if (spanish)
+                            "ACK ${diagnostics.ackedPackets} · timeout ${diagnostics.ackTimeouts}"
+                        else
+                            "ACK ${diagnostics.ackedPackets} · timeout ${diagnostics.ackTimeouts}",
                         color = TextMuted,
                         fontSize = 10.sp
                     )
@@ -156,14 +183,14 @@ fun MeshRoutingDiagnosticsPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "TX fallos" else "TX fail",
+                        if (spanish) "TX fallos" else "TX fail",
                         "${diagnostics.txFailures}",
                         TextMuted,
                         Modifier.weight(1f),
                         compact = true
                     )
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "Caídas" else "Drops",
+                        if (spanish) "Caídas" else "Drops",
                         "${diagnostics.queueDrops}",
                         TextMuted,
                         Modifier.weight(1f),
@@ -176,13 +203,19 @@ fun MeshRoutingDiagnosticsPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "CAD ocupado" else "CAD busy",
+                        if (spanish) "CAD ocupado" else "CAD busy",
                         "${diagnostics.cadBusyEvents}",
                         TextMuted,
                         Modifier.weight(1f),
                         compact = true
                     )
-                    DiagnosticCard("ACK Q", "${diagnostics.pendingAckDepth}", TextMuted, Modifier.weight(1f), compact = true)
+                    DiagnosticCard(
+                        if (spanish) "Cola ACK" else "ACK Q",
+                        "${diagnostics.pendingAckDepth}",
+                        TextMuted,
+                        Modifier.weight(1f),
+                        compact = true
+                    )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
@@ -190,15 +223,19 @@ fun MeshRoutingDiagnosticsPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "Cola rebroadcast" else "Rebroadcast Q",
+                        if (spanish) "Cola rebroadcast" else "Rebroadcast Q",
                         "${diagnostics.rebroadcastQueueDepth}",
                         TextMuted,
                         Modifier.weight(1f),
                         compact = true
                     )
                     DiagnosticCard(
-                        if (appLanguage == "Spanish") "Silencio" else "Quiet",
-                        if (diagnostics.quietMode) "ON" else "off",
+                        if (spanish) "Silencio" else "Quiet",
+                        if (diagnostics.quietMode) {
+                            if (spanish) "ON" else "ON"
+                        } else {
+                            if (spanish) "off" else "off"
+                        },
                         if (diagnostics.quietMode) AccentMint else TextMuted,
                         Modifier.weight(1f),
                         compact = true
@@ -207,19 +244,31 @@ fun MeshRoutingDiagnosticsPanel(
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     buildString {
-                        append(if (appLanguage == "Spanish") "Reenviados " else "Relayed ")
+                        append(if (spanish) "Reenviados " else "Relayed ")
                         append(diagnostics.relayedPackets)
-                        append(if (appLanguage == "Spanish") "  ·  Reintentos " else "  ·  Retries ")
+                        append(if (spanish) "  ·  Reintentos " else "  ·  Retries ")
                         append(diagnostics.retries)
-                        append(if (appLanguage == "Spanish") "  ·  Aire " else "  ·  Airtime ")
+                        append(if (spanish) "  ·  Aire " else "  ·  Airtime ")
                         append(diagnostics.airtimeMs / 1000)
-                        append("s  ·  Up ${diagnostics.uptimeSeconds}s  ·  V${diagnostics.protocolVersion}")
+                        append(if (spanish) "s  ·  Activo ${diagnostics.uptimeSeconds}s  ·  V" else "s  ·  Up ${diagnostics.uptimeSeconds}s  ·  V")
+                        append(diagnostics.protocolVersion)
                     },
                     color = TextMuted,
                     fontSize = 11.sp
                 )
+                if (diagnostics.quietMode) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        if (spanish)
+                            "Modo silencioso: estado del nodo (p. ej. durante prueba de rango), no un interruptor de la app."
+                        else
+                            "Quiet mode: node status (e.g. during range test), not an app toggle.",
+                        color = AccentMint,
+                        fontSize = 10.sp
+                    )
+                }
                 Text(
-                    if (appLanguage == "Spanish") "Actualizado: $ageLabel" else "Updated: $ageLabel",
+                    if (spanish) "Actualizado: $ageLabel" else "Updated: $ageLabel",
                     color = TextMuted,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 2.dp)
@@ -229,14 +278,14 @@ fun MeshRoutingDiagnosticsPanel(
                     Text(
                         buildString {
                             if (diagnostics.quietMode) {
-                                append(if (appLanguage == "Spanish") "Modo silencioso activo  ·  " else "Quiet mode active  ·  ")
+                                append(if (spanish) "Modo silencioso activo  ·  " else "Quiet mode active  ·  ")
                             }
                             append(
-                                if (appLanguage == "Spanish") "Rango RX ${diagnostics.rangePingsRx}"
+                                if (spanish) "Rango RX ${diagnostics.rangePingsRx}"
                                 else "Range RX ${diagnostics.rangePingsRx}"
                             )
                             append(
-                                if (appLanguage == "Spanish")
+                                if (spanish)
                                     "  ·  PONGs cola/env/fallo ${diagnostics.rangePongsQueued}/${diagnostics.rangePongsSent}/${diagnostics.rangePongTxFailures}"
                                 else
                                     "  ·  PONGs queued/sent/fail ${diagnostics.rangePongsQueued}/${diagnostics.rangePongsSent}/${diagnostics.rangePongTxFailures}"
@@ -298,9 +347,15 @@ fun MeshRoutingDiagnosticsPanel(
                             it.nodeId == route.nextHopId || (it.nodeId and 0xFFFFL) == (route.nextHopId and 0xFFFFL)
                         }
                         val targetName = targetNode?.name
-                            ?: "Node ${String.format("%04X", (route.targetId and 0xFFFFL).toInt())}"
+                            ?: if (spanish)
+                                "Nodo ${String.format("%04X", (route.targetId and 0xFFFFL).toInt())}"
+                            else
+                                "Node ${String.format("%04X", (route.targetId and 0xFFFFL).toInt())}"
                         val nextHopName = nextHopNode?.name
-                            ?: "Node ${String.format("%04X", (route.nextHopId and 0xFFFFL).toInt())}"
+                            ?: if (spanish)
+                                "Nodo ${String.format("%04X", (route.nextHopId and 0xFFFFL).toInt())}"
+                            else
+                                "Node ${String.format("%04X", (route.nextHopId and 0xFFFFL).toInt())}"
 
                         Row(
                             modifier = Modifier

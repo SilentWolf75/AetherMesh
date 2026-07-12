@@ -241,6 +241,18 @@ fun localizeOtaPickError(error: String, appLanguage: String): String {
     }
 }
 
+fun localizeTraceRouteError(error: String?, appLanguage: String): String {
+    val spanish = appLanguage == "Spanish"
+    return when (error) {
+        null -> if (spanish) "Traza fallida" else "Trace failed"
+        "No route response received" -> if (spanish)
+            "No se recibió respuesta de ruta"
+        else
+            "No route response received"
+        else -> error
+    }
+}
+
 fun localizeChatPlaceholder(content: String, appLanguage: String): String {
     if (appLanguage != "Spanish") return content
     return when (content) {
@@ -358,7 +370,7 @@ fun t(text: String, lang: String): String {
         "Disconnect" -> "Desconectar"
         "Mesh Routing Diagnostics" -> "Diagnósticos de Enrutamiento Mesh"
         "Mesh Routing" -> "Enrutamiento Mesh"
-        "Live mesh health, quiet mode, and observed routes" -> "Salud del mesh en vivo, modo silencioso y rutas observadas"
+        "Live mesh health, quiet-mode status, and observed routes" -> "Salud del mesh en vivo, estado de modo silencioso y rutas observadas"
         "No routing paths observed yet.\nPaths are dynamically built as nodes transmit." -> "Aún no se han observado rutas.\nLas rutas se construyen dinámicamente a medida que transmiten los nodos."
         "Next Hop" -> "Siguiente Salto"
         "Hop" -> "Salto"
@@ -395,6 +407,12 @@ fun t(text: String, lang: String): String {
         "Set language, theme, and background alerts" -> "Ajusta el idioma, el tema y las alertas en segundo plano"
         "Developer & Diagnostics" -> "Desarrollo y Diagnósticos"
         "Live logs console, packet exports, and system database reset" -> "Consola de registros, exportación de paquetes y restablecimiento"
+        "No channels configured yet." -> "Aún no hay canales configurados."
+        "Node Short Name" -> "Nombre corto del nodo"
+        "Connect to a hardware node via Bluetooth to configure LoRa radio settings." -> "Conéctate a un nodo por Bluetooth para configurar la radio LoRa."
+        "Connect to a hardware node via Bluetooth to configure LoRa position interval." -> "Conéctate a un nodo por Bluetooth para configurar el intervalo de posición."
+        "No nodes discovered yet. Waiting for telemetry..." -> "Aún no hay nodos. Esperando telemetría…"
+        "Channel deleted." -> "Canal eliminado."
         else -> text
     }
 }
@@ -429,6 +447,7 @@ fun MainScreen(
     var activeTab by remember { mutableStateOf(TabItem.CHATS) }
     var fitTraceRouteToken by remember { mutableIntStateOf(0) }
     var pendingMapFocusNodeId by remember { mutableStateOf<Long?>(null) }
+    var pendingSettingsCategory by remember { mutableStateOf<SettingsCategory?>(null) }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
@@ -729,14 +748,20 @@ fun MainScreen(
                         )
                         TabItem.SETTINGS -> SettingsView(
                             viewModel = viewModel,
-                            isConnected = isConnected
+                            isConnected = isConnected,
+                            initialCategory = pendingSettingsCategory,
+                            onInitialCategoryConsumed = { pendingSettingsCategory = null }
                         )
                         TabItem.CONNECTION -> ConnectionView(
                             viewModel = viewModel,
                             isConnected = isConnected,
                             nodes = nodes,
                             scannedDevices = scannedDevices,
-                            appLanguage = appLanguage
+                            appLanguage = appLanguage,
+                            onOpenMeshRouting = {
+                                activeTab = TabItem.SETTINGS
+                                pendingSettingsCategory = SettingsCategory.ROUTING
+                            }
                         )
                     }
                 }
@@ -1763,7 +1788,7 @@ fun TraceRouteResultDialog(
         containerColor = Color(0xFF2A2F38),
         title = {
             Text(
-                "Traceroute",
+                if (spanish) "Traceroute" else "Traceroute",
                 color = TextLight,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.fillMaxWidth(),
@@ -1788,7 +1813,7 @@ fun TraceRouteResultDialog(
                     }
                     state.error != null -> {
                         Text(
-                            state.error ?: (if (spanish) "Traza fallida" else "Trace failed"),
+                            localizeTraceRouteError(state.error, appLanguage),
                             color = Color(0xFFF87171),
                             fontWeight = FontWeight.SemiBold
                         )
@@ -1823,7 +1848,7 @@ fun TraceRouteResultDialog(
             if (!state.active) {
                 Row {
                     TextButton(onClick = onOk) {
-                        Text("OK", color = TextLight, fontWeight = FontWeight.SemiBold)
+                        Text(if (spanish) "Aceptar" else "OK", color = TextLight, fontWeight = FontWeight.SemiBold)
                     }
                     if (state.error == null &&
                         (state.forward.isNotEmpty() || state.returning.isNotEmpty())
@@ -1869,104 +1894,15 @@ fun NodesView(
     var sortMenuExpanded by remember { mutableStateOf(false) }
 
     if (renamingNode != null) {
-        val node = renamingNode!!
-        val context = LocalContext.current
-        var longName by remember { mutableStateOf(node.name) }
-        var shortName by remember { mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }) }
-        var adminPassword by remember { mutableStateOf("") }
-        val isRemote = node.nodeId != connectedNodeId
-        
-        AlertDialog(
-            onDismissRequest = { renamingNode = null },
-            title = { Text(t("Rename Node", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(t("Long Name (max 16 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(Modifier.height(4.dp))
-                    TextField(
-                        value = longName,
-                        onValueChange = { if (it.length <= 16) longName = it },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(t("Short Name (max 4 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TextField(
-                        value = shortName,
-                        onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (isRemote) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            if (appLanguage == "Spanish")
-                                "Contraseña del nodo (para guardar en el mesh)"
-                            else
-                                "Node admin password (to store on the mesh)",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        TextField(
-                            value = adminPassword,
-                            onValueChange = { adminPassword = it },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            colors = aetherTextFieldColors(),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            if (appLanguage == "Spanish")
-                                "Sin contraseña el nombre solo queda en este teléfono."
-                            else
-                                "Without a password the name stays on this phone only.",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(top = 6.dp)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val persisted = onRenameNode(
-                            node.nodeId,
-                            longName.trim(),
-                            shortName.trim(),
-                            adminPassword
-                        )
-                        if (!persisted) {
-                            android.widget.Toast.makeText(
-                                context,
-                                if (appLanguage == "Spanish")
-                                    "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
-                                else
-                                    "Name saved on phone only. Connect to that node or use Remote Config.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        renamingNode = null
-                    }
-                ) {
-                    Text(t("Save", appLanguage), color = AccentMint, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { renamingNode = null }) {
-                    Text(t("Cancel", appLanguage), color = TextMuted)
-                }
-            },
-            containerColor = SurfaceDark
+        RenameNodeDialog(
+            node = renamingNode!!,
+            connectedNodeId = connectedNodeId,
+            appLanguage = appLanguage,
+            onRename = onRenameNode,
+            onDismiss = { renamingNode = null }
         )
     }
+
 
     val connectedNode = nodes.find { it.nodeId == connectedNodeId }
     val query = searchQuery.trim()
@@ -3903,7 +3839,7 @@ fun MapViewCompose(
                                 route?.hops?.takeIf { it > 0 }?.let { h ->
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text(
-                                        "$h ${if (h == 1) "hop" else "hops"}",
+                                        "$h ${if (h == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
                                         color = AccentCyan,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold
@@ -4075,101 +4011,14 @@ fun MapViewCompose(
     }
 
     renamingMapNode?.let { node ->
-        var longName by remember(node.nodeId) { mutableStateOf(node.name) }
-        var shortName by remember(node.nodeId) {
-            mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) })
-        }
-        var adminPassword by remember(node.nodeId) { mutableStateOf("") }
-        val isRemote = node.nodeId != viewModel.connectedNodeId
-        AlertDialog(
-            onDismissRequest = { renamingMapNode = null },
-            title = { Text(t("Rename Node", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(t("Long Name (max 16 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TextField(
-                        value = longName,
-                        onValueChange = { if (it.length <= 16) longName = it },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(t("Short Name (max 4 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TextField(
-                        value = shortName,
-                        onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (isRemote) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            if (appLanguage == "Spanish")
-                                "Contraseña del nodo (para guardar en el mesh)"
-                            else
-                                "Node admin password (to store on the mesh)",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        TextField(
-                            value = adminPassword,
-                            onValueChange = { adminPassword = it },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            colors = aetherTextFieldColors(),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            if (appLanguage == "Spanish")
-                                "Sin contraseña el nombre solo queda en este teléfono."
-                            else
-                                "Without a password the name stays on this phone only.",
-                            color = Color(0xFFFBBF24),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(top = 6.dp)
-                        )
-                    }
-                }
+        RenameNodeDialog(
+            node = node,
+            connectedNodeId = viewModel.connectedNodeId,
+            appLanguage = appLanguage,
+            onRename = { id, longName, shortName, password ->
+                viewModel.renameNode(id, longName, shortName, password)
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val persisted = viewModel.renameNode(
-                            node.nodeId,
-                            longName.trim(),
-                            shortName.trim(),
-                            adminPassword
-                        )
-                        if (!persisted && isRemote) {
-                            android.widget.Toast.makeText(
-                                context,
-                                if (appLanguage == "Spanish")
-                                    "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
-                                else
-                                    "Name saved on phone only. Connect to that node or use Remote Config.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        renamingMapNode = null
-                    }
-                ) {
-                    Text(t("Save", appLanguage), color = AccentMint, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { renamingMapNode = null }) {
-                    Text(t("Cancel", appLanguage), color = TextMuted)
-                }
-            },
-            containerColor = SurfaceDark
+            onDismiss = { renamingMapNode = null }
         )
     }
 
@@ -4317,7 +4166,9 @@ fun AetherBottomNav(
 @Composable
 fun SettingsView(
     viewModel: MainScreenViewModel,
-    isConnected: Boolean
+    isConnected: Boolean,
+    initialCategory: SettingsCategory? = null,
+    onInitialCategoryConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
@@ -4472,6 +4323,11 @@ fun SettingsView(
     var editingChannel by remember { mutableStateOf<ChannelConfig?>(null) }
     var importChannelLinkInput by remember { mutableStateOf("") }
     var activeCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    LaunchedEffect(initialCategory) {
+        val cat = initialCategory ?: return@LaunchedEffect
+        activeCategory = cat
+        onInitialCategoryConsumed()
+    }
 
     var appTheme by remember { mutableStateOf(sharedPrefs.getString("app_theme", "System") ?: "System") }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
@@ -4645,7 +4501,7 @@ fun SettingsView(
                 Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure GPS enable, telemetry interval, and view satellite lock status"),
                 Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
                 Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password"),
-                Triple(SettingsCategory.ROUTING, "Mesh Routing", "Live mesh health, quiet mode, and observed routes"),
+                Triple(SettingsCategory.ROUTING, "Mesh Routing", "Live mesh health, quiet-mode status, and observed routes"),
                 Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, and background alerts"),
                 Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
             )
@@ -4801,12 +4657,12 @@ fun SettingsView(
                 )
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = "Freq: $freqText",
+                        text = if (appLanguage == "Spanish") "Frec: $freqText" else "Freq: $freqText",
                         color = TextMuted,
                         fontSize = 11.sp
                     )
                     Text(
-                        text = "Slot: ${channelsList.size}",
+                        text = if (appLanguage == "Spanish") "Canales: ${channelsList.size}" else "Slot: ${channelsList.size}",
                         color = TextMuted,
                         fontSize = 11.sp
                     )
@@ -4951,10 +4807,30 @@ fun SettingsView(
                                 val link = "aethermesh://channel?name=${android.net.Uri.encode(primary.name)}&psk=${android.net.Uri.encode(primary.psk)}&uplink=${primary.uplinkEnabled}&downlink=${primary.downlinkEnabled}&position=${primary.positionEnabled}&precise=${primary.preciseLocation}"
                                 val base64Link = android.util.Base64.encodeToString(link.toByteArray(), android.util.Base64.NO_WRAP)
                                 val shareText = "https://aethermesh.org/join#$base64Link"
-                                
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Channel Link", shareText))
-                                android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "¡Enlace de canal copiado!" else "Channel link copied!", android.widget.Toast.LENGTH_SHORT).show()
+                                try {
+                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                        putExtra(
+                                            android.content.Intent.EXTRA_SUBJECT,
+                                            if (appLanguage == "Spanish") "Canal AetherMesh" else "AetherMesh Channel"
+                                        )
+                                    }
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            send,
+                                            if (appLanguage == "Spanish") "Compartir canal" else "Share channel"
+                                        )
+                                    )
+                                } catch (_: Exception) {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Channel Link", shareText))
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        if (appLanguage == "Spanish") "¡Enlace de canal copiado!" else "Channel link copied!",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                             } else {
                                 android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "Crea un canal primario primero" else "Create a primary channel first", android.widget.Toast.LENGTH_SHORT).show()
                             }
@@ -6213,14 +6089,46 @@ fun SettingsView(
                                 color = TextLight, fontSize = 13.sp
                             )
                             Spacer(modifier = Modifier.height(10.dp))
-                            Text("• Make sure the node is charged or on USB.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Keep the node close to your phone.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Do not close the app during the update.", color = TextMuted, fontSize = 12.sp)
-                            Text("• Verify this build matches the hardware (Heltec V4).", color = TextMuted, fontSize = 12.sp)
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "• Asegúrate de que el nodo esté cargado o con USB."
+                                else
+                                    "• Make sure the node is charged or on USB.",
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "• Mantén el nodo cerca del teléfono."
+                                else
+                                    "• Keep the node close to your phone.",
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "• No cierres la app durante la actualización."
+                                else
+                                    "• Do not close the app during the update.",
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "• Verifica que este build coincida con el hardware (Heltec V4)."
+                                else
+                                    "• Verify this build matches the hardware (Heltec V4).",
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                "The image is checksum-verified before the node reboots. If the transfer fails, the node keeps running its current firmware.",
-                                color = TextMuted, fontSize = 11.sp
+                                if (appLanguage == "Spanish")
+                                    "La imagen se verifica con checksum antes de reiniciar. Si falla la transferencia, el nodo sigue con el firmware actual."
+                                else
+                                    "The image is checksum-verified before the node reboots. If the transfer fails, the node keeps running its current firmware.",
+                                color = TextMuted,
+                                fontSize = 11.sp
                             )
                         }
                     },
@@ -6343,7 +6251,8 @@ fun SettingsView(
                 nodes = nodes,
                 isConnected = isConnected,
                 isDeviceAuthenticated = isDeviceAuthenticated,
-                appLanguage = appLanguage
+                appLanguage = appLanguage,
+                onUnlockDevice = { viewModel.promptDeviceAuthentication() }
             )
         }
 
@@ -7315,12 +7224,14 @@ fun ConnectionView(
     isConnected: Boolean,
     nodes: List<MeshNode>,
     scannedDevices: List<BleDeviceItem>,
-    appLanguage: String = "English"
+    appLanguage: String = "English",
+    onOpenMeshRouting: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val scanBlockReason by viewModel.scanBlockReason.collectAsStateWithLifecycle()
     val spanish = appLanguage == "Spanish"
+    val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
     val bleReconnectAttempt by viewModel.bleReconnectAttempt.collectAsStateWithLifecycle()
     val bleReconnectGaveUp by viewModel.bleReconnectGaveUp.collectAsStateWithLifecycle()
@@ -7469,9 +7380,14 @@ fun ConnectionView(
                             Icon(Icons.Default.Warning, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Firmware too old for this app on: " +
-                                    outdatedNodes.joinToString(", ") { "${it.name} (${it.firmwareVersion})" } +
-                                    ". Update to $MIN_COMPATIBLE_FW or newer.",
+                                if (appLanguage == "Spanish")
+                                    "Firmware demasiado antiguo para esta app en: " +
+                                        outdatedNodes.joinToString(", ") { "${it.name} (${it.firmwareVersion})" } +
+                                        ". Actualiza a $MIN_COMPATIBLE_FW o superior."
+                                else
+                                    "Firmware too old for this app on: " +
+                                        outdatedNodes.joinToString(", ") { "${it.name} (${it.firmwareVersion})" } +
+                                        ". Update to $MIN_COMPATIBLE_FW or newer.",
                                 color = Color(0xFFFDE68A),
                                 fontSize = 11.sp,
                                 modifier = Modifier.weight(1f)
@@ -7488,9 +7404,52 @@ fun ConnectionView(
                                     } catch (_: Exception) { }
                                 }
                             ) {
-                                Text("Flasher", color = AccentCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (appLanguage == "Spanish") "Flasher" else "Flasher",
+                                    color = AccentCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
+                    }
+
+                    if (isConnected && !isDeviceAuthenticated) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF422006))
+                                .clickable { viewModel.promptDeviceAuthentication() }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                if (spanish) "Bloqueado · Toca para autenticar" else "Locked · Tap to authenticate",
+                                color = Color(0xFFFDE68A),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TextButton(
+                        onClick = onOpenMeshRouting,
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            if (spanish)
+                                "Salud mesh → Ajustes › Enrutamiento Mesh"
+                            else
+                                "Mesh health → Settings › Mesh Routing",
+                            color = AccentCyan,
+                            fontSize = 12.sp
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(20.dp))

@@ -383,6 +383,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.sendAuthRequest(password)
     }
 
+    fun promptDeviceAuthentication() {
+        repository.promptDeviceAuthentication()
+    }
+
     fun changeDevicePassword(current: String, new: String): Boolean {
         return repository.changeDevicePassword(current, new)
     }

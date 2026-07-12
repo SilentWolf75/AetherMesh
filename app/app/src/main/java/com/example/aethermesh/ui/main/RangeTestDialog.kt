@@ -454,7 +454,7 @@ fun RangeTestDialog(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(AccentMint))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("OK", color = TextMuted, fontSize = 10.sp)
+                            Text(if (spanish) "OK" else "OK", color = TextMuted, fontSize = 10.sp)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("✕", color = AccentRed, fontSize = 10.sp)
                             Spacer(modifier = Modifier.width(2.dp))
