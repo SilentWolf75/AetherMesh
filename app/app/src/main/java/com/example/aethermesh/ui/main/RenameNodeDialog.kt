@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.aethermesh.data.MeshNode
+import com.example.aethermesh.ui.AppUiFeedback
 import com.example.aethermesh.ui.components.aetherTextFieldColors
 
 @Composable
@@ -110,14 +112,13 @@ fun RenameNodeDialog(
                         adminPassword
                     )
                     if (!persisted && isRemote) {
-                        android.widget.Toast.makeText(
-                            context,
+                        AppUiFeedback.show(
                             if (spanish)
                                 "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
                             else
                                 "Name saved on phone only. Connect to that node or use Remote Config.",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
+                            duration = SnackbarDuration.Long
+                        )
                     }
                     onDismiss()
                 }

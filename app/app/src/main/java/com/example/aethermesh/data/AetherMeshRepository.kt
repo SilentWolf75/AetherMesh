@@ -364,14 +364,79 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    private fun normalizeMac(macAddress: String): String = macAddress.trim().uppercase()
+
+    private fun passwordPrefKeyForMac(macAddress: String): String =
+        "node_pwd_${normalizeMac(macAddress)}"
+
+    private fun passwordPrefKeyForNodeId(nodeId: Long): String =
+        "node_pwd_id_$nodeId"
+
+    private fun lookupSavedPassword(macAddress: String): String? {
+        val byMac = securePrefs.getString(passwordPrefKeyForMac(macAddress), null)
+        if (!byMac.isNullOrEmpty()) return byMac
+        // Legacy lowercase keys from earlier builds
+        val legacy = securePrefs.getString("node_pwd_$macAddress", null)
+        if (!legacy.isNullOrEmpty()) return legacy
+        val nodeId = bleManager.connectedNodeId
+        if (nodeId != 0L) {
+            val byId = securePrefs.getString(passwordPrefKeyForNodeId(nodeId), null)
+            if (!byId.isNullOrEmpty()) return byId
+        }
+        return null
+    }
+
+    private fun saveNodePassword(macAddress: String?, nodeId: Long, password: String) {
+        if (password.isEmpty()) return
+        val editor = securePrefs.edit()
+        if (!macAddress.isNullOrBlank()) {
+            editor.putString(passwordPrefKeyForMac(macAddress), password)
+        }
+        if (nodeId != 0L) {
+            editor.putString(passwordPrefKeyForNodeId(nodeId), password)
+        }
+        editor.apply()
+    }
+
+    private fun clearSavedPassword(macAddress: String?, nodeId: Long = 0L) {
+        val editor = securePrefs.edit()
+        if (!macAddress.isNullOrBlank()) {
+            val mac = normalizeMac(macAddress)
+            editor.remove(passwordPrefKeyForMac(mac))
+            editor.remove("node_pwd_$macAddress")
+            editor.remove("node_pwd_$mac")
+        }
+        if (nodeId != 0L) {
+            editor.remove(passwordPrefKeyForNodeId(nodeId))
+        }
+        editor.apply()
+    }
+
     private fun autoAuthenticate(macAddress: String) {
-        val savedPass = securePrefs.getString("node_pwd_$macAddress", null)
-        if (!savedPass.isNullOrEmpty()) {
-            Log.d(TAG, "Found saved password for $macAddress. Submitting auto-auth...")
-            sendAuthRequest(savedPass)
-        } else {
-            Log.d(TAG, "No saved password found for $macAddress. Sending status query...")
-            sendAuthRequest("") // Send empty password to query node auth status
+        repositoryScope.launch {
+            // GATT notify/write can still be settling when connection flips to true.
+            delay(250)
+            if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
+
+            val savedPass = lookupSavedPassword(macAddress)
+            if (!savedPass.isNullOrEmpty()) {
+                Log.d(TAG, "Found saved password for ${normalizeMac(macAddress)}. Submitting auto-auth...")
+                if (!sendAuthRequest(savedPass)) {
+                    delay(400)
+                    if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
+                        Log.d(TAG, "Retrying auto-auth after GATT settle...")
+                        sendAuthRequest(savedPass)
+                    }
+                }
+            } else {
+                Log.d(TAG, "No saved password found for ${normalizeMac(macAddress)}. Sending status query...")
+                if (!sendAuthRequest("")) {
+                    delay(400)
+                    if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
+                        sendAuthRequest("")
+                    }
+                }
+            }
         }
     }
 
@@ -452,10 +517,11 @@ class AetherMeshRepository(private val context: Context) {
                 _isDeviceAuthenticated.value = true
                 _authenticationRequired.value = null
                 
-                // Save password to encrypted storage for auto-auth
+                // Remember this node so reconnect unlocks without retyping.
                 val mac = bleManager.getConnectedDeviceAddress()
-                if (mac != null && !pendingAuthPassword.isNullOrEmpty()) {
-                    securePrefs.edit().putString("node_pwd_$mac", pendingAuthPassword).apply()
+                val passwordToSave = pendingAuthPassword
+                if (!passwordToSave.isNullOrEmpty()) {
+                    saveNodePassword(mac, senderId, passwordToSave)
                 }
                 pendingAuthPassword = null
                 
@@ -476,16 +542,24 @@ class AetherMeshRepository(private val context: Context) {
 
                 refreshData()
             } else {
+                // Firmware also emits AuthResponse(false, "Authentication required") when any
+                // non-auth packet arrives before unlock. That must NOT wipe a saved password
+                // or pop the unlock dialog — the real auth reply is still in flight.
+                val msg = authResp.message.orEmpty()
+                if (msg.contains("Authentication required", ignoreCase = true)) {
+                    Log.d(TAG, "Ignoring pre-auth rejection (non-auth packet while locked).")
+                    return
+                }
+
                 _isDeviceAuthenticated.value = false
                 if (authResp.passwordNotSet) {
                     _authenticationRequired.value = false // Needs to set initial password
                 } else {
                     _authenticationRequired.value = true // Incorrect password / prompt user
-                    
-                    // Clear invalid saved password
-                    val mac = bleManager.getConnectedDeviceAddress()
-                    if (mac != null) {
-                        securePrefs.edit().remove("node_pwd_$mac").apply()
+                    // Only forget a stored password when the node says it was wrong.
+                    if (msg.contains("Incorrect", ignoreCase = true)) {
+                        val mac = bleManager.getConnectedDeviceAddress()
+                        clearSavedPassword(mac, senderId)
                     }
                 }
                 pendingAuthPassword = null
@@ -1592,20 +1666,38 @@ class AetherMeshRepository(private val context: Context) {
             ) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) return
 
+        val spanish = prefs.getString("app_language", "English") == "Spanish"
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         val chanId = "aethermesh_battery"
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
-                    chanId, "Battery Alerts", android.app.NotificationManager.IMPORTANCE_HIGH
-                ).apply { description = "Warns when a mesh node's battery runs low" }
+                    chanId,
+                    if (spanish) "Alertas de batería" else "Battery Alerts",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = if (spanish)
+                        "Avisa cuando la batería de un nodo de la malla está baja"
+                    else
+                        "Warns when a mesh node's battery runs low"
+                }
             )
         }
         val name = dbHelper.getNodes().find { it.nodeId == nodeId }?.name
-            ?: "Node %04X".format(nodeId and 0xFFFF)
+            ?: (if (spanish) "Nodo %04X" else "Node %04X").format(nodeId and 0xFFFF)
         val critical = threshold == BATT_ALERT_CRITICAL
-        val title = if (critical) "⚠ $name battery critical" else "$name battery low"
-        val body = "$level% remaining" + if (critical) " — charge it now" else ""
+        val title = when {
+            critical && spanish -> "⚠ $name batería crítica"
+            critical -> "⚠ $name battery critical"
+            spanish -> "$name batería baja"
+            else -> "$name battery low"
+        }
+        val body = when {
+            critical && spanish -> "$level% restante — cárgalo ahora"
+            critical -> "$level% remaining — charge it now"
+            spanish -> "$level% restante"
+            else -> "$level% remaining"
+        }
 
         val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
             flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -1621,9 +1713,24 @@ class AetherMeshRepository(private val context: Context) {
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pi)
+            .setGroup("aethermesh_battery")
             .build()
         // Stable per-node id so a critical alert replaces the earlier low one
         nm.notify("batt$nodeId".hashCode(), notif)
+
+        val summary = androidx.core.app.NotificationCompat.Builder(context, chanId)
+            .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
+            .setContentTitle(if (spanish) "Alertas de batería" else "Battery alerts")
+            .setContentText(if (spanish) "Alertas de nodos de la malla" else "Mesh node battery alerts")
+            .setStyle(
+                androidx.core.app.NotificationCompat.InboxStyle()
+                    .setSummaryText(if (spanish) "Batería de la malla" else "Mesh battery")
+            )
+            .setGroup("aethermesh_battery")
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .build()
+        nm.notify("aethermesh_battery_summary".hashCode(), summary)
     }
 
     // Post a system notification for an incoming chat message, Meshtastic-style:
@@ -1647,19 +1754,26 @@ class AetherMeshRepository(private val context: Context) {
             ) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) return
 
+        val spanish = prefs.getString("app_language", "English") == "Spanish"
         val notifChannelId = "aethermesh_messages"
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
-                    notifChannelId, "Messages",
+                    notifChannelId,
+                    if (spanish) "Mensajes" else "Messages",
                     android.app.NotificationManager.IMPORTANCE_HIGH
-                ).apply { description = "Incoming mesh chat messages" }
+                ).apply {
+                    description = if (spanish)
+                        "Mensajes entrantes de la malla"
+                    else
+                        "Incoming mesh chat messages"
+                }
             )
         }
 
         val senderName = dbHelper.getNodes().find { it.nodeId == senderId }?.name
-            ?: "Node %04X".format(senderId and 0xFFFF)
+            ?: (if (spanish) "Nodo %04X" else "Node %04X").format(senderId and 0xFFFF)
         val title = if (isBroadcast) "$senderName @ $channel" else senderName
 
         val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
@@ -1675,6 +1789,7 @@ class AetherMeshRepository(private val context: Context) {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
 
+        val groupKey = "aethermesh_messages"
         val notification = androidx.core.app.NotificationCompat.Builder(context, notifChannelId)
             .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
             .setContentTitle(title)
@@ -1682,9 +1797,24 @@ class AetherMeshRepository(private val context: Context) {
             .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .setGroup("aethermesh_messages")
+            .setGroup(groupKey)
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_MESSAGE)
             .build()
         nm.notify(chatIdentifier.hashCode(), notification)
+
+        val summary = androidx.core.app.NotificationCompat.Builder(context, notifChannelId)
+            .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
+            .setContentTitle(if (spanish) "Mensajes de AetherMesh" else "AetherMesh messages")
+            .setContentText(if (spanish) "Nuevos mensajes de la malla" else "New mesh messages")
+            .setStyle(
+                androidx.core.app.NotificationCompat.InboxStyle()
+                    .setSummaryText(if (spanish) "Chat de la malla" else "Mesh chat")
+            )
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .build()
+        nm.notify("aethermesh_messages_summary".hashCode(), summary)
     }
 
     fun refreshData() {

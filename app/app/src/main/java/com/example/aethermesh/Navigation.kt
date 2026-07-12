@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,6 +19,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -26,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +44,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
+import com.example.aethermesh.ui.AppUiFeedback
 import com.example.aethermesh.ui.main.AccentCyan
 import com.example.aethermesh.ui.main.AccentMint
 import com.example.aethermesh.ui.main.MainScreen
@@ -51,7 +56,9 @@ import com.example.aethermesh.ui.main.RenameNodeDialog
 import com.example.aethermesh.ui.main.SurfaceDark
 import com.example.aethermesh.ui.main.TextLight
 import com.example.aethermesh.ui.main.TextMuted
+import com.example.aethermesh.ui.main.adaptiveContentWidth
 import com.example.aethermesh.ui.main.getShortName
+import com.example.aethermesh.ui.main.rememberAdaptiveLayoutInfo
 import com.example.aethermesh.ui.main.t
 import com.example.aethermesh.ui.components.aetherTextFieldColors
 
@@ -71,6 +78,11 @@ fun MainNavigation() {
     val spanish = appLanguage == "Spanish"
     val activeRangeTarget = nodes.find { it.nodeId == viewModel.rangeTestTargetId }
         ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (viewModel.rangeTestTargetId and 0xFFFFFFFFL) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        AppUiFeedback.bind(snackbarHostState, snackbarScope)
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -142,16 +154,28 @@ fun MainNavigation() {
                                 MainScreen(
                                     onItemClick = { navKey -> backStack.add(navKey) },
                                     viewModel = viewModel,
-                                    modifier = Modifier.safeDrawingPadding().padding(16.dp)
+                                    modifier = Modifier.safeDrawingPadding()
                                 )
                             }
                             entry<NodeDetails> { key ->
-                                Box(modifier = Modifier.safeDrawingPadding()) {
-                                    NodeDetailsRoute(
-                                        nodeId = key.nodeId,
-                                        viewModel = viewModel,
-                                        onBack = { backStack.removeLastOrNull() }
-                                    )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .safeDrawingPadding(),
+                                    contentAlignment = Alignment.TopCenter
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .fillMaxWidth()
+                                            .adaptiveContentWidth(rememberAdaptiveLayoutInfo())
+                                    ) {
+                                        NodeDetailsRoute(
+                                            nodeId = key.nodeId,
+                                            viewModel = viewModel,
+                                            onBack = { backStack.removeLastOrNull() }
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -193,6 +217,14 @@ fun MainNavigation() {
                 }
             }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .safeDrawingPadding()
+                .padding(bottom = 72.dp)
+        )
     }
 }
 

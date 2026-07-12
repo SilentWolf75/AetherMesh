@@ -21,7 +21,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Soft-require BLE so Play can still list on tablets that include BLE radios.
+         Devices without BLE will still install from sideload but scanning will fail gracefully. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:anyDensity="true"
+        android:resizeable="true" />
 
     <application
         android:name=".AetherMeshApplication"
@@ -30,15 +42,23 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:windowSoftInputMode="adjustResize"
         android:theme="@style/Theme.AetherMesh">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Explicitly allow tablets / large screens in Play Console filtering -->
+            <layout
+                android:defaultWidth="900dp"
+                android:defaultHeight="1200dp"
+                android:minWidth="320dp"
+                android:minHeight="480dp" />
         </activity>
         
         <service

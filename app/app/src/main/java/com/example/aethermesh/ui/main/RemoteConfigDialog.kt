@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.aethermesh.data.MeshNode
+import com.example.aethermesh.ui.AppUiFeedback
 import com.example.aethermesh.ui.components.aetherTextFieldColors
 
 @Composable
@@ -116,17 +117,13 @@ fun RemoteConfigDialog(
                 putInt("fixed_altitude", remoteFixedAlt)
                 apply()
             }
-            android.widget.Toast.makeText(
-                context,
-                if (spanish) "Configuración remota enviada" else "Remote config dispatched!",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            AppUiFeedback.show(
+                if (spanish) "Configuración remota enviada" else "Remote config dispatched!"
+            )
         } else {
-            android.widget.Toast.makeText(
-                context,
-                if (spanish) "No se pudo enviar la configuración." else "Failed to dispatch config.",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            AppUiFeedback.show(
+                if (spanish) "No se pudo enviar la configuración." else "Failed to dispatch config."
+            )
         }
         onDismiss()
     }

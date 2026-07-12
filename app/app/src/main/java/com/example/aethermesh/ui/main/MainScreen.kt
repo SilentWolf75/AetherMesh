@@ -55,6 +55,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -74,6 +77,8 @@ import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
+import com.example.aethermesh.ui.AppUiFeedback
+import com.example.aethermesh.ui.PermissionHealthBanner
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -598,29 +603,64 @@ fun MainScreen(
     
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
     val connectedNodeName = connectedNode?.name ?: viewModel.connectedDeviceName
+    val adaptive = rememberAdaptiveLayoutInfo()
+    val constrainContentWidth = activeTab != TabItem.MAP
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(appBackgroundBrush())
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header Bar
-            HeaderBar(
-                title = headerTitle,
-                isConnected = isConnected,
-                connectionPhase = blePhase,
-                reconnectAttempt = bleReconnectAttempt,
-                connectedNodeName = connectedNodeName,
-                appLanguage = appLanguage
-            )
+        Row(modifier = Modifier.fillMaxSize()) {
+            if (adaptive.useNavigationRail) {
+                AetherAppNavigation(
+                    selectedTab = activeTab,
+                    appLanguage = appLanguage,
+                    useRail = true,
+                    onTabSelected = { activeTab = it }
+                )
+            }
 
-            // Content Area based on Tab Selection
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
+            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                // Header Bar
+                HeaderBar(
+                    title = headerTitle,
+                    isConnected = isConnected,
+                    connectionPhase = blePhase,
+                    reconnectAttempt = bleReconnectAttempt,
+                    connectedNodeName = connectedNodeName,
+                    appLanguage = appLanguage,
+                    horizontalPadding = adaptive.horizontalPadding
+                )
+
+                PermissionHealthBanner(
+                    appLanguage = appLanguage,
+                    bgAlertsEnabled = sharedPrefs.getBoolean("bg_alerts_enabled", true),
+                    onOpenSettings = {
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.fromParts("package", context.packageName, null)
+                        )
+                        context.startActivity(intent)
+                    }
+                )
+
+                // Content Area based on Tab Selection
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth()
+                            .then(
+                                if (constrainContentWidth) Modifier.adaptiveContentWidth(adaptive)
+                                else Modifier
+                            )
+                    ) {
                 if (!isConnected && activeTab != TabItem.CONNECTION) {
                     val bannerText = when {
                         bleReconnectGaveUp -> if (appLanguage == "Spanish")
@@ -764,15 +804,19 @@ fun MainScreen(
                             }
                         )
                     }
+                    }
+                }
+                }
+
+                if (!adaptive.useNavigationRail) {
+                    AetherAppNavigation(
+                        selectedTab = activeTab,
+                        appLanguage = appLanguage,
+                        useRail = false,
+                        onTabSelected = { activeTab = it }
+                    )
                 }
             }
-
-            // Bottom Navigation Bar
-            AetherBottomNav(
-                selectedTab = activeTab,
-                onTabSelected = { activeTab = it },
-                appLanguage = appLanguage
-            )
         }
 
         if (traceRouteState.showDialog &&
@@ -918,7 +962,8 @@ fun HeaderBar(
         com.example.aethermesh.ble.BleConnectionPhase.Disconnected,
     reconnectAttempt: Int = 0,
     connectedNodeName: String?,
-    appLanguage: String = "English"
+    appLanguage: String = "English",
+    horizontalPadding: androidx.compose.ui.unit.Dp = 16.dp
 ) {
     val spanish = appLanguage == "Spanish"
     val statusLabel = when {
@@ -947,7 +992,7 @@ fun HeaderBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = horizontalPadding, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1650,11 +1695,29 @@ fun MessageBubble(
         else -> TextMuted
     }
     val statusText = when (message.status) {
-        "EXPIRED" -> if (spanish) "$statusIcon sin ACK" else "$statusIcon no ACK"
-        "FAILED" -> if (spanish) "$statusIcon falló · reintentar" else "$statusIcon failed · retry"
-        "PENDING", "QUEUED" -> if (spanish) "$statusIcon enviando" else statusIcon
-        "RETRIED" -> if (spanish) "$statusIcon reenviado" else statusIcon
+        "EXPIRED" -> if (spanish) "$statusIcon sin ACK · tocar para reintentar" else "$statusIcon no ACK · tap to retry"
+        "FAILED" -> if (spanish) "$statusIcon sin respuesta · tocar para reintentar" else "$statusIcon no reply · tap to retry"
+        "PENDING", "QUEUED" -> if (spanish) "$statusIcon enviando (hasta 45s)" else "$statusIcon sending (up to 45s)"
+        "RETRIED" -> if (spanish) "$statusIcon reenviado" else "$statusIcon resent"
+        "DELIVERED" -> if (spanish) "$statusIcon entregado" else "$statusIcon delivered"
         else -> statusIcon
+    }
+    val statusDescription = when (message.status) {
+        "EXPIRED" -> if (spanish)
+            "Sin confirmación. Toca el mensaje para reintentar; también se reintenta automáticamente."
+        else
+            "No acknowledgment. Tap message to retry; auto-retry also runs in the background."
+        "FAILED" -> if (spanish)
+            "Sin respuesta en 45s. Toca para reintentar."
+        else
+            "No reply within 45s. Tap to retry."
+        "PENDING", "QUEUED" -> if (spanish)
+            "Enviando. Esperando confirmación hasta 45 segundos."
+        else
+            "Sending. Waiting up to 45 seconds for confirmation."
+        "RETRIED" -> if (spanish) "Reenviado automáticamente." else "Automatically resent."
+        "DELIVERED" -> if (spanish) "Entregado." else "Delivered."
+        else -> if (spanish) "Enviado." else "Sent."
     }
     val time = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
 
@@ -1686,6 +1749,17 @@ fun MessageBubble(
                     else Modifier.background(SurfaceDark)
                 )
                 .clickable(enabled = canRetry) { onRetryMessage(message) }
+                .semantics {
+                    if (isMe) {
+                        contentDescription = statusDescription
+                        if (canRetry) {
+                            onClick(label = if (spanish) "Reintentar envío" else "Retry send") {
+                                onRetryMessage(message)
+                                true
+                            }
+                        }
+                    }
+                }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
@@ -1705,7 +1779,8 @@ fun MessageBubble(
                     text = statusText,
                     color = statusColor,
                     fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.semantics { contentDescription = statusDescription }
                 )
             }
         }
@@ -2736,6 +2811,24 @@ fun MapViewCompose(
     var showLayersMenu by remember { mutableStateOf(false) }
     var mapGeneration by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val adaptive = rememberAdaptiveLayoutInfo()
+    val usingOfflineTiles = remember(mapGeneration) { OfflineMapTiles.hasArchive(context) }
+    var locationPermissionTick by remember { mutableLongStateOf(0L) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                locationPermissionTick = android.os.SystemClock.elapsedRealtime()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val hasLocationPermission = remember(locationPermissionTick) {
+        ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+    }
     // Sticky map pins — raw GPS/node updates only move a badge after a real shift.
     val mapPositionCache = remember { mutableMapOf<Long, GeoPoint>() }
     val stablePhoneForMap = remember { mutableStateOf<GeoPoint?>(null) }
@@ -2764,9 +2857,7 @@ fun MapViewCompose(
         osmConfig.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
 
         MapView(context).apply {
-            setTileSource(
-                if (darkMapTiles) cartoDarkTileSource() else TileSourceFactory.MAPNIK
-            )
+            OfflineMapTiles.applyTileSource(this, context, darkMapTiles)
             setMultiTouchControls(true)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(12.0)
@@ -2842,20 +2933,21 @@ fun MapViewCompose(
                 val info = context.contentResolver.openInputStream(uri)?.use { input ->
                     OfflineMapArchive.install(input, destFile)
                 } ?: error("Could not open selected map archive")
-                android.widget.Toast.makeText(
-                    context,
-                    if (appLanguage == "Spanish") "Mapa offline cargado (${info.entries} entradas)." else "Offline map loaded (${info.entries} entries).",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                AppUiFeedback.show(
+                    if (appLanguage == "Spanish")
+                        "Mapa offline cargado (${info.entries} entradas)."
+                    else
+                        "Offline map loaded (${info.entries} entries).",
+                    duration = SnackbarDuration.Long
+                )
                 mapGeneration++
             } catch (e: Exception) {
                 android.util.Log.e("MapView", "Failed to import offline map", e)
-                android.widget.Toast.makeText(
-                    context,
+                AppUiFeedback.show(
                     if (appLanguage == "Spanish") "Error al importar: ${e.localizedMessage}"
                     else "Failed to import: ${e.localizedMessage}",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                    duration = SnackbarDuration.Long
+                )
             }
         }
     }
@@ -2880,12 +2972,9 @@ fun MapViewCompose(
         }
     }
 
-    // Prefer a real dark basemap over MAPNIK + color-matrix invert.
-    LaunchedEffect(darkMapTiles, mapView) {
-        mapView.setTileSource(
-            if (darkMapTiles) cartoDarkTileSource() else TileSourceFactory.MAPNIK
-        )
-        mapView.overlayManager.tilesOverlay.setColorFilter(null)
+    // Prefer a real dark basemap over MAPNIK + color-matrix invert (online only).
+    LaunchedEffect(darkMapTiles, mapView, mapGeneration) {
+        OfflineMapTiles.applyTileSource(mapView, context, darkMapTiles)
         mapView.invalidate()
     }
 
@@ -3431,21 +3520,39 @@ fun MapViewCompose(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.size(44.dp)
             ) {
-                Icon(Icons.Default.Layers, contentDescription = "Map Layers", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Default.Layers,
+                    contentDescription = if (appLanguage == "Spanish") "Capas del mapa" else "Map layers",
+                    modifier = Modifier.size(20.dp)
+                )
             }
             FloatingActionButton(
                 onClick = {
+                    if (!hasLocationPermission) {
+                        AppUiFeedback.show(
+                            text = if (appLanguage == "Spanish")
+                                "Activa el permiso de ubicación para ver tu posición."
+                            else
+                                "Allow location permission to show your position.",
+                            actionLabel = if (appLanguage == "Spanish") "Ajustes" else "Settings"
+                        ) {
+                            val intent = android.content.Intent(
+                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                android.net.Uri.fromParts("package", context.packageName, null)
+                            )
+                            context.startActivity(intent)
+                        }
+                        return@FloatingActionButton
+                    }
                     val myLocationOverlay = mapView.overlays.filterIsInstance<MyLocationNewOverlay>().firstOrNull()
                     val myLoc = myLocationOverlay?.myLocation
                     if (myLoc != null) {
                         mapView.controller.animateTo(myLoc)
                         mapView.controller.setZoom(16.0)
                     } else {
-                        android.widget.Toast.makeText(
-                            context,
-                            if (appLanguage == "Spanish") "Esperando ubicación GPS..." else "Waiting for GPS location...",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        AppUiFeedback.show(
+                            if (appLanguage == "Spanish") "Esperando ubicación GPS..." else "Waiting for GPS location..."
+                        )
                     }
                 },
                 containerColor = SurfaceDark.copy(alpha = 0.92f),
@@ -3453,7 +3560,11 @@ fun MapViewCompose(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.size(44.dp)
             ) {
-                Icon(Icons.Default.MyLocation, contentDescription = "My Location", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Default.MyLocation,
+                    contentDescription = if (appLanguage == "Spanish") "Mi ubicación" else "My location",
+                    modifier = Modifier.size(20.dp)
+                )
             }
             // Center on Mesh (Home)
             FloatingActionButton(
@@ -3473,11 +3584,10 @@ fun MapViewCompose(
                             mapView.zoomToBoundingBox(bb, true, pad)
                         }
                     } else {
-                        android.widget.Toast.makeText(
-                            context,
-                            if (appLanguage == "Spanish") "No hay nodos con posición GPS activa" else "No nodes with active GPS position",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        AppUiFeedback.show(
+                            if (appLanguage == "Spanish") "No hay nodos con posición GPS activa"
+                            else "No nodes with active GPS position"
+                        )
                     }
                 },
                 containerColor = SurfaceDark.copy(alpha = 0.85f),
@@ -3485,28 +3595,106 @@ fun MapViewCompose(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.size(40.dp)
             ) {
-                Icon(Icons.Default.Home, contentDescription = "Center on Mesh", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Default.Home,
+                    contentDescription = if (appLanguage == "Spanish") "Centrar en la malla" else "Center on mesh",
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 
-        // Layers menu popup (left of the control column)
+        if (!hasLocationPermission) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.95f)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth(if (adaptive.isLandscape) 0.55f else 1f)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = if (appLanguage == "Spanish") "Ubicación desactivada" else "Location permission off",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (appLanguage == "Spanish")
+                            "Activa la ubicación para ver tu teléfono en el mapa y usar la prueba de rango."
+                        else
+                            "Allow location to show your phone on the map and run range tests.",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+                    )
+                    TextButton(
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                android.net.Uri.fromParts("package", context.packageName, null)
+                            )
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text(
+                            if (appLanguage == "Spanish") "Abrir ajustes" else "Open settings",
+                            color = AccentAmber,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Layers menu popup — side panel in landscape so it doesn't fight FABs
         if (showLayersMenu) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.95f)),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, BorderDark),
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(bottom = 16.dp, start = 16.dp, end = 72.dp)
-                    .fillMaxWidth()
+                    .align(
+                        if (adaptive.isLandscape) Alignment.CenterStart else Alignment.BottomStart
+                    )
+                    .padding(
+                        bottom = if (adaptive.isLandscape) 16.dp else 16.dp,
+                        start = 16.dp,
+                        end = if (adaptive.isLandscape) 16.dp else 72.dp,
+                        top = if (adaptive.isLandscape) 16.dp else 0.dp
+                    )
+                    .then(
+                        if (adaptive.isLandscape) Modifier
+                            .fillMaxHeight(0.9f)
+                            .widthIn(max = 320.dp)
+                            .fillMaxWidth(0.42f)
+                        else Modifier.fillMaxWidth()
+                    )
             ) {
-                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text(
                         text = if (appLanguage == "Spanish") "Capas del Mapa" else "Map Layers",
                         color = AccentCyan,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
+                    if (usingOfflineTiles) {
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Usando mapa offline importado"
+                            else
+                                "Using imported offline map",
+                            color = AccentMint,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3514,11 +3702,12 @@ fun MapViewCompose(
                     ) {
                         Text(
                             text = if (appLanguage == "Spanish") "Mapa oscuro" else "Dark map",
-                            color = TextLight,
+                            color = if (usingOfflineTiles) TextMuted else TextLight,
                             fontSize = 12.sp
                         )
                         Switch(
                             checked = darkMapTiles,
+                            enabled = !usingOfflineTiles,
                             onCheckedChange = {
                                 darkMapTiles = it
                                 mapPrefs.edit().putBoolean("dark_tiles", it).apply()
@@ -4101,9 +4290,10 @@ fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile)
 
 
 @Composable
-fun AetherBottomNav(
+fun AetherAppNavigation(
     selectedTab: TabItem,
     appLanguage: String,
+    useRail: Boolean,
     onTabSelected: (TabItem) -> Unit
 ) {
     data class NavTab(
@@ -4119,35 +4309,28 @@ fun AetherBottomNav(
         NavTab(TabItem.SETTINGS, Icons.Default.Settings, "Settings", AccentAmber),
         NavTab(TabItem.CONNECTION, Icons.Default.SettingsInputAntenna, "Connection", AccentOrange)
     )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(SurfaceRaised)
-    ) {
-        Box(
+
+    if (useRail) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(BorderDark.copy(alpha = 0.7f))
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxHeight()
+                .width(88.dp)
+                .background(SurfaceRaised)
+                .padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             tabs.forEach { item ->
                 val selected = selectedTab == item.tab
-                Box(
+                Column(
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(if (selected) item.color.copy(alpha = 0.18f) else Color.Transparent)
                         .clickable { onTabSelected(item.tab) }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
                         imageVector = item.icon,
@@ -4155,10 +4338,74 @@ fun AetherBottomNav(
                         tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
                         modifier = Modifier.size(26.dp)
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = t(item.labelKey, appLanguage),
+                        color = if (selected) item.color else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(SurfaceRaised)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(BorderDark.copy(alpha = 0.7f))
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                tabs.forEach { item ->
+                    val selected = selectedTab == item.tab
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (selected) item.color.copy(alpha = 0.18f) else Color.Transparent)
+                            .clickable { onTabSelected(item.tab) }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = t(item.labelKey, appLanguage),
+                            tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Deprecated("Use AetherAppNavigation", ReplaceWith("AetherAppNavigation(selectedTab, appLanguage, useRail = false, onTabSelected)"))
+@Composable
+fun AetherBottomNav(
+    selectedTab: TabItem,
+    appLanguage: String,
+    onTabSelected: (TabItem) -> Unit
+) {
+    AetherAppNavigation(
+        selectedTab = selectedTab,
+        appLanguage = appLanguage,
+        useRail = false,
+        onTabSelected = onTabSelected
+    )
 }
 
 
@@ -4246,23 +4493,15 @@ fun SettingsView(
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(json.toByteArray())
                 }
-                android.widget.Toast.makeText(
-                    context,
-                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
                         "Ajustes exportados correctamente"
                     else
-                        "Settings exported successfully",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
+                        "Settings exported successfully", duration = SnackbarDuration.Short)
             } catch (e: Exception) {
-                android.widget.Toast.makeText(
-                    context,
-                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
                         "Error al exportar ajustes: ${e.message}"
                     else
-                        "Failed to export settings: ${e.message}",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                        "Failed to export settings: ${e.message}", duration = SnackbarDuration.Long)
             }
         }
     }
@@ -4294,24 +4533,16 @@ fun SettingsView(
                     fixedLonInput = json.optDouble("fixed_longitude", fixedLonInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedAltInput = json.optInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0).toString()
                     
-                    android.widget.Toast.makeText(
-                        context,
-                        if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                    AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
                             "Ajustes importados. Pulsa Guardar para aplicarlos al dispositivo."
                         else
-                            "Settings imported. Click Save to apply to device.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                            "Settings imported. Click Save to apply to device.", duration = SnackbarDuration.Long)
                 }
             } catch (e: Exception) {
-                android.widget.Toast.makeText(
-                    context,
-                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
                         "Error al importar ajustes: ${e.message}"
                     else
-                        "Failed to import settings: ${e.message}",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                        "Failed to import settings: ${e.message}", duration = SnackbarDuration.Long)
             }
         }
     }
@@ -4435,17 +4666,9 @@ fun SettingsView(
                     apply()
                 }
             }
-            android.widget.Toast.makeText(
-                context,
-                if (appLanguage == "Spanish") "¡Ajustes enviados! El nodo se reiniciará." else "Config sent! Node will reboot now.",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            AppUiFeedback.show(if (appLanguage == "Spanish") "¡Ajustes enviados! El nodo se reiniciará." else "Config sent! Node will reboot now.", duration = SnackbarDuration.Long)
         } else {
-            android.widget.Toast.makeText(
-                context,
-                if (appLanguage == "Spanish") "Error al enviar la configuración." else "Failed to send configuration.",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            AppUiFeedback.show(if (appLanguage == "Spanish") "Error al enviar la configuración." else "Failed to send configuration.", duration = SnackbarDuration.Short)
         }
     }
 
@@ -4762,7 +4985,7 @@ fun SettingsView(
                                         onClick = {
                                             viewModel.deleteChannel(channel.id)
                                             channelsList = viewModel.getChannelsList()
-                                            android.widget.Toast.makeText(context, t("Channel deleted.", appLanguage), android.widget.Toast.LENGTH_SHORT).show()
+                                            AppUiFeedback.show(t("Channel deleted.", appLanguage), duration = SnackbarDuration.Short)
                                         },
                                         modifier = Modifier.size(24.dp)
                                     ) {
@@ -4825,14 +5048,10 @@ fun SettingsView(
                                 } catch (_: Exception) {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Channel Link", shareText))
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        if (appLanguage == "Spanish") "¡Enlace de canal copiado!" else "Channel link copied!",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
+                                    AppUiFeedback.show(if (appLanguage == "Spanish") "¡Enlace de canal copiado!" else "Channel link copied!", duration = SnackbarDuration.Short)
                                 }
                             } else {
-                                android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "Crea un canal primario primero" else "Create a primary channel first", android.widget.Toast.LENGTH_SHORT).show()
+                                AppUiFeedback.show(if (appLanguage == "Spanish") "Crea un canal primario primero" else "Create a primary channel first", duration = SnackbarDuration.Short)
                             }
                         },
                         modifier = Modifier.weight(1f).height(38.dp),
@@ -5501,12 +5720,12 @@ fun SettingsView(
                                             fixedLatInput = "%.6f".format(loc.latitude)
                                             fixedLonInput = "%.6f".format(loc.longitude)
                                             fixedAltInput = "%.0f".format(loc.altitude)
-                                            android.widget.Toast.makeText(context, "Location loaded from phone GPS", android.widget.Toast.LENGTH_SHORT).show()
+                                            AppUiFeedback.show("Location loaded from phone GPS", duration = SnackbarDuration.Short)
                                         } else {
-                                            android.widget.Toast.makeText(context, "No phone GPS location lock yet — open the Map tab briefly to acquire one", android.widget.Toast.LENGTH_LONG).show()
+                                            AppUiFeedback.show("No phone GPS location lock yet — open the Map tab briefly to acquire one", duration = SnackbarDuration.Long)
                                         }
                                     } catch (e: SecurityException) {
-                                        android.widget.Toast.makeText(context, "Location permission needed", android.widget.Toast.LENGTH_SHORT).show()
+                                        AppUiFeedback.show("Location permission needed", duration = SnackbarDuration.Short)
                                     }
                                 }
                                 .padding(vertical = 4.dp)
@@ -5891,7 +6110,7 @@ fun SettingsView(
                                 otaFileUri = null
                                 otaFileName = ""
                                 otaPickError = localizeOtaPickError(err, appLanguage)
-                                android.widget.Toast.makeText(context, localizeOtaPickError(err, appLanguage), android.widget.Toast.LENGTH_LONG).show()
+                                AppUiFeedback.show(localizeOtaPickError(err, appLanguage), duration = SnackbarDuration.Long)
                             } else {
                                 otaFileBytes = bytes
                                 otaFileUri = uri
@@ -5901,7 +6120,7 @@ fun SettingsView(
                             }
                         }
                     } catch (e: Exception) {
-                        android.widget.Toast.makeText(context, "Could not read file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                        AppUiFeedback.show("Could not read file: ${e.message}", duration = SnackbarDuration.Short)
                     }
                 }
             }
@@ -6233,7 +6452,7 @@ fun SettingsView(
                             val shareTxt = "AetherMesh Security Keys:\nPublic: ${ecdhKeys.first}\nPrivate: ${ecdhKeys.second}"
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Security Keys Export", shareTxt))
-                            android.widget.Toast.makeText(context, t("Export Keys", appLanguage), android.widget.Toast.LENGTH_SHORT).show()
+                            AppUiFeedback.show(t("Export Keys", appLanguage), duration = SnackbarDuration.Short)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground),
                         modifier = Modifier.weight(1f).height(40.dp)
@@ -6758,7 +6977,7 @@ fun SettingsView(
                             val success = viewModel.changeDevicePassword(curr, new)
                             if (success) {
                                 showChangePasswordDialog = false
-                                android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "¡Petición de cambio de contraseña enviada!" else "Password change request sent!", android.widget.Toast.LENGTH_SHORT).show()
+                                AppUiFeedback.show(if (appLanguage == "Spanish") "¡Petición de cambio de contraseña enviada!" else "Password change request sent!", duration = SnackbarDuration.Short)
                             } else {
                                 changePasswordError = true
                             }
@@ -6788,7 +7007,7 @@ fun SettingsView(
                     onClick = {
                         viewModel.clearAllMessages()
                         showClearChatDialog = false
-                        android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "Historial de chat borrado" else "Chat history cleared", android.widget.Toast.LENGTH_SHORT).show()
+                        AppUiFeedback.show(if (appLanguage == "Spanish") "Historial de chat borrado" else "Chat history cleared", duration = SnackbarDuration.Short)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentRed, contentColor = TextLight)
                 ) {
@@ -6814,7 +7033,7 @@ fun SettingsView(
                     onClick = {
                         viewModel.clearAllNodes()
                         showResetNodesDialog = false
-                        android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "Directorio de nodos reiniciado" else "Nodes directory reset", android.widget.Toast.LENGTH_SHORT).show()
+                        AppUiFeedback.show(if (appLanguage == "Spanish") "Directorio de nodos reiniciado" else "Nodes directory reset", duration = SnackbarDuration.Short)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentRed, contentColor = TextLight)
                 ) {
@@ -7179,12 +7398,12 @@ fun SettingsView(
                                 viewModel.insertChannel(newChan)
                                 channelsList = viewModel.getChannelsList() // refresh list
                                 showImportChannelDialog = false
-                                android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "¡Canal importado con éxito!" else "Channel imported successfully!", android.widget.Toast.LENGTH_SHORT).show()
+                                AppUiFeedback.show(if (appLanguage == "Spanish") "¡Canal importado con éxito!" else "Channel imported successfully!", duration = SnackbarDuration.Short)
                             } else {
                                 throw Exception("Invalid URI scheme")
                             }
                         } catch (e: Exception) {
-                            android.widget.Toast.makeText(context, if (appLanguage == "Spanish") "Enlace de canal no válido" else "Invalid channel link", android.widget.Toast.LENGTH_SHORT).show()
+                            AppUiFeedback.show(if (appLanguage == "Spanish") "Enlace de canal no válido" else "Invalid channel link", duration = SnackbarDuration.Short)
                         }
                     },
                     enabled = importChannelLinkInput.trim().isNotEmpty()
@@ -7865,11 +8084,7 @@ fun exportRangeTestLogsToCsv(
 ) {
     val spanish = appLanguage == "Spanish"
     if (logs.isEmpty()) {
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "Aún no hay datos de prueba de rango." else "No range test data to export yet.",
-            android.widget.Toast.LENGTH_SHORT
-        ).show()
+        AppUiFeedback.show(if (spanish) "Aún no hay datos de prueba de rango." else "No range test data to export yet.", duration = SnackbarDuration.Short)
         return
     }
 
@@ -7918,12 +8133,8 @@ fun exportRangeTestLogsToCsv(
         // Fall back to the clipboard if no app can take the file
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Range Test Logs", csv.toString()))
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "No se pudo compartir (${e.message}); CSV copiado al portapapeles."
-            else "Share failed (${e.message}); CSV copied to clipboard instead.",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
+        AppUiFeedback.show(if (spanish) "No se pudo compartir (${e.message}); CSV copiado al portapapeles."
+            else "Share failed (${e.message}); CSV copied to clipboard instead.", duration = SnackbarDuration.Long)
     }
 }
 
@@ -7934,11 +8145,7 @@ fun exportMeshDiagnosticsToCsv(
 ) {
     val spanish = appLanguage == "Spanish"
     if (snapshots.isEmpty()) {
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "Aún no hay datos de salud del mesh." else "No mesh health data to export yet.",
-            android.widget.Toast.LENGTH_SHORT
-        ).show()
+        AppUiFeedback.show(if (spanish) "Aún no hay datos de salud del mesh." else "No mesh health data to export yet.", duration = SnackbarDuration.Short)
         return
     }
     val csv = StringBuilder(
@@ -7976,12 +8183,8 @@ fun exportMeshDiagnosticsToCsv(
     } catch (e: Exception) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Mesh Health", csv.toString()))
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "No se pudo compartir; CSV copiado al portapapeles."
-            else "Share failed; CSV copied to clipboard.",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
+        AppUiFeedback.show(if (spanish) "No se pudo compartir; CSV copiado al portapapeles."
+            else "Share failed; CSV copied to clipboard.", duration = SnackbarDuration.Long)
     }
 }
 
@@ -7994,12 +8197,8 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLang
     }
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("All Messages CSV", csv.toString()))
-    android.widget.Toast.makeText(
-        context,
-        if (spanish) "Mensajes exportados a CSV y copiados al portapapeles."
-        else "All messages exported to CSV and copied to clipboard!",
-        android.widget.Toast.LENGTH_LONG
-    ).show()
+    AppUiFeedback.show(if (spanish) "Mensajes exportados a CSV y copiados al portapapeles."
+        else "All messages exported to CSV and copied to clipboard!", duration = SnackbarDuration.Long)
 }
 
 fun exportBreadcrumbsToKml(
@@ -8009,11 +8208,7 @@ fun exportBreadcrumbsToKml(
 ) {
     val spanish = appLanguage == "Spanish"
     if (breadcrumbs.isEmpty()) {
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "Aún no hay rastro GPS para exportar." else "No breadcrumbs to export yet.",
-            android.widget.Toast.LENGTH_SHORT
-        ).show()
+        AppUiFeedback.show(if (spanish) "Aún no hay rastro GPS para exportar." else "No breadcrumbs to export yet.", duration = SnackbarDuration.Short)
         return
     }
     try {
@@ -8039,10 +8234,6 @@ fun exportBreadcrumbsToKml(
             )
         )
     } catch (e: java.lang.Exception) {
-        android.widget.Toast.makeText(
-            context,
-            if (spanish) "Error al exportar: ${e.localizedMessage}" else "Export failed: ${e.localizedMessage}",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
+        AppUiFeedback.show(if (spanish) "Error al exportar: ${e.localizedMessage}" else "Export failed: ${e.localizedMessage}", duration = SnackbarDuration.Long)
     }
 }

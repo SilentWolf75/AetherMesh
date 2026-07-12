@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -16,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class AetherMeshService : Service() {
@@ -32,9 +34,6 @@ class AetherMeshService : Service() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
         createNotificationChannel()
-        // Declare the location type (when permitted) so GPS keeps updating while
-        // the app is backgrounded, e.g. range tests during a drive with the
-        // screen off. Without it Android throttles location for background apps.
         var types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         if (androidx.core.content.ContextCompat.checkSelfPermission(
                 this, android.Manifest.permission.ACCESS_FINE_LOCATION
@@ -43,24 +42,24 @@ class AetherMeshService : Service() {
             types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         androidx.core.app.ServiceCompat.startForeground(
-            this, NOTIFICATION_ID, buildNotification("Initializing AetherMesh..."), types
+            this, NOTIFICATION_ID, buildNotification(statusText(initializing = true)), types
         )
 
-        // Listen to BLE Connection changes from repository
         val app = application as AetherMeshApplication
         serviceScope.launch {
-            app.repository.isBleConnected.collectLatest { connected ->
-                val text = if (connected) {
-                    val deviceName = app.repository.bleManager.connectedDeviceName ?: "Node"
-                    "Connected to $deviceName"
-                } else {
-                    val pairedMac = app.repository.bleManager.getPairedMac()
-                    if (pairedMac != null) {
-                        "Scanning/Reconnecting to paired node..."
-                    } else {
-                        "Ready to pair node"
-                    }
-                }
+            combine(
+                app.repository.isBleConnected,
+                app.repository.bleReconnectGaveUp,
+                app.repository.bleConnectionPhase,
+                app.repository.isDeviceAuthenticated
+            ) { connected, gaveUp, phase, authenticated ->
+                statusText(
+                    connected = connected,
+                    gaveUp = gaveUp,
+                    phase = phase,
+                    authenticated = authenticated
+                )
+            }.collectLatest { text ->
                 updateNotification(text)
             }
         }
@@ -79,8 +78,56 @@ class AetherMeshService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun spanish(): Boolean {
+        val prefs = getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("app_language", "English") == "Spanish"
+    }
+
+    private fun bluetoothEnabled(): Boolean {
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        return adapter != null && adapter.isEnabled
+    }
+
+    private fun statusText(
+        initializing: Boolean = false,
+        connected: Boolean = false,
+        gaveUp: Boolean = false,
+        phase: BleConnectionPhase = BleConnectionPhase.Disconnected,
+        authenticated: Boolean = true
+    ): String {
+        val es = spanish()
+        if (initializing) {
+            return if (es) "Iniciando AetherMesh…" else "Initializing AetherMesh…"
+        }
+        if (!bluetoothEnabled()) {
+            return if (es) "Bluetooth desactivado" else "Bluetooth is off"
+        }
+        val app = application as AetherMeshApplication
+        if (connected) {
+            val deviceName = app.repository.bleManager.connectedDeviceName
+                ?: if (es) "Nodo" else "Node"
+            return if (!authenticated) {
+                if (es) "Conectado — desbloquear $deviceName" else "Connected — unlock $deviceName"
+            } else {
+                if (es) "Conectado a $deviceName" else "Connected to $deviceName"
+            }
+        }
+        if (gaveUp) {
+            return if (es) "Reconexión agotada — abre la app" else "Reconnect gave up — open the app"
+        }
+        val pairedMac = app.repository.bleManager.getPairedMac()
+        return when {
+            pairedMac != null &&
+                (phase == BleConnectionPhase.Reconnecting || phase == BleConnectionPhase.Connecting) ->
+                if (es) "Reconectando al nodo emparejado…" else "Reconnecting to paired node…"
+            pairedMac != null ->
+                if (es) "Buscando nodo emparejado…" else "Scanning for paired node…"
+            else ->
+                if (es) "Listo para emparejar un nodo" else "Ready to pair a node"
+        }
+    }
+
     private fun buildNotification(contentText: String): Notification {
-        // Tapping the notification opens the app (without this the tap is a no-op)
         val tapIntent = Intent(this, com.example.aethermesh.MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -93,6 +140,7 @@ class AetherMeshService : Service() {
             .setContentText(contentText)
             .setSmallIcon(com.example.aethermesh.R.drawable.ic_notification)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pendingIntent)
             .build()
@@ -105,12 +153,16 @@ class AetherMeshService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val es = spanish()
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "AetherMesh Background Connection",
+                if (es) "Conexión en segundo plano" else "AetherMesh Background Connection",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps BLE mesh connection active in the background"
+                description = if (es)
+                    "Mantiene activa la conexión BLE de la malla en segundo plano"
+                else
+                    "Keeps BLE mesh connection active in the background"
             }
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
