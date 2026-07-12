@@ -905,11 +905,15 @@ void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, 
     const char* suffix = strchr(encoded, '_');
     size_t idLength = suffix ? (size_t)(suffix - encoded) : strlen(encoded);
     bool directOnly = suffix != nullptr && strcmp(suffix, "_D") == 0;
-    if (idLength > 0 && idLength < 8) {
-        char pingId[8];
+    // App packet IDs are uint32 decimal strings (up to 10 digits). The old
+    // "< 8" guard silently dropped most range-test pings from PacketIdGenerator.
+    if (idLength > 0 && idLength <= 10) {
+        char pingId[11];
         memcpy(pingId, encoded, idLength);
         pingId[idLength] = '\0';
         queuePongReply(packet.sender_id, pingId, rssi, snr, directOnly);
+    } else if (idLength > 10) {
+        Serial.printf("Ignoring oversized range-test ping id (%u digits)\n", (unsigned)idLength);
     }
 }
 

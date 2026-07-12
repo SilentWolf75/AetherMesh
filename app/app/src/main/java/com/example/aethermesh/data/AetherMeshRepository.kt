@@ -1738,9 +1738,11 @@ class AetherMeshRepository(private val context: Context) {
                     "connect to a different node to test this target.")
         }
 
+        // Keep range-test IDs in 1..9999999 so the decimal form fits the
+        // firmware PONG parser used by already-flashed nodes during rollout.
         var generatedPacketId: Int
         do {
-            generatedPacketId = PacketIdGenerator.next()
+            generatedPacketId = (PacketIdGenerator.next() % 9_999_999) + 1
         } while (pendingRangePings.containsKey(generatedPacketId))
 
         val pending = PendingRangePing(
