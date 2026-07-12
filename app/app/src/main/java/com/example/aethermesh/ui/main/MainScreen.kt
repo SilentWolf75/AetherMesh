@@ -17,7 +17,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import com.example.aethermesh.ui.components.AetherSectionHeader
+import com.example.aethermesh.ui.components.ExpandableSectionHeader
+import com.example.aethermesh.ui.components.NodeBadge
+import com.example.aethermesh.ui.components.SecureChip
+import com.example.aethermesh.ui.components.aetherFilledFieldColors
+import com.example.aethermesh.ui.components.aetherTextFieldColors
+
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -75,58 +85,25 @@ import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.text.SimpleDateFormat
 import java.util.*
 
-// Styling palette. The five structural colors are theme-driven: they read from a
-// Compose state so switching Theme (Dark/Light) recomposes every consumer without
-// touching the ~200 call sites that reference these names. Accents stay constant.
-private data class AetherPalette(
-    val background: Color,
-    val surface: Color,
-    val border: Color,
-    val textPrimary: Color,
-    val textMuted: Color
-)
+// Palette lives in theme/; re-export so same-package screens keep compiling.
+typealias AetherPalette = com.example.aethermesh.theme.AetherPalette
 
-private val DarkPalette = AetherPalette(
-    background = Color(0xFF0F172A),
-    surface = Color(0xFF1E293B),
-    border = Color(0xFF334155),
-    textPrimary = Color(0xFFF8FAFC),
-    textMuted = Color(0xFF94A3B8)
-)
+fun setAetherPalette(dark: Boolean) = com.example.aethermesh.theme.setAetherPalette(dark)
 
-private val LightPalette = AetherPalette(
-    background = Color(0xFFF1F5F9),
-    surface = Color(0xFFFFFFFF),
-    border = Color(0xFFCBD5E1),
-    textPrimary = Color(0xFF0F172A),
-    textMuted = Color(0xFF475569)
-)
+val DarkBackground: Color get() = com.example.aethermesh.theme.DarkBackground
+val SurfaceDark: Color get() = com.example.aethermesh.theme.SurfaceDark
+val BorderDark: Color get() = com.example.aethermesh.theme.BorderDark
+val TextLight: Color get() = com.example.aethermesh.theme.TextLight
+val TextMuted: Color get() = com.example.aethermesh.theme.TextMuted
+val AccentCyan = com.example.aethermesh.theme.AccentCyan
+val AccentMint = com.example.aethermesh.theme.AccentMint
+val AccentRed = com.example.aethermesh.theme.AccentRed
+val AccentAmber = com.example.aethermesh.theme.AccentAmber
+val AccentOrange = com.example.aethermesh.theme.AccentOrange
 
-private var activePalette by mutableStateOf(DarkPalette)
+fun batteryLevelColor(level: Int): Color = com.example.aethermesh.theme.batteryLevelColor(level)
 
-// Called from the theme root when the effective light/dark mode changes.
-fun setAetherPalette(dark: Boolean) {
-    activePalette = if (dark) DarkPalette else LightPalette
-}
-
-val DarkBackground: Color get() = activePalette.background
-val SurfaceDark: Color get() = activePalette.surface
-val BorderDark: Color get() = activePalette.border
-val TextLight: Color get() = activePalette.textPrimary
-val TextMuted: Color get() = activePalette.textMuted
-val AccentCyan = Color(0xFF22D3EE)
-val AccentMint = Color(0xFF34D399)
-val AccentRed = Color(0xFFEF4444)
 private const val NODE_STALE_MS = 5 * 60 * 1000L
-
-fun batteryLevelColor(level: Int): Color {
-    return when {
-        level < 0 -> TextMuted
-        level <= 20 -> AccentRed
-        level <= 50 -> Color(0xFFFBBF24)
-        else -> AccentMint
-    }
-}
 
 fun isNodeStale(lastActive: Long): Boolean {
     return System.currentTimeMillis() - lastActive > NODE_STALE_MS
@@ -298,6 +275,8 @@ fun t(text: String, lang: String): String {
         "SUCCESS RATE" -> "TASA DE ÉXITO"
         "RSSI Signal Level History (dBm)" -> "Historial del Nivel de Señal RSSI (dBm)"
         "Heard (No GPS)" -> "Escuchados (Sin GPS)"
+        "Active Nodes" -> "Nodos Activos"
+        "Stale" -> "Inactivos"
         "Share Channel" -> "Compartir Canal"
         "Join Channel" -> "Unirse al Canal"
         "Join" -> "Unirse"
@@ -476,8 +455,8 @@ fun MainScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0x25EF4444))
-                            .border(BorderStroke(0.5.dp, Color(0x50EF4444)))
+                            .background(SurfaceDark)
+                            .border(BorderStroke(1.dp, AccentRed.copy(alpha = 0.35f)))
                             .clickable { activeTab = TabItem.CONNECTION }
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.Center,
@@ -486,15 +465,15 @@ fun MainScreen(
                         Icon(
                             imageVector = Icons.Default.Warning,
                             contentDescription = "Disconnected",
-                            tint = Color(0xFFEF4444),
+                            tint = AccentRed,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (appLanguage == "Spanish") "Desconectado. Toque para volver a conectar." else "Disconnected from node. Tap to reconnect.",
-                            color = Color(0xFFFCA5A5),
+                            color = TextLight,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -690,30 +669,26 @@ fun HeaderBar(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = title.uppercase(),
-                color = TextLight,
+                color = AccentCyan,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    brush = Brush.horizontalGradient(listOf(AccentCyan, AccentMint))
-                )
+                letterSpacing = 1.2.sp
             )
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(if (isConnected) AccentMint else Color(0xFFEF4444))
+                    .background(if (isConnected) AccentMint else AccentRed)
             )
         }
 
-        // Short name badge on the right if connected
         if (isConnected && !connectedNodeName.isNullOrBlank()) {
             val shortName = getShortName(connectedNodeName, 0L)
-            val badgeColor = getBadgeColor(connectedNodeName)
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .background(badgeColor)
+                    .background(AccentOrange)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -747,147 +722,158 @@ fun ChatView(
     var textState by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf<String?>(null) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
+    var inThread by remember { mutableStateOf(false) }
+
+    // Opening a DM from Nodes (or similar) should land in the thread.
+    LaunchedEffect(activeChatId) {
+        if (activeChatId != null && activeChatId != 0L) inThread = true
+    }
 
     if (showNewChannelDialog) {
         NewChannelDialog(
             onCreate = {
                 onCreateChannel(it)
                 showNewChannelDialog = false
+                onSelectChannel(it)
+                inThread = true
             },
             onDismiss = { showNewChannelDialog = false }
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // Toggle tabs for Channels vs DMs
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(SurfaceDark)
-                .padding(4.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (activeChatId == null) AccentCyan else Color.Transparent)
-                    .clickable { onSelectChannel(selectedChannel) }
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
+    if (!inThread) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "Channels",
-                    color = if (activeChatId == null) DarkBackground else TextLight,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (activeChatId != null) AccentCyan else Color.Transparent)
-                    .clickable {
-                        val firstNode = nodes.firstOrNull()
-                        if (firstNode != null) {
-                            onSelectDirectMessage(firstNode.nodeId)
-                        } else {
-                            onSelectDirectMessage(0L)
-                        }
-                    }
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "Direct Messages",
-                    color = if (activeChatId != null) DarkBackground else TextLight,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (activeChatId == null) {
-            // Channel mode: Show Channel Chips Selector
-            ChannelSelector(
-                channels = channels,
-                selectedChannel = selectedChannel,
-                onSelectChannel = onSelectChannel,
-                onAddChannel = { showNewChannelDialog = true }
-            )
-        } else {
-            // DM Mode: Show Horizontal Contact List
-            val displayNodes = nodes.filter { it.nodeId != localNodeId }
-            if (displayNodes.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("No nodes discovered yet.", color = TextMuted, fontSize = 12.sp)
+                AetherSectionHeader(title = "Conversations")
+                TextButton(onClick = { showNewChannelDialog = true }) {
+                    Text("+ Channel", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
-            } else {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(displayNodes) { node ->
-                        val isSelected = activeChatId == node.nodeId
-                        val shortName = getShortName(node.name, node.nodeId)
-                        val badgeColor = getBadgeColor(node.name)
-                        
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val dmNodes = nodes.filter { it.nodeId != localNodeId }
+            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    AetherSectionHeader(title = "Channels", trailing = "${channels.size}")
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+                items(channels) { channel ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SurfaceDark)
+                            .clickable {
+                                onSelectChannel(channel)
+                                inThread = true
+                            }
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
                             modifier = Modifier
-                                .clickable { onSelectDirectMessage(node.nodeId) }
-                                .padding(4.dp)
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(AccentCyan.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(width = 54.dp, height = 40.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(badgeColor)
-                                    .border(
-                                        width = if (isSelected) 2.dp else 0.dp,
-                                        color = if (isSelected) AccentCyan else Color.Transparent,
-                                        shape = RoundedCornerShape(8.dp)
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
+                            Text("#", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(channel, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Channel chat", color = TextMuted, fontSize = 12.sp)
+                        }
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    AetherSectionHeader(
+                        title = "Direct Messages",
+                        trailing = "${dmNodes.size}"
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                if (dmNodes.isEmpty()) {
+                    item {
+                        Text(
+                            "No nodes discovered yet.",
+                            color = TextMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    }
+                } else {
+                    items(dmNodes) { node ->
+                        val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                        val stale = isNodeStale(node.lastActive)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (stale) SurfaceDark.copy(alpha = 0.55f) else SurfaceDark)
+                                .clickable {
+                                    onSelectDirectMessage(node.nodeId)
+                                    inThread = true
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            NodeBadge(shortName = shortName, color = getBadgeColor(node.name), muted = stale)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(node.name, color = if (stale) TextMuted else TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    text = shortName,
-                                    color = Color.Black,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
+                                    if (stale) "Last heard ${formatLastHeard(node.lastActive)}" else "Direct message",
+                                    color = TextMuted,
+                                    fontSize = 12.sp
                                 )
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = node.name.take(8),
-                                color = if (isSelected) AccentCyan else TextMuted,
-                                fontSize = 10.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
+                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
             }
         }
+        return
+    }
 
-        Spacer(modifier = Modifier.height(12.dp))
+    val selectedNode = nodes.find { it.nodeId == activeChatId }
+    val threadTitle = if (activeChatId == null) {
+        "#$selectedChannel"
+    } else {
+        selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"
+    }
 
-        // E2EE Status Bar
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            IconButton(onClick = { inThread = false }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextLight)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (activeChatId == null) "Channel" else "Direct message",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         if (activeChatId == null || activeChatId != 0L) {
             val chatIdentifier = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
             var passcode by remember(chatIdentifier) { mutableStateOf(getChatKey(chatIdentifier)) }
             var showPasscodeDialog by remember { mutableStateOf(false) }
-            
+
             if (showPasscodeDialog) {
                 PasscodeEntryDialog(
                     title = if (activeChatId == null) "Channel Key (#$selectedChannel)" else "Direct Key (Node 0x${activeChatId.toString(16).uppercase()})",
@@ -904,9 +890,9 @@ fun ChatView(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .background(SurfaceDark)
-                    .border(1.dp, BorderDark, RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderDark, RoundedCornerShape(20.dp))
                     .clickable { showPasscodeDialog = true }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -917,45 +903,25 @@ fun ChatView(
                         imageVector = Icons.Default.Lock,
                         contentDescription = null,
                         tint = if (!passcode.isNullOrEmpty()) AccentMint else TextMuted,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = if (!passcode.isNullOrEmpty()) "End-to-End Encrypted (AES-256)" else "Cleartext Chat (Unencrypted)",
-                            color = TextLight,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (!passcode.isNullOrEmpty()) "Tap to change or clear chat key" else "Tap to set a channel passcode",
-                            color = TextMuted,
-                            fontSize = 10.sp
-                        )
-                    }
+                    Text(
+                        text = if (!passcode.isNullOrEmpty()) "Encrypted" else "Cleartext — tap to set key",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
                 }
                 if (!passcode.isNullOrEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(AccentMint.copy(alpha = 0.2f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text("SECURE", color = AccentMint, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                    }
+                    SecureChip()
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // Message list
-        val selectedNode = nodes.find { it.nodeId == activeChatId }
         if (activeChatId != null && activeChatId == 0L) {
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
                     "No nodes available for private chat.\nWait for other nodes to broadcast telemetries.",
                     color = TextMuted,
@@ -965,9 +931,7 @@ fun ChatView(
             }
         } else {
             LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 reverseLayout = false
             ) {
                 items(messages) { message ->
@@ -983,9 +947,12 @@ fun ChatView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Message input bar
         if (activeChatId == null || activeChatId != 0L) {
-            val placeholderText = if (activeChatId == null) "Message #$selectedChannel..." else "Message ${selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"}..."
+            val placeholderText = if (activeChatId == null) {
+                "Message #$selectedChannel..."
+            } else {
+                "Message ${selectedNode?.name ?: "node"}..."
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -994,16 +961,8 @@ fun ChatView(
                     value = textState,
                     onValueChange = { textState = it },
                     placeholder = { Text(placeholderText, color = TextMuted) },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = SurfaceDark,
-                        unfocusedContainerColor = SurfaceDark,
-                        focusedTextColor = TextLight,
-                        unfocusedTextColor = TextLight,
-                        cursorColor = AccentCyan,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
-                    shape = RoundedCornerShape(12.dp),
+                    colors = aetherFilledFieldColors(),
+                    shape = RoundedCornerShape(24.dp),
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1024,7 +983,7 @@ fun ChatView(
                         .background(AccentCyan)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Send,
+                        imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
                         tint = DarkBackground
                     )
@@ -1123,15 +1082,7 @@ fun NewChannelDialog(
                     onValueChange = { if (it.length <= 16) name = it.filterNot { c -> c.isWhitespace() } },
                     singleLine = true,
                     placeholder = { Text("e.g. Trail-Crew", color = TextMuted) },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = DarkBackground,
-                        unfocusedContainerColor = DarkBackground,
-                        focusedTextColor = TextLight,
-                        unfocusedTextColor = TextLight,
-                        cursorColor = AccentCyan,
-                        focusedIndicatorColor = AccentCyan,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
+                    colors = aetherTextFieldColors(),
                     shape = RoundedCornerShape(8.dp)
                 )
             }
@@ -1142,25 +1093,22 @@ fun NewChannelDialog(
 
 @Composable
 fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (ChatMessage) -> Unit) {
-    // A message is "ours" when its sender matches the locally connected node.
     val isMe = localNodeId != 0L && message.senderId == localNodeId
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
-    val statusText = when (message.status) {
-        "DELIVERED" -> "✓ Delivered"
-        "PENDING" -> "… Pending"
-        "FAILED" -> "✗ Failed - tap to retry"
-        "QUEUED" -> "… Queued"
-        "EXPIRED" -> "✗ Expired - tap to retry"
-        "RETRIED" -> "↻ Retried"
-        else -> "✓ Sent"
+    val statusIcon = when (message.status) {
+        "DELIVERED" -> "✓"
+        "PENDING", "QUEUED" -> "…"
+        "FAILED", "EXPIRED" -> "!"
+        "RETRIED" -> "↻"
+        else -> "✓"
     }
     val statusColor = when (message.status) {
         "DELIVERED", "SENT" -> AccentMint
         "FAILED", "EXPIRED" -> AccentRed
-        "PENDING", "QUEUED" -> Color(0xFFFBBF24)
-        "RETRIED" -> TextMuted
+        "PENDING", "QUEUED" -> AccentAmber
         else -> TextMuted
     }
+    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1170,15 +1118,15 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
             modifier = Modifier
                 .clip(
                     RoundedCornerShape(
-                        topStart = 12.dp,
-                        topEnd = 12.dp,
-                        bottomStart = if (isMe) 12.dp else 0.dp,
-                        bottomEnd = if (isMe) 0.dp else 12.dp
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = if (isMe) 16.dp else 4.dp,
+                        bottomEnd = if (isMe) 4.dp else 16.dp
                     )
                 )
                 .background(if (isMe) AccentCyan else SurfaceDark)
                 .clickable(enabled = canRetry) { onRetryMessage(message) }
-                .padding(12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
                 text = message.content,
@@ -1186,21 +1134,20 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
                 fontSize = 15.sp
             )
         }
-        
-        Text(
-            text = "From: 0x${message.senderId.toString(16).uppercase()} | ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))}",
-            color = TextMuted,
-            fontSize = 10.sp,
-            modifier = Modifier.padding(top = 2.dp)
-        )
-        if (isMe) {
-            Text(
-                text = statusText,
-                color = statusColor,
-                fontSize = 10.sp,
-                fontWeight = if (message.status in setOf("FAILED", "EXPIRED")) FontWeight.Bold else FontWeight.Normal,
-                modifier = Modifier.padding(top = 1.dp)
-            )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 3.dp, start = 4.dp, end = 4.dp)
+        ) {
+            Text(time, color = TextMuted, fontSize = 10.sp)
+            if (isMe) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (canRetry) "$statusIcon retry" else statusIcon,
+                    color = statusColor,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -1333,15 +1280,7 @@ fun NodesView(
                         value = longName,
                         onValueChange = { if (it.length <= 16) longName = it },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1352,15 +1291,7 @@ fun NodesView(
                         value = shortName,
                         onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1380,15 +1311,7 @@ fun NodesView(
                             onValueChange = { adminPassword = it },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = DarkBackground,
-                                unfocusedContainerColor = DarkBackground,
-                                focusedTextColor = TextLight,
-                                unfocusedTextColor = TextLight,
-                                cursorColor = AccentCyan,
-                                focusedIndicatorColor = AccentCyan,
-                                unfocusedIndicatorColor = Color.Transparent
-                            ),
+                            colors = aetherTextFieldColors(),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -1438,18 +1361,24 @@ fun NodesView(
         )
     }
 
+    val displayNodes = nodes.filter { it.nodeId != connectedNodeId }
+    val activeNodes = displayNodes.filter { !isNodeStale(it.lastActive) }
+    val staleNodes = displayNodes.filter { isNodeStale(it.lastActive) }
+
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(t("Active Nodes Directory", appLanguage), color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        AetherSectionHeader(
+            title = t("Active Nodes", appLanguage),
+            trailing = "${activeNodes.size}"
+        )
         Spacer(modifier = Modifier.height(12.dp))
-        
-        val displayNodes = nodes.filter { it.nodeId != connectedNodeId }
+
         if (displayNodes.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(t("No nodes discovered yet. Waiting for telemetry...", appLanguage), color = TextMuted, textAlign = TextAlign.Center)
             }
         } else {
-            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                items(displayNodes) { node ->
+            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(activeNodes) { node ->
                     NodeItem(
                         node = node,
                         observedRoutes = observedRoutes,
@@ -1461,7 +1390,26 @@ fun NodesView(
                         onTraceRoute = { onTraceRoute(node.nodeId) },
                         isConnectedNode = node.nodeId == connectedNodeId
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                if (staleNodes.isNotEmpty()) {
+                    item {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        AetherSectionHeader(title = t("Stale", appLanguage), trailing = "${staleNodes.size}")
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    items(staleNodes) { node ->
+                        NodeItem(
+                            node = node,
+                            observedRoutes = observedRoutes,
+                            phoneLocation = phoneLocation,
+                            appLanguage = appLanguage,
+                            useImperialUnits = useImperialUnits,
+                            onClick = { detailNode = node },
+                            onRenameClick = { renamingNode = node },
+                            onTraceRoute = { onTraceRoute(node.nodeId) },
+                            isConnectedNode = node.nodeId == connectedNodeId
+                        )
+                    }
                 }
             }
         }
@@ -1516,119 +1464,63 @@ fun NodeItem(
     onTraceRoute: () -> Boolean = { false },
     isConnectedNode: Boolean = false
 ) {
-    val shortName = getShortName(node.name, node.nodeId)
+    val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
     val badgeColor = getBadgeColor(node.name)
     val stale = isNodeStale(node.lastActive)
     val primaryText = if (stale) TextMuted else TextLight
-    val secondaryText = if (stale) TextMuted.copy(alpha = 0.75f) else TextMuted
-    
+
+    val route = observedRoutes[node.nodeId]
+    val hasLiveSignal = route != null && route.lastRssi != 0f
+    val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
+
+    val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
+        val distanceKm = calculateDistance(
+            phoneLocation.latitude, phoneLocation.longitude,
+            node.latitude.toDouble(), node.longitude.toDouble()
+        )
+        if (useImperialUnits) {
+            val mi = distanceKm * 0.621371
+            if (mi < 0.2) "${(mi * 5280).toInt()} ft" else "%.1f mi".format(mi)
+        } else if (distanceKm < 1.0) {
+            "${(distanceKm * 1000).toInt()} m"
+        } else {
+            "%.1f km".format(distanceKm)
+        }
+    } else null
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (stale) SurfaceDark.copy(alpha = 0.55f) else SurfaceDark)
             .clickable { onClick() }
-            .padding(16.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Short name badge on left
-        Box(
-            modifier = Modifier
-                .size(width = 48.dp, height = 34.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (stale) badgeColor.copy(alpha = 0.45f) else badgeColor),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = shortName,
-                color = Color.Black,
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp
-            )
-        }
-        
+        NodeBadge(shortName = shortName, color = badgeColor, muted = stale)
         Spacer(modifier = Modifier.width(12.dp))
-        
         Column(modifier = Modifier.weight(1f)) {
             Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                "ID: 0x${node.nodeId.toString(16).uppercase()} | Model: ${node.model}",
-                color = secondaryText,
-                fontSize = 12.sp
-            )
-            
-            // Distance & Bearing calculation
-            if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
-                val distanceKm = calculateDistance(
-                    phoneLocation.latitude, phoneLocation.longitude,
-                    node.latitude.toDouble(), node.longitude.toDouble()
-                )
-                val bearing = calculateBearing(
-                    phoneLocation.latitude, phoneLocation.longitude,
-                    node.latitude.toDouble(), node.longitude.toDouble()
-                )
-                val distStr = if (useImperialUnits) {
-                    val distanceMiles = distanceKm * 0.621371
-                    if (appLanguage == "Spanish") {
-                        "%.2f mi al %s".format(distanceMiles, bearing)
-                    } else {
-                        "%.2f mi %s".format(distanceMiles, bearing)
-                    }
-                } else {
-                    if (appLanguage == "Spanish") {
-                        "%.2f km al %s".format(distanceKm, bearing)
-                    } else {
-                        "%.2f km %s".format(distanceKm, bearing)
-                    }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(formatLastHeard(node.lastActive), color = TextMuted, fontSize = 12.sp)
+                if (distanceLabel != null) {
+                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
+                    Text(distanceLabel, color = if (stale) TextMuted else AccentMint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
-                Text(
-                    text = distStr,
-                    color = if (stale) secondaryText else AccentMint,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
             }
-            
-            Text(
-                "${t("Last Active", appLanguage)}: ${formatLastHeard(node.lastActive)} (${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(node.lastActive))})",
-                color = if (stale) TextMuted else AccentCyan,
-                fontSize = 11.sp
-            )
-            if (node.uptimeSeconds > 0 || node.firmwareVersion.isNotEmpty()) {
-                val parts = buildList {
-                    if (node.firmwareVersion.isNotEmpty()) add("fw ${node.firmwareVersion}")
-                    if (node.uptimeSeconds > 0) add("up ${formatUptime(node.uptimeSeconds)}")
-                }
-                Text(parts.joinToString("  •  "), color = TextMuted, fontSize = 10.sp)
-            }
-            
-            // Prefer a live observed route with a REAL reading; a 0 in the map
-            // (from a relayed/forwarded frame carrying no rx_rssi) must not shadow
-            // the last-heard signal persisted on the node record. rssi 0 from both
-            // sources = never heard over air (e.g. the local/connected node).
-            val route = observedRoutes[node.nodeId]
-            val hasLiveSignal = route != null && route.lastRssi != 0f
-            val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
-            val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
             if (isConnectedNode) {
-                // The node the phone is connected to over BLE has no LoRa RSSI to
-                // report about itself - make that explicit instead of a blank row.
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("This device (BLE link)", color = TextMuted, fontSize = 10.sp)
+                    Text("This device (BLE)", color = TextMuted, fontSize = 11.sp)
                 }
             } else if (sigRssi != 0f) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SignalBars(rssi = sigRssi)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "RSSI: ${sigRssi.toInt()} dBm  •  SNR: ${"%.1f".format(sigSnr)} dB",
-                        color = TextMuted,
-                        fontSize = 10.sp
-                    )
+                    Text("${sigRssi.toInt()} dBm", color = TextMuted, fontSize = 11.sp)
                 }
             }
         }
@@ -1638,10 +1530,10 @@ fun NodeItem(
                     Icon(
                         imageVector = Icons.Default.Bolt,
                         contentDescription = "Charging",
-                        tint = Color(0xFFFACC15),
-                        modifier = Modifier.size(15.dp)
+                        tint = AccentAmber,
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(2.dp))
                 }
                 Icon(
                     imageVector = Icons.Default.BatteryFull,
@@ -1649,27 +1541,8 @@ fun NodeItem(
                     tint = batteryLevelColor(node.battery),
                     modifier = Modifier.size(16.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("${node.battery}%", color = primaryText, fontSize = 14.sp)
-            }
-            if (node.voltage > 0f) {
-                Text("%.2f V".format(node.voltage), color = secondaryText, fontSize = 10.sp)
-            }
-            Text("Lat: %.4f".format(node.latitude), color = secondaryText, fontSize = 10.sp)
-            Text("Lon: %.4f".format(node.longitude), color = secondaryText, fontSize = 10.sp)
-        }
-
-        if (!isConnectedNode) {
-            IconButton(
-                onClick = { onTraceRoute() },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.AltRoute,
-                    contentDescription = "Trace Route",
-                    tint = AccentMint,
-                    modifier = Modifier.size(19.dp)
-                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text("${node.battery}%", color = primaryText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -2311,7 +2184,7 @@ fun MapViewCompose(
             }
         }
 
-        // Floating Glassmorphic Map Controls
+        // Map controls — pinch for zoom; layers + locate + mesh home.
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -2320,37 +2193,15 @@ fun MapViewCompose(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Map layers menu
             FloatingActionButton(
                 onClick = { showLayersMenu = !showLayersMenu },
-                containerColor = SurfaceDark.copy(alpha = 0.85f),
+                containerColor = SurfaceDark.copy(alpha = 0.92f),
                 contentColor = if (showLayersMenu) AccentMint else AccentCyan,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(44.dp)
             ) {
                 Icon(Icons.Default.Layers, contentDescription = "Map Layers", modifier = Modifier.size(20.dp))
             }
-            // Zoom In
-            FloatingActionButton(
-                onClick = { mapView.controller.zoomIn() },
-                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                contentColor = AccentCyan,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Zoom In", modifier = Modifier.size(20.dp))
-            }
-            // Zoom Out
-            FloatingActionButton(
-                onClick = { mapView.controller.zoomOut() },
-                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                contentColor = AccentCyan,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(Icons.Default.Remove, contentDescription = "Zoom Out", modifier = Modifier.size(20.dp))
-            }
-            // Center on Self
             FloatingActionButton(
                 onClick = {
                     val myLocationOverlay = mapView.overlays.filterIsInstance<MyLocationNewOverlay>().firstOrNull()
@@ -2366,12 +2217,12 @@ fun MapViewCompose(
                         ).show()
                     }
                 },
-                containerColor = SurfaceDark.copy(alpha = 0.85f),
+                containerColor = SurfaceDark.copy(alpha = 0.92f),
                 contentColor = AccentCyan,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(44.dp)
             ) {
-                Icon(Icons.Default.LocationOn, contentDescription = "My Location", modifier = Modifier.size(20.dp))
+                Icon(Icons.Default.MyLocation, contentDescription = "My Location", modifier = Modifier.size(20.dp))
             }
             // Center on Mesh (Home)
             FloatingActionButton(
@@ -2414,9 +2265,9 @@ fun MapViewCompose(
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, BorderDark),
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(bottom = 16.dp, end = 68.dp)
-                    .width(200.dp)
+                    .align(Alignment.BottomStart)
+                    .padding(bottom = 16.dp, start = 16.dp, end = 72.dp)
+                    .fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     Text(
@@ -2441,7 +2292,7 @@ fun MapViewCompose(
                                 darkMapTiles = it
                                 mapPrefs.edit().putBoolean("dark_tiles", it).apply()
                             },
-                            modifier = Modifier.scale(0.7f)
+                            modifier = Modifier
                         )
                     }
                     Row(
@@ -2460,7 +2311,7 @@ fun MapViewCompose(
                                 showRangeTestHistory = it
                                 mapPrefs.edit().putBoolean("show_range_test_history", it).apply()
                             },
-                            modifier = Modifier.scale(0.7f)
+                            modifier = Modifier
                         )
                     }
                     Text(
@@ -2512,6 +2363,47 @@ fun MapViewCompose(
             }
         }
 
+        val tracingLegend = traceRouteState.visible &&
+            (traceRouteState.forward.isNotEmpty() || traceRouteState.returning.isNotEmpty())
+        if (tracingLegend || showRangeTestHistory) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.92f)),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, BorderDark),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 12.dp, top = 56.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                    if (tracingLegend) {
+                        Text("ROUTE", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentMint))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Forward", color = TextMuted, fontSize = 10.sp)
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentAmber))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Return", color = TextMuted, fontSize = 10.sp)
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentCyan.copy(alpha = 0.5f)))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("1-hop", color = TextMuted, fontSize = 10.sp)
+                        }
+                    }
+                    if (showRangeTestHistory) {
+                        if (tracingLegend) Spacer(modifier = Modifier.height(6.dp))
+                        Text("RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         val activeMapNode = selectedMapNode?.let { sel ->
             nodes.find { it.nodeId == sel.nodeId }
         } ?: selectedMapNode
@@ -2537,7 +2429,7 @@ fun MapViewCompose(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 76.dp, start = 16.dp, end = 16.dp)
+                    .padding(bottom = 72.dp, start = 16.dp, end = 72.dp)
                     .fillMaxWidth()
             ) {
                 Card(
@@ -2608,7 +2500,7 @@ fun MapViewCompose(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 76.dp, start = 16.dp, end = 16.dp)
+                    .padding(bottom = 72.dp, start = 16.dp, end = 72.dp)
                     .fillMaxWidth()
             ) {
                 Card(
@@ -2790,15 +2682,7 @@ fun MapViewCompose(
                         value = longName,
                         onValueChange = { if (it.length <= 16) longName = it },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2809,15 +2693,7 @@ fun MapViewCompose(
                         value = shortName,
                         onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2837,15 +2713,7 @@ fun MapViewCompose(
                             onValueChange = { adminPassword = it },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = DarkBackground,
-                                unfocusedContainerColor = DarkBackground,
-                                focusedTextColor = TextLight,
-                                unfocusedTextColor = TextLight,
-                                cursorColor = AccentCyan,
-                                focusedIndicatorColor = AccentCyan,
-                                unfocusedIndicatorColor = Color.Transparent
-                            ),
+                            colors = aetherTextFieldColors(),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -2927,15 +2795,7 @@ fun MapViewCompose(
                         value = remoteName,
                         onValueChange = { if (it.length <= 16) remoteName = it },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2949,15 +2809,7 @@ fun MapViewCompose(
                         onValueChange = { remotePassword = it },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -3181,74 +3033,56 @@ fun AetherBottomNav(
     appLanguage: String,
     onTabSelected: (TabItem) -> Unit
 ) {
+    val itemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = AccentCyan,
+        selectedTextColor = AccentCyan,
+        unselectedIconColor = TextMuted,
+        unselectedTextColor = TextMuted,
+        indicatorColor = BorderDark.copy(alpha = 0.85f)
+    )
     NavigationBar(
         containerColor = SurfaceDark,
-        tonalElevation = 8.dp
+        tonalElevation = 0.dp
     ) {
         NavigationBarItem(
             selected = selectedTab == TabItem.CHATS,
             onClick = { onTabSelected(TabItem.CHATS) },
-            icon = { Icon(imageVector = Icons.Default.Email, contentDescription = t("Chats", appLanguage)) },
+            icon = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Chat,
+                    contentDescription = t("Chats", appLanguage)
+                )
+            },
             label = { Text(t("Chats", appLanguage)) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentCyan,
-                selectedTextColor = AccentCyan,
-                unselectedIconColor = TextMuted,
-                unselectedTextColor = TextMuted,
-                indicatorColor = BorderDark
-            )
+            colors = itemColors
         )
         NavigationBarItem(
             selected = selectedTab == TabItem.NODES,
             onClick = { onTabSelected(TabItem.NODES) },
-            icon = { Icon(imageVector = Icons.Default.Menu, contentDescription = t("Nodes", appLanguage)) },
+            icon = { Icon(imageVector = Icons.Default.People, contentDescription = t("Nodes", appLanguage)) },
             label = { Text(t("Nodes", appLanguage)) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentCyan,
-                selectedTextColor = AccentCyan,
-                unselectedIconColor = TextMuted,
-                unselectedTextColor = TextMuted,
-                indicatorColor = BorderDark
-            )
+            colors = itemColors
         )
         NavigationBarItem(
             selected = selectedTab == TabItem.MAP,
             onClick = { onTabSelected(TabItem.MAP) },
-            icon = { Icon(imageVector = Icons.Default.Place, contentDescription = t("Map", appLanguage)) },
+            icon = { Icon(imageVector = Icons.Default.Map, contentDescription = t("Map", appLanguage)) },
             label = { Text(t("Map", appLanguage)) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentCyan,
-                selectedTextColor = AccentCyan,
-                unselectedIconColor = TextMuted,
-                unselectedTextColor = TextMuted,
-                indicatorColor = BorderDark
-            )
+            colors = itemColors
         )
         NavigationBarItem(
             selected = selectedTab == TabItem.SETTINGS,
             onClick = { onTabSelected(TabItem.SETTINGS) },
             icon = { Icon(imageVector = Icons.Default.Settings, contentDescription = t("Settings", appLanguage)) },
             label = { Text(t("Settings", appLanguage)) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentCyan,
-                selectedTextColor = AccentCyan,
-                unselectedIconColor = TextMuted,
-                unselectedTextColor = TextMuted,
-                indicatorColor = BorderDark
-            )
+            colors = itemColors
         )
         NavigationBarItem(
             selected = selectedTab == TabItem.CONNECTION,
             onClick = { onTabSelected(TabItem.CONNECTION) },
-            icon = { Icon(imageVector = Icons.Default.Share, contentDescription = t("Connection", appLanguage)) },
+            icon = { Icon(imageVector = Icons.Default.Bluetooth, contentDescription = t("Connection", appLanguage)) },
             label = { Text(t("Connection", appLanguage)) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentCyan,
-                selectedTextColor = AccentCyan,
-                unselectedIconColor = TextMuted,
-                unselectedTextColor = TextMuted,
-                indicatorColor = BorderDark
-            )
+            colors = itemColors
         )
     }
 }
@@ -3352,15 +3186,7 @@ fun PasscodeEntryDialog(
                     onValueChange = { keyState = it },
                     singleLine = true,
                     placeholder = { Text("Enter passcode (e.g. secret123)", color = TextMuted) },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = DarkBackground,
-                        unfocusedContainerColor = DarkBackground,
-                        focusedTextColor = TextLight,
-                        unfocusedTextColor = TextLight,
-                        cursorColor = AccentCyan,
-                        focusedIndicatorColor = AccentCyan,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
+                    colors = aetherTextFieldColors(),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -3667,33 +3493,18 @@ fun SettingsView(
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = null,
-                                tint = AccentCyan,
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "AETHERMESH",
-                                color = TextLight,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 2.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = t("System Configuration Panel", appLanguage),
-                            color = AccentMint,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "Settings",
+                            color = AccentCyan,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = t("Select a settings category below to manage your device.", appLanguage),
                             color = TextMuted,
-                            fontSize = 11.sp
+                            fontSize = 12.sp
                         )
                     }
                 }
@@ -3782,7 +3593,7 @@ fun SettingsView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Default.ArrowBack,
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
                     tint = AccentCyan,
                     modifier = Modifier.size(24.dp)
@@ -4053,15 +3864,7 @@ fun SettingsView(
                         },
                         placeholder = { Text("e.g. Wolf Base", color = TextMuted) },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -4091,15 +3894,7 @@ fun SettingsView(
                         },
                         placeholder = { Text("e.g. WOLF", color = TextMuted) },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -5905,15 +5700,7 @@ fun SettingsView(
                         onValueChange = { if (it.length <= 24) newChannelName = it },
                         singleLine = true,
                         placeholder = { Text("e.g. Trail-Crew", color = TextMuted) },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -5969,15 +5756,7 @@ fun SettingsView(
                         value = chanName,
                         onValueChange = { if (it.length <= 24) chanName = it },
                         singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -6209,15 +5988,7 @@ fun SettingsView(
                         singleLine = false,
                         maxLines = 3,
                         placeholder = { Text("https://aethermesh.org/join#...", color = TextMuted) },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = DarkBackground,
-                            unfocusedContainerColor = DarkBackground,
-                            focusedTextColor = TextLight,
-                            unfocusedTextColor = TextLight,
-                            cursorColor = AccentCyan,
-                            focusedIndicatorColor = AccentCyan,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
+                        colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -6379,6 +6150,7 @@ fun ConnectionView(
     val shortName = getShortName(displayName, viewModel.connectedNodeId ?: 0L)
     val badgeColor = getBadgeColor(displayName)
     val batteryVal = connectedNode?.battery ?: 98
+    var toolsExpanded by remember { mutableStateOf(false) }
     
     Column(
         modifier = Modifier
@@ -6386,7 +6158,7 @@ fun ConnectionView(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        Text("Connection Status", color = TextLight, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        AetherSectionHeader(title = "Connection")
         Spacer(modifier = Modifier.height(16.dp))
 
         // 1. Connected Node Card
@@ -6505,6 +6277,13 @@ fun ConnectionView(
                 }
             }
 
+            ExpandableSectionHeader(
+                title = "Tools",
+                expanded = toolsExpanded,
+                onToggle = { toolsExpanded = !toolsExpanded },
+                badge = if (toolsExpanded) null else "Range · Routing"
+            )
+            if (toolsExpanded) {
             // 1.5 Mesh Routing Diagnostics Card (only visible when connected)
             val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
             val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
@@ -6945,6 +6724,7 @@ fun ConnectionView(
                     }
                 }
             }
+            }
         } else {
             // Unconnected State Placeholder
             Card(
@@ -6972,48 +6752,12 @@ fun ConnectionView(
             }
         }
 
-        // 2. Connection Method Toggles
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {},
-                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.weight(1f).height(40.dp)
-            ) {
-                Icon(Icons.Default.Share, contentDescription = null, tint = DarkBackground, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("BLE", color = DarkBackground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-            OutlinedButton(
-                onClick = {
-                    android.widget.Toast.makeText(context, "TCP connection mode coming soon!", android.widget.Toast.LENGTH_SHORT).show()
-                },
-                colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.weight(1f).height(40.dp),
-                border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.linearGradient(listOf(BorderDark, BorderDark)))
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("TCP", color = TextMuted, fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = {
-                    android.widget.Toast.makeText(context, "USB connection mode coming soon!", android.widget.Toast.LENGTH_SHORT).show()
-                },
-                colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.weight(1f).height(40.dp),
-                border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.linearGradient(listOf(BorderDark, BorderDark)))
-            ) {
-                Icon(Icons.Default.Build, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("USB", color = TextMuted, fontSize = 12.sp)
-            }
-        }
+        Text(
+            "Bluetooth only for now — TCP and USB coming later.",
+            color = TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
 
         // 3. Bluetooth Scanner Header
         Row(
@@ -7021,7 +6765,7 @@ fun ConnectionView(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Bluetooth Devices", color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            AetherSectionHeader(title = "Bluetooth Devices")
             TextButton(
                 onClick = {
                     if (isScanning) viewModel.stopScanning() else viewModel.startScanning()
@@ -7075,7 +6819,7 @@ fun ConnectionView(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Share,
+                                imageVector = Icons.Default.Bluetooth,
                                 contentDescription = null,
                                 tint = if (isThisConnected) AccentMint else TextMuted,
                                 modifier = Modifier.size(24.dp)

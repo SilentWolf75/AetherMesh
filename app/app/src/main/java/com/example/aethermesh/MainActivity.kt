@@ -72,19 +72,13 @@ class MainActivity : ComponentActivity() {
                 else -> isSystemInDarkTheme()
             }
 
-            // Drive the app's structural color palette from the effective theme so
-            // the hardcoded-name colors (DarkBackground, TextLight, …) follow Light/Dark.
-            androidx.compose.runtime.SideEffect {
-                com.example.aethermesh.ui.main.setAetherPalette(darkTheme)
-            }
-
             AetherMeshTheme(darkTheme = darkTheme) {
                 Surface(
-                    modifier = Modifier.fillMaxSize(), 
+                    modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
-                ) { 
-                    MainNavigation() 
-                } 
+                ) {
+                    MainNavigation()
+                }
             }
         }
     }
