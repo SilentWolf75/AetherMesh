@@ -45,8 +45,8 @@ fun AetherSectionHeader(
     trailing: String? = null
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = modifier,
+        horizontalArrangement = if (trailing != null) Arrangement.SpaceBetween else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -55,6 +55,7 @@ fun AetherSectionHeader(
             color = AccentCyan
         )
         if (trailing != null) {
+            Spacer(modifier = Modifier.width(8.dp))
             Text(trailing, color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
     }

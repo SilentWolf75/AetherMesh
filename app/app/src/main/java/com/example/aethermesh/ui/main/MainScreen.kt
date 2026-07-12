@@ -743,22 +743,23 @@ fun ChatView(
 
     if (!inThread) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AetherSectionHeader(title = "Conversations")
-                TextButton(onClick = { showNewChannelDialog = true }) {
-                    Text("+ Channel", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-
             val dmNodes = nodes.filter { it.nodeId != localNodeId }
             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
-                    AetherSectionHeader(title = "Channels", trailing = "${channels.size}")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AetherSectionHeader(
+                            title = "Channels",
+                            trailing = "${channels.size}",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { showNewChannelDialog = true }) {
+                            Text("+ Channel", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
                     Spacer(modifier = Modifier.height(6.dp))
                 }
                 items(channels) { channel ->
@@ -796,7 +797,8 @@ fun ChatView(
                     Spacer(modifier = Modifier.height(12.dp))
                     AetherSectionHeader(
                         title = "Direct Messages",
-                        trailing = "${dmNodes.size}"
+                        trailing = "${dmNodes.size}",
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                 }
@@ -804,7 +806,7 @@ fun ChatView(
                 if (dmNodes.isEmpty()) {
                     item {
                         Text(
-                            "No nodes discovered yet.",
+                            "No nodes discovered yet. Connect a radio to see contacts.",
                             color = TextMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(vertical = 12.dp)
@@ -1368,13 +1370,35 @@ fun NodesView(
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         AetherSectionHeader(
             title = t("Active Nodes", appLanguage),
-            trailing = "${activeNodes.size}"
+            trailing = "${activeNodes.size}",
+            modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(12.dp))
 
         if (displayNodes.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text(t("No nodes discovered yet. Waiting for telemetry...", appLanguage), color = TextMuted, textAlign = TextAlign.Center)
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.People,
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        t("No nodes discovered yet. Waiting for telemetry...", appLanguage),
+                        color = TextMuted,
+                        textAlign = TextAlign.Center,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Connect a radio on the Connection tab — nearby nodes appear here as they advertise.",
+                        color = TextMuted.copy(alpha = 0.8f),
+                        textAlign = TextAlign.Center,
+                        fontSize = 12.sp
+                    )
+                }
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1394,7 +1418,11 @@ fun NodesView(
                 if (staleNodes.isNotEmpty()) {
                     item {
                         Spacer(modifier = Modifier.height(8.dp))
-                        AetherSectionHeader(title = t("Stale", appLanguage), trailing = "${staleNodes.size}")
+                        AetherSectionHeader(
+                            title = t("Stale", appLanguage),
+                            trailing = "${staleNodes.size}",
+                            modifier = Modifier.fillMaxWidth()
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                     items(staleNodes) { node ->
@@ -6733,20 +6761,47 @@ fun ConnectionView(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
                 border = BorderStroke(1.dp, BorderDark)
             ) {
-                Box(
+                Column(
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
-                    contentAlignment = Alignment.Center
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = TextMuted,
-                            modifier = Modifier.size(32.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("No Node Connected", color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("Pair a Bluetooth device below to get started.", color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                    Icon(
+                        imageVector = Icons.Default.BluetoothSearching,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("No Node Connected", color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Scan for a WisBlock or Heltec node, then tap it to pair.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            if (!isScanning) viewModel.startScanning()
+                        },
+                        enabled = !isScanning,
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isScanning) {
+                            CircularProgressIndicator(
+                                color = DarkBackground,
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Scanning…", color = DarkBackground, fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = DarkBackground)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Scan for devices", color = DarkBackground, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -6765,7 +6820,10 @@ fun ConnectionView(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AetherSectionHeader(title = "Bluetooth Devices")
+            AetherSectionHeader(
+                title = "Bluetooth Devices",
+                modifier = Modifier.weight(1f)
+            )
             TextButton(
                 onClick = {
                     if (isScanning) viewModel.stopScanning() else viewModel.startScanning()
@@ -6775,7 +6833,7 @@ fun ConnectionView(
                     if (isScanning) {
                         CircularProgressIndicator(color = AccentMint, modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Scanning...", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("Stop", color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     } else {
                         Icon(Icons.Default.Search, contentDescription = null, tint = AccentMint, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -6790,15 +6848,30 @@ fun ConnectionView(
         // 4. Bluetooth Devices Scan List
         if (scannedDevices.isEmpty()) {
             Box(
-                modifier = Modifier.fillMaxWidth().padding(32.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceDark)
+                    .clickable(enabled = !isScanning) { viewModel.startScanning() }
+                    .padding(28.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = if (isScanning) "Searching for AetherMesh nodes..." else "No AetherMesh nodes found.\nTap Scan to search.",
-                    color = TextMuted,
-                    textAlign = TextAlign.Center,
-                    fontSize = 13.sp
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (isScanning) "Searching for AetherMesh nodes..." else "No devices yet",
+                        color = TextLight,
+                        textAlign = TextAlign.Center,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isScanning) "Keep the node powered and nearby." else "Tap Scan above — or tap here — to search.",
+                        color = TextMuted,
+                        textAlign = TextAlign.Center,
+                        fontSize = 12.sp
+                    )
+                }
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
