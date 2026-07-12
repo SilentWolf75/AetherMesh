@@ -987,7 +987,7 @@ fun ChatView(
 
     fun formatInboxTime(ts: Long): String {
         if (ts <= 0L) return ""
-        return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+        return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(ts))
     }
 
     fun previewSnippet(raw: String): String {
@@ -1585,7 +1585,7 @@ fun MessageBubble(
         "RETRIED" -> if (spanish) "$statusIcon reenviado" else statusIcon
         else -> statusIcon
     }
-    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
+    val time = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
 
     Column(
         modifier = Modifier.fillMaxWidth(),
