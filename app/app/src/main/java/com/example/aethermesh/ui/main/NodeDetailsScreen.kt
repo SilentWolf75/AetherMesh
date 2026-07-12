@@ -50,10 +50,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.RouteHopInfo
 import com.example.aethermesh.data.TelemetrySample
@@ -61,7 +60,7 @@ import org.osmdroid.util.GeoPoint
 
 /**
  * Full-screen node details inspired by Meshtastic: Details → Actions → Tools → Position.
- * Shared by Map and Nodes so actions live in one place instead of scattered dialogs.
+ * Hosted as a Navigation3 destination (not a Dialog overlay).
  */
 @Composable
 fun NodeDetailsScreen(
@@ -102,38 +101,36 @@ fun NodeDetailsScreen(
         }
     } else null
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
     ) {
-        Column(
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .background(DarkBackground)
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = TextLight
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (appLanguage == "Spanish") "Detalles" else "Details",
-                        color = TextLight,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(node.name, color = TextMuted, fontSize = 13.sp)
-                }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = TextLight
+                )
             }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (appLanguage == "Spanish") "Detalles" else "Details",
+                    color = TextLight,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(node.name, color = TextMuted, fontSize = 13.sp)
+            }
+        }
 
             Column(
                 modifier = Modifier
@@ -331,7 +328,6 @@ fun NodeDetailsScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
             }
-        }
     }
 }
 

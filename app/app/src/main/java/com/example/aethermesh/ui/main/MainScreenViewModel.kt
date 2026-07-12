@@ -56,6 +56,42 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     // GPS Breadcrumbs list (persisted across tab switches)
     val breadcrumbs = androidx.compose.runtime.mutableStateListOf<Pair<Double, Double>>()
 
+    /** Phone GPS used by map + node details (shared across Nav3 destinations). */
+    private val _phoneLocation = MutableStateFlow<org.osmdroid.util.GeoPoint?>(null)
+    val phoneLocation: StateFlow<org.osmdroid.util.GeoPoint?> = _phoneLocation.asStateFlow()
+
+    fun updatePhoneLocation(lat: Double, lon: Double) {
+        _phoneLocation.value = org.osmdroid.util.GeoPoint(lat, lon)
+    }
+
+    /** After popping NodeDetails, MainScreen should switch to Chats. */
+    private val _pendingOpenChatsTab = MutableStateFlow(false)
+    val pendingOpenChatsTab: StateFlow<Boolean> = _pendingOpenChatsTab.asStateFlow()
+
+    fun requestOpenChatsTab() {
+        _pendingOpenChatsTab.value = true
+    }
+
+    fun consumeOpenChatsTab(): Boolean {
+        if (!_pendingOpenChatsTab.value) return false
+        _pendingOpenChatsTab.value = false
+        return true
+    }
+
+    /** After popping NodeDetails, MainScreen should open remote config for this node. */
+    private val _pendingRemoteConfigNodeId = MutableStateFlow<Long?>(null)
+    val pendingRemoteConfigNodeId: StateFlow<Long?> = _pendingRemoteConfigNodeId.asStateFlow()
+
+    fun requestRemoteConfig(nodeId: Long) {
+        _pendingRemoteConfigNodeId.value = nodeId
+    }
+
+    fun consumeRemoteConfigNodeId(): Long? {
+        val id = _pendingRemoteConfigNodeId.value ?: return null
+        _pendingRemoteConfigNodeId.value = null
+        return id
+    }
+
     fun addBreadcrumb(lat: Double, lon: Double) {
         if (breadcrumbs.isEmpty()) {
             breadcrumbs.add(lat to lon)

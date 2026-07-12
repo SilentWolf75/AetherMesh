@@ -330,11 +330,10 @@ enum class SettingsCategory {
 @Composable
 fun MainScreen(
     onItemClick: (androidx.navigation3.runtime.NavKey) -> Unit,
+    viewModel: MainScreenViewModel,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val app = context.applicationContext as AetherMeshApplication
-    val viewModel: MainScreenViewModel = viewModel { MainScreenViewModel(app.repository) }
 
     val isConnected by viewModel.isBleConnected.collectAsStateWithLifecycle()
     val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
@@ -346,6 +345,7 @@ fun MainScreen(
 
     var activeTab by remember { mutableStateOf(TabItem.CHATS) }
     var fitTraceRouteToken by remember { mutableIntStateOf(0) }
+    var pendingMapRemoteConfigId by remember { mutableStateOf<Long?>(null) }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
@@ -356,7 +356,11 @@ fun MainScreen(
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
+    val phoneLocationFlow by viewModel.phoneLocation.collectAsStateWithLifecycle()
     var phoneLocation by remember { mutableStateOf<GeoPoint?>(null) }
+    LaunchedEffect(phoneLocationFlow) {
+        if (phoneLocationFlow != null) phoneLocation = phoneLocationFlow
+    }
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
     val traceRouteState by viewModel.traceRouteState.collectAsStateWithLifecycle()
 
@@ -364,6 +368,18 @@ fun MainScreen(
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val activeChatId by viewModel.activeChatId.collectAsStateWithLifecycle()
 
+    val pendingOpenChats by viewModel.pendingOpenChatsTab.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingOpenChats) {
+        if (viewModel.consumeOpenChatsTab()) {
+            activeTab = TabItem.CHATS
+        }
+    }
+    val pendingRemoteConfigId by viewModel.pendingRemoteConfigNodeId.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingRemoteConfigId) {
+        val id = viewModel.consumeRemoteConfigNodeId() ?: return@LaunchedEffect
+        activeTab = TabItem.MAP
+        pendingMapRemoteConfigId = id
+    }
     DisposableEffect(context) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
             if (key == "app_language") {
@@ -567,7 +583,10 @@ fun MainScreen(
                             },
                             getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
                             connectedNodeId = viewModel.connectedNodeId,
-                            onTraceRoute = { viewModel.startTraceRoute(it) }
+                            onTraceRoute = { viewModel.startTraceRoute(it) },
+                            onOpenNodeDetails = { nodeId ->
+                                onItemClick(com.example.aethermesh.NodeDetails(nodeId))
+                            }
                         )
                         TabItem.MAP -> MapViewCompose(
                             nodes = nodes,
@@ -579,12 +598,18 @@ fun MainScreen(
                             phoneLocation = phoneLocation,
                             onPhoneLocationChanged = { gp ->
                                 phoneLocation = gp
+                                viewModel.updatePhoneLocation(gp.latitude, gp.longitude)
                                 if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
                                     viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
                                 }
                             },
                             onNavigateToChats = { activeTab = TabItem.CHATS },
-                            fitTraceRouteToken = fitTraceRouteToken
+                            fitTraceRouteToken = fitTraceRouteToken,
+                            onOpenNodeDetails = { nodeId ->
+                                onItemClick(com.example.aethermesh.NodeDetails(nodeId))
+                            },
+                            openRemoteConfigNodeId = pendingMapRemoteConfigId,
+                            onRemoteConfigOpened = { pendingMapRemoteConfigId = null }
                         )
                         TabItem.SETTINGS -> SettingsView(
                             viewModel = viewModel,
@@ -1505,45 +1530,13 @@ fun NodesView(
     getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
     connectedNodeId: Long = 0L,
     onTraceRoute: (Long) -> Boolean = { false },
-    onRemoteConfig: ((MeshNode) -> Unit)? = null
+    onRemoteConfig: ((MeshNode) -> Unit)? = null,
+    onOpenNodeDetails: (Long) -> Unit = {}
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
-    var detailNode by remember { mutableStateOf<MeshNode?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf(NodesSort.LAST_HEARD) }
     var sortMenuExpanded by remember { mutableStateOf(false) }
-
-    // Full-screen Meshtastic-style details (shared with Map).
-    detailNode?.let { selected ->
-        val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
-        NodeDetailsScreen(
-            node = node,
-            observedRoutes = observedRoutes,
-            phoneLocation = phoneLocation,
-            appLanguage = appLanguage,
-            useImperialUnits = useImperialUnits,
-            connectedNodeId = connectedNodeId,
-            getTelemetryHistory = getTelemetryHistory,
-            onDismiss = { detailNode = null },
-            onMessage = {
-                detailNode = null
-                onNodeClick(node.nodeId)
-            },
-            onRename = {
-                renamingNode = node
-                detailNode = null
-            },
-            onTraceRoute = {
-                if (onTraceRoute(node.nodeId)) detailNode = null
-            },
-            onRemoteConfig = onRemoteConfig?.let { cb ->
-                {
-                    detailNode = null
-                    cb(node)
-                }
-            }
-        )
-    }
 
     if (renamingNode != null) {
         val node = renamingNode!!
@@ -1790,7 +1783,7 @@ fun NodesView(
                             phoneLocation = phoneLocation,
                             appLanguage = appLanguage,
                             useImperialUnits = useImperialUnits,
-                            onClick = { detailNode = connectedNode },
+                            onClick = { onOpenNodeDetails(connectedNode.nodeId) },
                             onRenameClick = { renamingNode = connectedNode },
                             onTraceRoute = { false },
                             isConnectedNode = true
@@ -1804,7 +1797,7 @@ fun NodesView(
                         phoneLocation = phoneLocation,
                         appLanguage = appLanguage,
                         useImperialUnits = useImperialUnits,
-                        onClick = { detailNode = node },
+                        onClick = { onOpenNodeDetails(node.nodeId) },
                         onRenameClick = { renamingNode = node },
                         onTraceRoute = { onTraceRoute(node.nodeId) },
                         isConnectedNode = false
@@ -1827,7 +1820,7 @@ fun NodesView(
                             phoneLocation = phoneLocation,
                             appLanguage = appLanguage,
                             useImperialUnits = useImperialUnits,
-                            onClick = { detailNode = node },
+                            onClick = { onOpenNodeDetails(node.nodeId) },
                             onRenameClick = { renamingNode = node },
                             onTraceRoute = { onTraceRoute(node.nodeId) },
                             isConnectedNode = false
@@ -2350,14 +2343,24 @@ fun MapViewCompose(
     phoneLocation: GeoPoint?,
     onPhoneLocationChanged: (GeoPoint) -> Unit,
     onNavigateToChats: () -> Unit,
-    fitTraceRouteToken: Int = 0
+    fitTraceRouteToken: Int = 0,
+    onOpenNodeDetails: (Long) -> Unit = {},
+    openRemoteConfigNodeId: Long? = null,
+    onRemoteConfigOpened: () -> Unit = {}
 ) {
     var hasCentered by remember { mutableStateOf(false) }
     var selectedMapNode by remember { mutableStateOf<MeshNode?>(null) }
-    var detailsMapNode by remember { mutableStateOf<MeshNode?>(null) }
     var renamingMapNode by remember { mutableStateOf<MeshNode?>(null) }
     var selectedPingLog by remember { mutableStateOf<com.example.aethermesh.data.RangeTestLog?>(null) }
     var showRemoteConfigDialog by remember { mutableStateOf<MeshNode?>(null) }
+
+    LaunchedEffect(openRemoteConfigNodeId) {
+        val id = openRemoteConfigNodeId ?: return@LaunchedEffect
+        val node = nodes.find { it.nodeId == id }
+            ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
+        if (node != null) showRemoteConfigDialog = node
+        onRemoteConfigOpened()
+    }
     val context = LocalContext.current
     val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
     val breadcrumbs = viewModel.breadcrumbs
@@ -3323,7 +3326,7 @@ fun MapViewCompose(
             nodes.find { it.nodeId == sel.nodeId }
         } ?: selectedMapNode
         // Compact map callout — tap opens full Details (Meshtastic-style).
-        if (detailsMapNode == null) activeMapNode?.let { node ->
+        activeMapNode?.let { node ->
             val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
             val stale = isNodeStale(node.lastActive)
             val mapPrimaryText = if (stale) TextMuted else TextLight
@@ -3354,8 +3357,8 @@ fun MapViewCompose(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            detailsMapNode = node
                             selectedMapNode = null
+                            onOpenNodeDetails(node.nodeId)
                         }
                 ) {
                     Row(
@@ -3580,38 +3583,6 @@ fun MapViewCompose(
                 }
             }
         }
-    }
-
-    detailsMapNode?.let { selected ->
-        val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
-        NodeDetailsScreen(
-            node = node,
-            observedRoutes = observedRoutes,
-            phoneLocation = phoneLocation,
-            appLanguage = appLanguage,
-            useImperialUnits = useImperialUnits,
-            connectedNodeId = viewModel.connectedNodeId,
-            getTelemetryHistory = { viewModel.getTelemetryHistory(it) },
-            onDismiss = { detailsMapNode = null },
-            onMessage = {
-                viewModel.selectDirectMessage(node.nodeId)
-                detailsMapNode = null
-                onNavigateToChats()
-            },
-            onRename = {
-                renamingMapNode = node
-                detailsMapNode = null
-            },
-            onTraceRoute = {
-                if (viewModel.startTraceRoute(node.nodeId)) detailsMapNode = null
-            },
-            onRemoteConfig = if (node.nodeId != viewModel.connectedNodeId) {
-                {
-                    showRemoteConfigDialog = node
-                    detailsMapNode = null
-                }
-            } else null
-        )
     }
 
     renamingMapNode?.let { node ->
