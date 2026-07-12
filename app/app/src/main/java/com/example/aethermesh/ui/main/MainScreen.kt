@@ -1958,14 +1958,17 @@ fun MapViewCompose(
         })
         mapView.overlays.add(0, mapEventsOverlay)
 
-        // Draw Phone Breadcrumbs Trail (dotted blue line)
-        if (breadcrumbs.size > 1) {
+        val tracingOnMap = traceRouteState.visible &&
+            (traceRouteState.forward.isNotEmpty() || traceRouteState.returning.isNotEmpty())
+
+        // Phone breadcrumbs clutter traceroute — hide them while a route is shown.
+        if (!tracingOnMap && breadcrumbs.size > 1) {
             val breadcrumbPolyline = Polyline(mapView).apply {
                 outlinePaint.apply {
-                    color = Color(0xFF3B82F6).copy(alpha = 0.7f).toArgb() // Beautiful royal blue
+                    color = Color(0xFF3B82F6).copy(alpha = 0.7f).toArgb()
                     strokeWidth = 5f
                     strokeCap = Paint.Cap.ROUND
-                    pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f) // Dotted trail
+                    pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
                 }
                 setPoints(breadcrumbs.map { org.osmdroid.util.GeoPoint(it.first, it.second) })
             }
@@ -1984,45 +1987,82 @@ fun MapViewCompose(
             mapView.overlays.add(phoneMarker)
         }
 
-        // 1. Draw only observed links. A known node is not automatically a
-        // direct neighbor; older builds drew a misleading local-to-everyone star.
-        val localNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
-        if (localNode != null && hasValidPosition(localNode.latitude, localNode.longitude)) {
-            val localPoint = GeoPoint(localNode.latitude.toDouble(), localNode.longitude.toDouble())
+        fun positionFor(nodeId: Long): GeoPoint? {
+            val node = nodes.find { it.nodeId == nodeId }
+            if (node != null && hasValidPosition(node.latitude, node.longitude)) {
+                return GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
+            }
+            // Connected node often inherits phone GPS; fall back so the route
+            // starts at the blue dot instead of vanishing.
+            if (nodeId == viewModel.connectedNodeId) return phoneLocation
+            return null
+        }
 
+        val localPoint = positionFor(viewModel.connectedNodeId)
+
+        // 1-hop mesh links — muted while traceroute is the focus.
+        if (!tracingOnMap && localPoint != null) {
             observedRoutes.values.filter { it.hops == 1 }.forEach { route ->
-                val node = nodes.find { it.nodeId == route.targetId }
-                if (node != null && node.nodeId != localNode.nodeId && hasValidPosition(node.latitude, node.longitude)) {
-                    val polyline = Polyline(mapView).apply {
-                        outlinePaint.apply {
-                            color = AccentCyan.copy(alpha = 0.6f).toArgb()
-                            strokeWidth = 6f
-                            strokeCap = Paint.Cap.ROUND
-                            pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f) // Dashed line effect
-                        }
-                        setPoints(listOf(localPoint, GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())))
+                val hopPoint = positionFor(route.targetId) ?: return@forEach
+                if (route.targetId == viewModel.connectedNodeId) return@forEach
+                mapView.overlays.add(Polyline(mapView).apply {
+                    outlinePaint.apply {
+                        color = AccentCyan.copy(alpha = 0.6f).toArgb()
+                        strokeWidth = 6f
+                        strokeCap = Paint.Cap.ROUND
+                        pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f)
                     }
-                    mapView.overlays.add(polyline)
-                }
+                    setPoints(listOf(localPoint, hopPoint))
+                })
+            }
+        }
+
+        // Traceroute: solid mint forward path, dashed amber return path, hop badges.
+        if (tracingOnMap && localPoint != null) {
+            val forwardIds = listOf(viewModel.connectedNodeId) + traceRouteState.forward.map { it.nodeId }
+            val forwardPoints = forwardIds.mapNotNull { id -> positionFor(id)?.let { id to it } }
+            forwardPoints.zipWithNext().forEachIndexed { index, (from, to) ->
+                mapView.overlays.add(Polyline(mapView).apply {
+                    outlinePaint.apply {
+                        color = AccentMint.toArgb()
+                        strokeWidth = 10f
+                        strokeCap = Paint.Cap.ROUND
+                    }
+                    setPoints(listOf(from.second, to.second))
+                })
+                // Hop number at the midpoint of each forward segment.
+                val mid = GeoPoint(
+                    (from.second.latitude + to.second.latitude) / 2.0,
+                    (from.second.longitude + to.second.longitude) / 2.0
+                )
+                mapView.overlays.add(Marker(mapView).apply {
+                    position = mid
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    infoWindow = null
+                    icon = createBadgeMarkerDrawable(
+                        context,
+                        "${index + 1}",
+                        AccentMint.toArgb(),
+                        isActive = true,
+                        isPingMarker = true
+                    )
+                    setOnMarkerClickListener { _, _ -> true }
+                })
             }
 
-            if (traceRouteState.forward.isNotEmpty()) {
-                val tracedNodes = listOf(localNode.nodeId) + traceRouteState.forward.map { it.nodeId }
-                tracedNodes.zipWithNext().forEach { (fromId, toId) ->
-                    val from = nodes.find { it.nodeId == fromId }
-                    val to = nodes.find { it.nodeId == toId }
-                    if (from != null && to != null && hasValidPosition(from.latitude, from.longitude) &&
-                        hasValidPosition(to.latitude, to.longitude)
-                    ) {
-                        mapView.overlays.add(Polyline(mapView).apply {
-                            outlinePaint.color = AccentMint.toArgb()
-                            outlinePaint.strokeWidth = 8f
-                            setPoints(listOf(
-                                GeoPoint(from.latitude.toDouble(), from.longitude.toDouble()),
-                                GeoPoint(to.latitude.toDouble(), to.longitude.toDouble())
-                            ))
-                        })
-                    }
+            if (traceRouteState.returning.isNotEmpty()) {
+                val returnIds = listOf(traceRouteState.targetId) + traceRouteState.returning.map { it.nodeId }
+                val returnPoints = returnIds.mapNotNull { id -> positionFor(id)?.let { id to it } }
+                returnPoints.zipWithNext().forEach { (from, to) ->
+                    mapView.overlays.add(Polyline(mapView).apply {
+                        outlinePaint.apply {
+                            color = Color(0xFFFBBF24).copy(alpha = 0.9f).toArgb()
+                            strokeWidth = 7f
+                            strokeCap = Paint.Cap.ROUND
+                            pathEffect = DashPathEffect(floatArrayOf(18f, 12f), 0f)
+                        }
+                        setPoints(listOf(from.second, to.second))
+                    })
                 }
             }
         }
