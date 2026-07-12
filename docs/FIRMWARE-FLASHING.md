@@ -32,6 +32,18 @@ packaged the same way.
 3. Open Settings -> Firmware Update.
 4. Choose the `.bin` file and start the BLE OTA update.
 
+Or download from GitHub Pages inside the app:
+
+1. Connect and authenticate the node.
+2. Open **Settings → Firmware Update**.
+3. Tap **Check GitHub for updates**, then **Download from GitHub**.
+4. The app loads `firmware/ota-manifest.json`, downloads the matching
+   `-ota.bin` / `.zip`, verifies SHA-256, then flash with **Update via BLE OTA**.
+
+The Pages deploy publishes both the USB/UF2 web-flasher `manifest.json` and the
+app-facing `ota-manifest.json` (ESP32 OTA bins + RAK DFU zips). Do not flash a
+`-usb.bin` over BLE OTA.
+
 The node writes to the inactive OTA partition, verifies the image, and reboots
 only after a successful transfer. A failed transfer leaves the current firmware
 in place.

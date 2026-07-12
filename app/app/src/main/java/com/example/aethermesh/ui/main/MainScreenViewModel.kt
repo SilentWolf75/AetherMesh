@@ -372,6 +372,73 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun resetOtaState() = repository.resetOtaState()
     val diagnosticLogs = repository.diagnosticLogs
 
+    private val _githubFirmware = MutableStateFlow<com.example.aethermesh.data.FirmwareCatalog.Artifact?>(null)
+    val githubFirmware = _githubFirmware.asStateFlow()
+    private val _githubFirmwareStatus = MutableStateFlow("")
+    val githubFirmwareStatus = _githubFirmwareStatus.asStateFlow()
+    private val _githubFirmwareBusy = MutableStateFlow(false)
+    val githubFirmwareBusy = _githubFirmwareBusy.asStateFlow()
+    private val _githubDownloadProgress = MutableStateFlow(0)
+    val githubDownloadProgress = _githubDownloadProgress.asStateFlow()
+
+    fun refreshGithubFirmware(nodeModel: String?) {
+        viewModelScope.launch {
+            _githubFirmwareBusy.value = true
+            _githubFirmwareStatus.value = "Checking GitHub for firmware…"
+            _githubFirmware.value = null
+            try {
+                val list = com.example.aethermesh.data.FirmwareCatalog.fetchOtaManifest()
+                val match = com.example.aethermesh.data.FirmwareCatalog.pickForModel(list, nodeModel)
+                _githubFirmware.value = match
+                _githubFirmwareStatus.value = when {
+                    match != null -> "Found ${match.name}"
+                    list.isEmpty() -> "No OTA builds published yet."
+                    else -> "No OTA package matches this node model."
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "GitHub firmware catalog failed: ${e.message}")
+                val detail = e.message.orEmpty()
+                _githubFirmwareStatus.value = when {
+                    detail.contains("404") || detail.contains("not published", ignoreCase = true) ->
+                        if (detail.contains("OTA catalog not published")) detail
+                        else "OTA catalog not on GitHub Pages yet. Use a local .bin for now, or retry after the site redeploys."
+                    else -> "Could not reach GitHub: ${e.message}"
+                }
+                _githubFirmware.value = null
+            } finally {
+                _githubFirmwareBusy.value = false
+            }
+        }
+    }
+
+    /**
+     * Download + SHA-256 verify the selected GitHub OTA package.
+     * @return Triple(bytes, fileName, zipUri?) or null on failure
+     */
+    suspend fun downloadGithubFirmware(
+        context: android.content.Context,
+        artifact: com.example.aethermesh.data.FirmwareCatalog.Artifact
+    ): com.example.aethermesh.data.FirmwareCatalog.DownloadResult? {
+        _githubFirmwareBusy.value = true
+        _githubDownloadProgress.value = 0
+        _githubFirmwareStatus.value = "Downloading ${artifact.file}…"
+        return try {
+            val result = com.example.aethermesh.data.FirmwareCatalog.download(context, artifact) { pct ->
+                _githubDownloadProgress.value = pct
+                _githubFirmwareStatus.value = "Downloading… $pct%"
+            }
+            _githubFirmwareStatus.value = "Verified ${artifact.file}"
+            _githubDownloadProgress.value = 100
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "GitHub firmware download failed: ${e.message}")
+            _githubFirmwareStatus.value = "Download failed: ${e.message}"
+            null
+        } finally {
+            _githubFirmwareBusy.value = false
+        }
+    }
+
     fun lastPhoneFix() = repository.lastPhoneFix()
 
     fun getTelemetryHistory(nodeId: Long) = repository.getTelemetryHistory(nodeId)

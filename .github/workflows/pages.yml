@@ -139,6 +139,23 @@ jobs:
           NAME_T_ECHO="aethermesh-t-echo-${HASH}.uf2"
           python /tmp/uf2conv.py "$BUILD_T_ECHO/firmware.bin" -c -b 0x26000 -f 0xADA52840 -o "$OUT/$NAME_T_ECHO"
 
+          # BLE OTA / DFU packages for the Android app (not for USB web flasher).
+          NAME_V4_OTA="aethermesh-heltec-v4-${HASH}-ota.bin"
+          NAME_V3_OTA="aethermesh-heltec-v3-${HASH}-ota.bin"
+          NAME_T_DECK_OTA="aethermesh-t-deck-${HASH}-ota.bin"
+          NAME_CROWPANEL_OTA="aethermesh-crowpanel-35-${HASH}-ota.bin"
+          cp "$BUILD_V4/firmware.bin" "$OUT/$NAME_V4_OTA"
+          cp "$BUILD_V3/firmware.bin" "$OUT/$NAME_V3_OTA"
+          cp "$BUILD_T_DECK/firmware.bin" "$OUT/$NAME_T_DECK_OTA"
+          cp "$BUILD_CROWPANEL/firmware.bin" "$OUT/$NAME_CROWPANEL_OTA"
+
+          NAME_RAK_ZIP="aethermesh-rak4631-${HASH}.zip"
+          NAME_RAK_1W_ZIP="aethermesh-rak3401-1w-${HASH}.zip"
+          NAME_RAK_19026_ZIP="aethermesh-rak19026-${HASH}.zip"
+          cp "$BUILD_RAK/firmware.zip" "$OUT/$NAME_RAK_ZIP"
+          cp "$BUILD_RAK_1W/firmware.zip" "$OUT/$NAME_RAK_1W_ZIP"
+          cp "$BUILD_RAK_19026/firmware.zip" "$OUT/$NAME_RAK_19026_ZIP"
+
           # Write a manifest that the browser can verify before flashing.
           python tools/write_firmware_manifest.py --output "$OUT/manifest.json" --hash "$HASH" \
             --artifact "Heltec V4" "$OUT/$NAME_V4" \
@@ -149,7 +166,18 @@ jobs:
             --artifact "LILYGO T-Echo" "$OUT/$NAME_T_ECHO" \
             --artifact "LILYGO T-Deck" "$OUT/$NAME_T_DECK" \
             --artifact "Elecrow CrowPanel 3.5" "$OUT/$NAME_CROWPANEL"
-          echo "Bundled $NAME_V4, $NAME_V3, $NAME_RAK, $NAME_RAK_1W, $NAME_RAK_19026, $NAME_T_ECHO, $NAME_T_DECK, $NAME_CROWPANEL"
+
+          # Separate OTA catalog for the Android companion app.
+          python tools/write_firmware_manifest.py --output "$OUT/ota-manifest.json" --hash "$HASH" --kind ota \
+            --artifact "Heltec V4" "$OUT/$NAME_V4_OTA" heltec-v4 \
+            --artifact "Heltec V3" "$OUT/$NAME_V3_OTA" heltec-v3 \
+            --artifact "LILYGO T-Deck" "$OUT/$NAME_T_DECK_OTA" t-deck \
+            --artifact "Elecrow CrowPanel 3.5" "$OUT/$NAME_CROWPANEL_OTA" crowpanel-35 \
+            --artifact "RAK4631" "$OUT/$NAME_RAK_ZIP" rak4631 \
+            --artifact "RAK3401 1W" "$OUT/$NAME_RAK_1W_ZIP" rak3401-1w \
+            --artifact "RAK19026" "$OUT/$NAME_RAK_19026_ZIP" rak19026
+
+          echo "Bundled USB/UF2 + OTA packages for $HASH"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

@@ -79,6 +79,7 @@ import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
 import com.example.aethermesh.ui.AppUiFeedback
 import com.example.aethermesh.ui.PermissionHealthBanner
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -6401,7 +6402,20 @@ fun SettingsView(
             var showOtaWarning by remember { mutableStateOf(false) }
             val isHeltecNode = connectedNode?.model?.contains("Heltec", ignoreCase = true) == true
             val isRakNode = connectedNode?.model?.contains("RAK", ignoreCase = true) == true
-            val otaSupported = isHeltecNode || isRakNode
+            val isEspOtaNode = isHeltecNode ||
+                connectedNode?.model?.contains("T-Deck", ignoreCase = true) == true ||
+                connectedNode?.model?.contains("CrowPanel", ignoreCase = true) == true
+            val otaSupported = isEspOtaNode || isRakNode
+            val githubArtifact by viewModel.githubFirmware.collectAsStateWithLifecycle()
+            val githubStatus by viewModel.githubFirmwareStatus.collectAsStateWithLifecycle()
+            val githubBusy by viewModel.githubFirmwareBusy.collectAsStateWithLifecycle()
+            val githubProgress by viewModel.githubDownloadProgress.collectAsStateWithLifecycle()
+            val firmwareScope = rememberCoroutineScope()
+            LaunchedEffect(connectedNode?.model, isConnected, otaSupported) {
+                if (isConnected && otaSupported) {
+                    viewModel.refreshGithubFirmware(connectedNode?.model)
+                }
+            }
             val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                 if (uri != null) {
                     try {
@@ -6535,6 +6549,118 @@ fun SettingsView(
                             fontSize = 12.sp
                         )
                     } else {
+                        // GitHub Pages OTA catalog (published by pages.yml as ota-manifest.json)
+                        OutlinedButton(
+                            onClick = { viewModel.refreshGithubFirmware(connectedNode?.model) },
+                            enabled = !githubBusy && !otaState.active,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = DarkBackground,
+                                contentColor = TextLight
+                            )
+                        ) {
+                            Icon(
+                                Icons.Default.CloudDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = AccentCyan
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                if (appLanguage == "Spanish") "Buscar en GitHub" else "Check GitHub for updates",
+                                fontSize = 12.sp
+                            )
+                        }
+                        if (githubStatus.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(githubStatus, color = TextMuted, fontSize = 11.sp)
+                        }
+                        if (githubBusy && githubProgress in 1..99) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { githubProgress / 100f },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = AccentMint,
+                                trackColor = BorderDark
+                            )
+                        }
+                        val artifact = githubArtifact
+                        if (artifact != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                artifact.name,
+                                color = TextLight,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "${artifact.file} · ${artifact.size / 1024} kB",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    firmwareScope.launch {
+                                        val result = viewModel.downloadGithubFirmware(context, artifact)
+                                        if (result != null) {
+                                            val err = isValidOtaPayload(
+                                                result.bytes,
+                                                result.fileName,
+                                                isRakNode
+                                            )
+                                            if (err != null) {
+                                                otaPickError = localizeOtaPickError(err, appLanguage)
+                                                AppUiFeedback.show(
+                                                    localizeOtaPickError(err, appLanguage),
+                                                    duration = SnackbarDuration.Long
+                                                )
+                                            } else {
+                                                otaFileBytes = result.bytes
+                                                otaFileUri = result.cacheUri
+                                                otaFileName = result.fileName
+                                                otaPickError = null
+                                                viewModel.resetOtaState()
+                                                AppUiFeedback.show(
+                                                    if (appLanguage == "Spanish")
+                                                        "Firmware de GitHub listo para flashear."
+                                                    else
+                                                        "GitHub firmware ready to flash."
+                                                )
+                                            }
+                                        } else {
+                                            AppUiFeedback.show(
+                                                githubStatus.ifBlank {
+                                                    if (appLanguage == "Spanish") "Descarga fallida"
+                                                    else "Download failed"
+                                                },
+                                                duration = SnackbarDuration.Long
+                                            )
+                                        }
+                                    }
+                                },
+                                enabled = !githubBusy && !otaState.active && isDeviceAuthenticated,
+                                modifier = Modifier.fillMaxWidth().height(40.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = AccentCyan,
+                                    contentColor = DarkBackground,
+                                    disabledContainerColor = BorderDark,
+                                    disabledContentColor = TextMuted
+                                )
+                            ) {
+                                Text(
+                                    if (appLanguage == "Spanish")
+                                        "Descargar desde GitHub"
+                                    else
+                                        "Download from GitHub",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
                         OutlinedButton(
                             onClick = { otaFilePicker.launch(arrayOf("application/octet-stream", "*/*")) },
                             modifier = Modifier.fillMaxWidth(),
@@ -6590,9 +6716,9 @@ fun SettingsView(
 
             Text(
                 text = if (appLanguage == "Spanish")
-                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec usa .bin; RAK usa el paquete .zip (DFU del bootloader)."
+                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin; RAK usa el paquete .zip (DFU). También puedes descargar el paquete OTA publicado en GitHub Pages."
                 else
-                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec takes the .bin (verified before reboot); RAK takes the .zip DFU package (streamed to its bootloader). A failed transfer leaves the node on its current firmware.",
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin; RAK takes the .zip DFU package. You can also download the matching OTA package from GitHub Pages.",
                 color = TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
