@@ -1,45 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 100" fill="none" role="img" aria-label="Heltec WiFi LoRa 32 V4">
-  <defs>
-    <linearGradient id="v4pcb" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1a1f28"/>
-      <stop offset="1" stop-color="#0d1016"/>
-    </linearGradient>
-    <linearGradient id="v4oled" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0a1218"/>
-      <stop offset="1" stop-color="#05080c"/>
-    </linearGradient>
-    <linearGradient id="v4gold" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f0d078"/>
-      <stop offset="1" stop-color="#c9a227"/>
-    </linearGradient>
-  </defs>
-  <!-- PCB -->
-  <rect x="22" y="22" width="116" height="56" rx="3.5" fill="url(#v4pcb)" stroke="#3a4250" stroke-width="1.2"/>
-  <!-- Mount holes -->
-  <circle cx="28" cy="28" r="2.2" fill="#2a303a" stroke="#6b7280" stroke-width="0.6"/>
-  <circle cx="132" cy="28" r="2.2" fill="#2a303a" stroke="#6b7280" stroke-width="0.6"/>
-  <circle cx="28" cy="72" r="2.2" fill="#2a303a" stroke="#6b7280" stroke-width="0.6"/>
-  <circle cx="132" cy="72" r="2.2" fill="#2a303a" stroke="#6b7280" stroke-width="0.6"/>
-  <!-- Header pins (gold) -->
-  <g fill="url(#v4gold)">
-    <rect x="34" y="18" width="2.4" height="6" rx="0.4"/><rect x="40" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="46" y="18" width="2.4" height="6" rx="0.4"/><rect x="52" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="58" y="18" width="2.4" height="6" rx="0.4"/><rect x="64" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="70" y="18" width="2.4" height="6" rx="0.4"/><rect x="76" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="82" y="18" width="2.4" height="6" rx="0.4"/><rect x="88" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="94" y="18" width="2.4" height="6" rx="0.4"/><rect x="100" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="106" y="18" width="2.4" height="6" rx="0.4"/><rect x="112" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="118" y="18" width="2.4" height="6" rx="0.4"/><rect x="124" y="18" width="2.4" height="6" rx="0.4"/>
-    <rect x="34" y="76" width="2.4" height="6" rx="0.4"/><rect x="40" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="46" y="76" width="2.4" height="6" rx="0.4"/><rect x="52" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="58" y="76" width="2.4" height="6" rx="0.4"/><rect x="64" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="70" y="76" width="2.4" height="6" rx="0.4"/><rect x="76" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="82" y="76" width="2.4" height="6" rx="0.4"/><rect x="88" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="94" y="76" width="2.4" height="6" rx="0.4"/><rect x="100" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="106" y="76" width="2.4" height="6" rx="0.4"/><rect x="112" y="76" width="2.4" height="6" rx="0.4"/>
-    <rect x="118" y="76" width="2.4" height="6" rx="0.4"/><rect x="124" y="76" width="2.4" height="6" rx="0.4"/>
-  </g>
-  <!-- USB-C -->
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 100" fill="none" role="img" aria-label="Heltec WiFi LoRa 32 V4 - OLED - USB-C -->
   <rect x="14" y="42" width="10" height="16" rx="2" fill="#e8eaed" stroke="#9aa0a6" stroke-width="0.8"/>
   <rect x="16" y="45" width="6" height="10" rx="1.2" fill="#1f2937"/>
   <!-- SH battery / solar -->
@@ -66,5 +26,5 @@
   <circle cx="128" cy="60" r="1.4" fill="#111"/>
   <!-- Status LED -->
   <circle cx="48" cy="36" r="1.6" fill="#ef4444"/>
-  <text x="72" y="80" fill="#7E90A8" font-family="Arial, sans-serif" font-size="5.5" font-weight="700">V4 ù OLED ù USB-C</text>
+  <text x="72" y="80" fill="#7E90A8" font-family="Arial, sans-serif" font-size="5.5" font-weight="700">V4 - OLED - USB-C</text>
 </svg>
