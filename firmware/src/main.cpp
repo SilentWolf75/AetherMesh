@@ -2865,11 +2865,14 @@ uint32_t otaChunksSinceAck = 0;
 SHA256 otaSha256;
 #endif
 char otaExpectedSha256[65] = "";
-static const uint32_t OTA_WINDOW = 8;          // chunks per ack (BLE rx ring holds 16)
+static const uint32_t OTA_WINDOW = 1;          // ack every chunk — phone may still
+                                               // batch; extra IN_PROGRESS is fine.
+                                               // (was 8; bursts + flash erase caused gaps)
 static const uint32_t OTA_MAX_CHUNK = 224;     // advertised in READY.next_offset so the
                                                // app can pick fast params; firmware that
                                                // predates this sends 0 -> app uses the
-                                               // legacy 192-byte/window-4 profile
+                                               // legacy 192-byte/window-4 profile.
+                                               // App also caps by ATT MTU / 256B legacy RX.
 static const uint32_t OTA_TIMEOUT_MS = 30000;  // abort if the phone goes silent
 
 // (OTA round-trip test marker #2: distinct hash for a clean confirmation run.)
@@ -2919,11 +2922,14 @@ void otaAbort(const char* reason) {
         Update.abort();
     }
 #endif
+    // Report the last contiguous offset before clearing so the phone can resume.
+    const uint32_t resumeAt = otaExpectedOffset;
     otaActive = false;
     otaExpectedOffset = 0;
     otaExpectedSha256[0] = '\0';
-    Serial.printf("OTA aborted: %s\n", reason ? reason : "");
-    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, otaExpectedOffset, reason);
+    bleMgr.setInlinePhoneDelivery(false);
+    Serial.printf("OTA aborted: %s (resume@%u)\n", reason ? reason : "", (unsigned)resumeAt);
+    sendOtaStatus(aethermesh_OtaStatus_State_ERROR, resumeAt, reason);
 }
 
 void handleOtaControl(const aethermesh_OtaControl& ctl) {
@@ -2970,6 +2976,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             otaTotalSize = ctl.total_size;
             otaLastChunkMs = millis();
             otaChunksSinceAck = 0;
+            bleMgr.setInlinePhoneDelivery(true);
             Serial.printf("OTA begin: %u bytes, sha256=%s\n", ctl.total_size,
                           otaExpectedSha256[0] ? otaExpectedSha256 : "legacy-md5-only");
             drawOtaProgress(0, "receiving");
@@ -3003,6 +3010,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             }
             if (Update.end(true)) {
                 otaActive = false;
+                bleMgr.setInlinePhoneDelivery(false);
                 Serial.println("OTA success. Rebooting into new firmware...");
                 drawOtaProgress(100, "rebooting");
                 sendOtaStatus(aethermesh_OtaStatus_State_SUCCESS, otaTotalSize, "Rebooting");
@@ -3030,10 +3038,17 @@ void handleOtaData(const aethermesh_OtaData& od) {
         sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "No OTA in progress");
         return;
     }
+    // Ignore duplicates from phone retries; only a forward gap needs recovery.
+    if (od.offset + od.data.size <= otaExpectedOffset) {
+        return;
+    }
     if (od.offset != otaExpectedOffset) {
-        char msg[40];
-        snprintf(msg, sizeof(msg), "Offset gap at %u", (unsigned)od.offset);
-        otaAbort(msg);
+        // Do not abort — ask the phone to resend from the last contiguous byte.
+        // Aborting mid-transfer was unrecoverable over BLE.
+        Serial.printf("OTA gap: got %u expected %u — requesting resume\n",
+                      (unsigned)od.offset, (unsigned)otaExpectedOffset);
+        otaChunksSinceAck = 0;
+        sendOtaStatus(aethermesh_OtaStatus_State_IN_PROGRESS, otaExpectedOffset, "resume");
         return;
     }
     size_t written = Update.write((uint8_t*)od.data.bytes, od.data.size);
@@ -3050,10 +3065,10 @@ void handleOtaData(const aethermesh_OtaData& od) {
         sendOtaStatus(aethermesh_OtaStatus_State_IN_PROGRESS, otaExpectedOffset, "");
     }
 
-    // OLED progress roughly every 2%
+    // OLED progress roughly every 5% (I2C draw is slow; avoid starving BLE RX)
     static uint8_t lastDrawnPct = 255;
     uint8_t pct = (uint8_t)((uint64_t)otaExpectedOffset * 100 / otaTotalSize);
-    if (pct != lastDrawnPct && (pct % 2 == 0)) {
+    if (pct != lastDrawnPct && (pct % 5 == 0)) {
         lastDrawnPct = pct;
         drawOtaProgress(pct, "receiving");
     }
@@ -3065,14 +3080,27 @@ void handleOtaData(const aethermesh_OtaData& od) {
 
 // Callback: Phone BLE -> LoRa / Router
 void onBlePacketReceived(uint8_t* data, size_t len) {
-    Serial.print("BLE Packet received from Phone. Size: ");
-    Serial.println(len);
-    
     // Deserialize packet
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     
     if (pb_decode(&stream, aethermesh_MeshPacket_fields, &packet)) {
+        // During OTA, ignore everything except OTA control/data so GPS / chat
+        // / config packets can't stall flash writes or create offset gaps.
+        if (otaActive) {
+            if (packet.which_payload == aethermesh_MeshPacket_ota_control_tag) {
+                handleOtaControl(packet.payload.ota_control);
+            } else if (packet.which_payload == aethermesh_MeshPacket_ota_data_tag) {
+                handleOtaData(packet.payload.ota_data);
+            }
+            return;
+        }
+
+        if (!otaActive) {
+            Serial.print("BLE Packet received from Phone. Size: ");
+            Serial.println(len);
+        }
+
         // Enforce authentication
         if (!isBleClientAuthenticated) {
             if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag) {

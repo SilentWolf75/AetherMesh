@@ -4,7 +4,7 @@
 // loop consumes. Multiple slots matter for OTA: firmware chunks arrive in
 // bursts faster than one loop pass, and the old single-slot buffer dropped
 // everything after the first.
-static constexpr size_t BLE_RX_BUFFER_SIZE = 256;
+static constexpr size_t BLE_RX_BUFFER_SIZE = 512; // OTA MeshPackets with 224B chunks need >256 once offset varints grow
 static constexpr size_t BLE_RX_RING_SLOTS = 16; // absorbs OTA bursts across flash-erase stalls
 struct BleRxSlot {
     uint8_t data[BLE_RX_BUFFER_SIZE];
@@ -13,6 +13,32 @@ struct BleRxSlot {
 static BleRxSlot bleRxRing[BLE_RX_RING_SLOTS];
 static volatile size_t bleRxHead = 0; // producer writes here
 static volatile size_t bleRxTail = 0; // consumer reads here
+
+static void queuePhonePacket(const uint8_t* data, size_t len);
+
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
+static BLEManager* espBLEInstance = nullptr;
+#endif
+
+static void deliverPhonePacket(const uint8_t* data, size_t len) {
+    if (!data || len == 0) {
+        return;
+    }
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
+    if (espBLEInstance && espBLEInstance->inlinePhoneDelivery && espBLEInstance->phoneCallback) {
+        // Copy to a stack buffer — characteristic value may be reused.
+        if (len > BLE_RX_BUFFER_SIZE) {
+            Serial.println("BLE packet too large; dropping.");
+            return;
+        }
+        uint8_t tmp[BLE_RX_BUFFER_SIZE];
+        memcpy(tmp, data, len);
+        espBLEInstance->phoneCallback(tmp, len);
+        return;
+    }
+#endif
+    queuePhonePacket(data, len);
+}
 
 static void queuePhonePacket(const uint8_t* data, size_t len) {
     if (!data || len == 0) {
@@ -42,7 +68,6 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
 #include <BLE2902.h>
 
 // ESP32 Static Pointers
-static BLEManager* espBLEInstance = nullptr;
 static BLEServer* espBLEServer = nullptr;
 static BLECharacteristic* espRxChar = nullptr;
 
@@ -63,7 +88,7 @@ class EspCharCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
         std::string value = pCharacteristic->getValue();
         if (value.length() > 0) {
-            queuePhonePacket((const uint8_t*)value.data(), value.length());
+            deliverPhonePacket((const uint8_t*)value.data(), value.length());
         }
     }
 };
@@ -90,7 +115,7 @@ void nrfDisconnectCallback(uint16_t conn_handle, uint8_t reason) {
 
 void nrfWriteCallback(uint16_t conn_h, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
     if (len > 0) {
-        queuePhonePacket(data, len);
+        deliverPhonePacket(data, len);
     }
 }
 #endif
@@ -99,6 +124,7 @@ BLEManager::BLEManager() {
     isConnected = false;
     isAdvertising = false;
     phoneCallback = nullptr;
+    inlinePhoneDelivery = false;
     nodeUniqueId = 0;
 }
 

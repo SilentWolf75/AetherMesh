@@ -184,6 +184,30 @@ fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String {
     }
 }
 
+/** Infer ESP32 vs RAK OTA target from telemetry model and/or BLE / node names. */
+fun isRakOtaTarget(vararg hints: String?): Boolean {
+    val haystack = hints.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+        .joinToString(" ")
+        .lowercase()
+    if (haystack.isEmpty()) return false
+    return haystack.contains("rak") ||
+        haystack.contains("wisblock") ||
+        haystack.contains("nrf52") ||
+        haystack.contains("nrf52840")
+}
+
+fun isEspOtaTarget(vararg hints: String?): Boolean {
+    val haystack = hints.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+        .joinToString(" ")
+        .lowercase()
+    if (haystack.isEmpty()) return false
+    return haystack.contains("heltec") ||
+        haystack.contains("t-deck") ||
+        haystack.contains("tdeck") ||
+        haystack.contains("crowpanel") ||
+        haystack.contains("esp32")
+}
+
 /** Reject clearly wrong OTA payloads before flashing (Heltec .bin / RAK .zip). */
 fun isValidOtaPayload(bytes: ByteArray, fileName: String, isRakNode: Boolean): String? {
     if (bytes.isEmpty()) return "Empty file"
@@ -626,7 +650,11 @@ fun MainScreen(
         TabItem.CONNECTION -> t("Connection", appLanguage)
     }
     
-    val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
+    val connectedNode = resolveConnectedMeshNode(
+        nodes = nodes,
+        connectedId = viewModel.connectedNodeId,
+        deviceName = viewModel.connectedDeviceName
+    )
     val connectedNodeName = connectedNode?.name ?: viewModel.connectedDeviceName
     val adaptive = rememberAdaptiveLayoutInfo()
     val constrainContentWidth = activeTab != TabItem.MAP
@@ -4658,7 +4686,11 @@ fun SettingsView(
 ) {
     val context = LocalContext.current
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
-    val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
+    val connectedNode = resolveConnectedMeshNode(
+        nodes = nodes,
+        connectedId = viewModel.connectedNodeId,
+        deviceName = viewModel.connectedDeviceName
+    )
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
 
@@ -6400,20 +6432,33 @@ fun SettingsView(
             var otaFileName by remember { mutableStateOf("") }
             var otaPickError by remember { mutableStateOf<String?>(null) }
             var showOtaWarning by remember { mutableStateOf(false) }
-            val isHeltecNode = connectedNode?.model?.contains("Heltec", ignoreCase = true) == true
-            val isRakNode = connectedNode?.model?.contains("RAK", ignoreCase = true) == true
-            val isEspOtaNode = isHeltecNode ||
-                connectedNode?.model?.contains("T-Deck", ignoreCase = true) == true ||
-                connectedNode?.model?.contains("CrowPanel", ignoreCase = true) == true
-            val otaSupported = isEspOtaNode || isRakNode
+            val otaModelHint = connectedNode?.model
+                ?: viewModel.connectedDeviceName
+                ?: connectedNode?.name
+            val isRakNode = isRakOtaTarget(
+                connectedNode?.model,
+                viewModel.connectedDeviceName,
+                connectedNode?.name
+            )
+            val isEspOtaNode = isEspOtaTarget(
+                connectedNode?.model,
+                viewModel.connectedDeviceName,
+                connectedNode?.name
+            )
+            // Connected radios that haven't reported a model yet still get the OTA UI;
+            // only truly unknown / unsupported boards are blocked.
+            val otaSupported = isEspOtaNode || isRakNode ||
+                (isConnected && connectedNode?.model.isNullOrBlank()) ||
+                (isConnected && connectedNode?.model.equals("Unknown", ignoreCase = true) == true) ||
+                (isConnected && connectedNode == null)
             val githubArtifact by viewModel.githubFirmware.collectAsStateWithLifecycle()
             val githubStatus by viewModel.githubFirmwareStatus.collectAsStateWithLifecycle()
             val githubBusy by viewModel.githubFirmwareBusy.collectAsStateWithLifecycle()
             val githubProgress by viewModel.githubDownloadProgress.collectAsStateWithLifecycle()
             val firmwareScope = rememberCoroutineScope()
-            LaunchedEffect(connectedNode?.model, isConnected, otaSupported) {
+            LaunchedEffect(otaModelHint, isConnected, otaSupported) {
                 if (isConnected && otaSupported) {
-                    viewModel.refreshGithubFirmware(connectedNode?.model)
+                    viewModel.refreshGithubFirmware(otaModelHint)
                 }
             }
             val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -6422,7 +6467,8 @@ fun SettingsView(
                         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
                         if (bytes != null && bytes.isNotEmpty()) {
-                            val err = isValidOtaPayload(bytes, name, isRakNode)
+                            val treatAsRak = isRakNode || name.lowercase().endsWith(".zip")
+                            val err = isValidOtaPayload(bytes, name, treatAsRak)
                             if (err != null) {
                                 otaFileBytes = null
                                 otaFileUri = null
@@ -6544,14 +6590,28 @@ fun SettingsView(
                         }
                     } else if (!otaSupported) {
                         Text(
-                            text = if (appLanguage == "Spanish") "Este modelo de nodo no soporta OTA." else "This node model doesn't support OTA updates.",
+                            text = if (appLanguage == "Spanish")
+                                "Este modelo de nodo no soporta OTA inalámbrica. Usa el flasher web por USB."
+                            else
+                                "This node model doesn't support wireless OTA. Use the web flasher over USB.",
                             color = Color(0xFFFBBF24),
                             fontSize = 12.sp
                         )
                     } else {
+                        if (connectedNode?.model.isNullOrBlank() && !isRakNode && !isEspOtaNode) {
+                            Text(
+                                text = if (appLanguage == "Spanish")
+                                    "Esperando el modelo del nodo… puedes elegir un .bin/.zip mientras tanto."
+                                else
+                                    "Waiting for node model… you can still pick a .bin/.zip meanwhile.",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                         // GitHub Pages OTA catalog (published by pages.yml as ota-manifest.json)
                         OutlinedButton(
-                            onClick = { viewModel.refreshGithubFirmware(connectedNode?.model) },
+                            onClick = { viewModel.refreshGithubFirmware(otaModelHint) },
                             enabled = !githubBusy && !otaState.active,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
@@ -6605,10 +6665,11 @@ fun SettingsView(
                                     firmwareScope.launch {
                                         val result = viewModel.downloadGithubFirmware(context, artifact)
                                         if (result != null) {
+                                            val treatAsRak = isRakNode || result.fileName.lowercase().endsWith(".zip") || artifact.isZip
                                             val err = isValidOtaPayload(
                                                 result.bytes,
                                                 result.fileName,
-                                                isRakNode
+                                                treatAsRak
                                             )
                                             if (err != null) {
                                                 otaPickError = localizeOtaPickError(err, appLanguage)
@@ -6671,10 +6732,14 @@ fun SettingsView(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 if (otaFileName.isEmpty()) {
-                                    if (isRakNode)
-                                        (if (appLanguage == "Spanish") "Elegir paquete .zip (DFU)" else "Choose firmware .zip (DFU package)")
-                                    else
-                                        (if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin")
+                                    when {
+                                        isRakNode ->
+                                            if (appLanguage == "Spanish") "Elegir paquete .zip (DFU)" else "Choose firmware .zip (DFU package)"
+                                        isEspOtaNode ->
+                                            if (appLanguage == "Spanish") "Elegir archivo .bin" else "Choose firmware .bin"
+                                        else ->
+                                            if (appLanguage == "Spanish") "Elegir .bin o .zip" else "Choose firmware .bin or .zip"
+                                    }
                                 } else {
                                     "$otaFileName (${(otaFileBytes?.size ?: 0) / 1024} kB)"
                                 },
@@ -6784,7 +6849,8 @@ fun SettingsView(
                     confirmButton = {
                         TextButton(onClick = {
                             showOtaWarning = false
-                            if (isRakNode) {
+                            val useRakDfu = isRakNode || otaFileName.lowercase().endsWith(".zip")
+                            if (useRakDfu) {
                                 otaFileUri?.let { viewModel.startRakDfuUpdate(it) }
                             } else {
                                 otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }

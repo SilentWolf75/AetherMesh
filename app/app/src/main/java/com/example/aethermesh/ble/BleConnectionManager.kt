@@ -68,6 +68,10 @@ class BleConnectionManager(private val context: Context) {
     private var reconnectAttempt = 0
     private var mtuTimeoutRunnable: Runnable? = null
     private var pendingAutoConnectMac: String? = null
+    /** Negotiated ATT MTU (default 23 until onMtuChanged). Max write payload is mtu-3. */
+    @Volatile
+    var negotiatedMtu: Int = 23
+        private set
     @Volatile
     private var phase: BleConnectionPhase = BleConnectionPhase.Disconnected
     @Volatile
@@ -450,7 +454,28 @@ class BleConnectionManager(private val context: Context) {
     @Volatile
     private var writeInFlight = false
 
-    fun sendPacket(packetBytes: ByteArray, timeoutMs: Long = 1000): Boolean {
+    @Volatile
+    private var lastWriteStatus: Int = BluetoothGatt.GATT_SUCCESS
+
+    /** When true, only sends marked otaStream=true are accepted (Heltec OTA). */
+    @Volatile
+    var otaExclusive: Boolean = false
+
+    /**
+     * @param withResponse Prefer WRITE_TYPE_DEFAULT so the peripheral ACKs each
+     *   ATT write (needed for Heltec OTA — NO_RESPONSE bursts get dropped).
+     * @param otaStream Must be true for firmware-update packets while [otaExclusive].
+     */
+    fun sendPacket(
+        packetBytes: ByteArray,
+        timeoutMs: Long = 1000,
+        withResponse: Boolean = false,
+        otaStream: Boolean = false
+    ): Boolean {
+        if (otaExclusive && !otaStream) {
+            Log.d(TAG, "sendPacket: blocked non-OTA traffic during firmware update")
+            return false
+        }
         val gatt = bluetoothGatt ?: return false
         val char = txCharacteristic ?: return false
 
@@ -459,8 +484,6 @@ class BleConnectionManager(private val context: Context) {
             while (writeInFlight) {
                 val left = deadline - System.currentTimeMillis()
                 if (left <= 0) {
-                    // Callback never came (stack hiccup / disconnect race) -
-                    // recover instead of deadlocking
                     Log.w(TAG, "sendPacket: write-complete callback timeout; forcing gate open")
                     writeInFlight = false
                     break
@@ -474,16 +497,51 @@ class BleConnectionManager(private val context: Context) {
             }
 
             char.value = packetBytes
-            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            char.writeType = if (withResponse) {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
 
+            lastWriteStatus = BluetoothGatt.GATT_FAILURE
             val ok = gatt.writeCharacteristic(char)
-            if (ok) writeInFlight = true
-            return ok
+            if (!ok) return false
+            writeInFlight = true
+
+            // Wait for this write's callback so callers can trust the result and
+            // so confirmed writes naturally pace to the peripheral.
+            val writeDeadline = System.currentTimeMillis() + timeoutMs
+            while (writeInFlight) {
+                val left = writeDeadline - System.currentTimeMillis()
+                if (left <= 0) {
+                    Log.w(TAG, "sendPacket: timed out waiting for write callback")
+                    writeInFlight = false
+                    return false
+                }
+                try {
+                    writeLock.wait(left)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+            return lastWriteStatus == BluetoothGatt.GATT_SUCCESS
         }
     }
 
-    internal fun onWriteCompleted() {
+    /** Ask the controller for a low-latency link (best-effort; Heltec OTA). */
+    fun requestHighConnectionPriority() {
+        val gatt = bluetoothGatt ?: return
+        try {
+            gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        } catch (e: Exception) {
+            Log.w(TAG, "requestConnectionPriority failed: ${e.message}")
+        }
+    }
+
+    internal fun onWriteCompleted(status: Int = BluetoothGatt.GATT_SUCCESS) {
         synchronized(writeLock) {
+            lastWriteStatus = status
             writeInFlight = false
             writeLock.notifyAll()
         }
@@ -530,6 +588,7 @@ class BleConnectionManager(private val context: Context) {
                 isConnected = false
                 connectedDeviceName = null
                 connectedNodeId = 0
+                negotiatedMtu = 23
                 
                 try {
                     gatt.close()
@@ -559,6 +618,9 @@ class BleConnectionManager(private val context: Context) {
                 return
             }
             Log.d(TAG, "MTU changed to: $mtu, status: $status")
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu > 0) {
+                negotiatedMtu = mtu
+            }
             
             mtuTimeoutRunnable?.let {
                 handler.removeCallbacks(it)
@@ -610,8 +672,10 @@ class BleConnectionManager(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            // Stack is ready for the next write - release the send gate
-            onWriteCompleted()
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "onCharacteristicWrite status=$status")
+            }
+            onWriteCompleted(status)
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {

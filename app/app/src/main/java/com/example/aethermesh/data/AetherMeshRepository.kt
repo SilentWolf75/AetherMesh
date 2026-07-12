@@ -1269,18 +1269,34 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     // --- BLE firmware update (OTA) sender ---
-    // Streams a firmware image to the connected node in 192-byte chunks,
-    // OTA_WINDOW chunks per node ack (the node's BLE rx ring holds 8, and our
-    // writes are WRITE_TYPE_NO_RESPONSE, so flow control is on us). The node
-    // MD5-verifies the complete image before it reboots into it.
-    // Fast profile - only used when the node's READY reply advertises support
-    // (READY.next_offset >= 224). Older firmware can't decode 224-byte chunks
-    // (its nanopb field cap is 192) and its 8-slot rx ring can't absorb
-    // 8-chunk bursts, so unknown/old nodes get the proven legacy profile.
-    private val OTA_CHUNK_FAST = 224
-    private val OTA_WINDOW_FAST = 8
-    private val OTA_CHUNK_LEGACY = 192
+    // Heltec ESP32 drops WRITE_TYPE_NO_RESPONSE bursts under flash-write load
+    // ("Offset gap at N"). Use confirmed ATT writes, conservative chunk size
+    // (fits legacy 256B RX slots), and keep the phone window matched to the
+    // node's IN_PROGRESS cadence (8 on READY>=224 firmware, 4 on legacy).
+    private val OTA_CHUNK_FAST_CAP = 224
+    private val OTA_CHUNK_RELIABLE = 128   // safe under 256B node RX + ATT MTU
+    private val OTA_WINDOW_FAST = 8        // must match shipping firmware OTA_WINDOW
+    private val OTA_CHUNK_LEGACY = 128
     private val OTA_WINDOW_LEGACY = 4
+    private val OTA_PROTO_OVERHEAD = 56
+    // Pace slower than flash sector erases + main-loop work on Heltec.
+    private val OTA_INTER_CHUNK_MS = 80L
+
+    private fun otaChunkSizeForLink(nodeHint: Int): Int {
+        val attMax = (bleManager.negotiatedMtu - 3).coerceAtLeast(20)
+        val legacyNodeCap = 256 - OTA_PROTO_OVERHEAD
+        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtMost(legacyNodeCap)
+        val wanted = OTA_CHUNK_RELIABLE
+        return wanted.coerceAtMost(linkCap).coerceAtLeast(64).also {
+            if (nodeHint >= OTA_CHUNK_FAST_CAP && it < OTA_CHUNK_FAST_CAP) {
+                Log.d(TAG, "OTA chunk capped to $it (node advertised $nodeHint)")
+            }
+        }
+    }
+
+    private fun otaWindowForNode(nodeHint: Int): Int {
+        return if (nodeHint >= OTA_CHUNK_FAST_CAP) OTA_WINDOW_FAST else OTA_WINDOW_LEGACY
+    }
 
     fun startFirmwareUpdate(firmware: ByteArray) {
         if (_otaState.value.active) return
@@ -1291,21 +1307,18 @@ class AetherMeshRepository(private val context: Context) {
         val nodeId = bleManager.connectedNodeId
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
+            bleManager.otaExclusive = true
             try {
                 _otaState.value = OtaState(active = true, status = "Preparing...")
+                bleManager.requestHighConnectionPriority()
 
                 val md5 = MessageDigest.getInstance("MD5").digest(firmware)
                     .joinToString("") { "%02x".format(it) }
                 val sha256 = MessageDigest.getInstance("SHA-256").digest(firmware)
                     .joinToString("") { "%02x".format(it) }
 
-                // Drain stale statuses from a previous attempt
                 while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
 
-                // The node erases its OTA flash partition before it can reply
-                // READY, which can take 10-20s; and if it just rebooted from a
-                // prior update the BLE session may still be re-authenticating.
-                // So allow a generous window and retry BEGIN once.
                 var chunkHint = -1
                 for (attempt in 1..2) {
                     sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5, sha256)
@@ -1321,10 +1334,9 @@ class AetherMeshRepository(private val context: Context) {
                 }
                 if (chunkHint < 0) throw Exception("Node never became ready")
 
-                // Negotiate transfer profile from the node's capability hint
-                val chunkSize = if (chunkHint >= OTA_CHUNK_FAST) OTA_CHUNK_FAST else OTA_CHUNK_LEGACY
-                val window = if (chunkHint >= OTA_CHUNK_FAST) OTA_WINDOW_FAST else OTA_WINDOW_LEGACY
-                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window (node hint $chunkHint)")
+                val chunkSize = otaChunkSizeForLink(chunkHint)
+                val window = otaWindowForNode(chunkHint)
+                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+confirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
 
                 _otaState.value = OtaState(active = true, status = "Uploading...")
                 var offset = 0
@@ -1343,26 +1355,36 @@ class AetherMeshRepository(private val context: Context) {
                             .setOtaData(chunk)
                             .build()
                             .toByteArray()
-                        // sendPacket now gates on the stack's write-complete
-                        // callback internally, so writes stream at the radio's
-                        // real pace - no artificial delays needed
                         var tries = 0
-                        while (!bleManager.sendPacket(pkt)) {
-                            if (++tries > 20) throw Exception("BLE write failed repeatedly")
-                            delay(20)
+                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = true, otaStream = true)) {
+                            if (++tries > 8) throw Exception("BLE write failed repeatedly")
+                            delay(50)
                         }
                         windowEndOffset += len
+                        if (w < window - 1 && windowEndOffset < firmware.size) {
+                            delay(OTA_INTER_CHUNK_MS)
+                        }
                     }
 
-                    // Consume progress acks until the node confirms this window
-                    // (tolerant of the node acking at a different cadence).
-                    var acked = 0
+                    // Wait until the node has flashed through this window. If it
+                    // reports an earlier offset (resume hint), rewind and resend.
+                    var acked = awaitOtaProgress(30_000)
+                    if (acked < offset) {
+                        Log.w(TAG, "OTA node behind ($acked < $offset); resyncing")
+                        offset = acked
+                        continue
+                    }
                     while (acked < windowEndOffset) {
-                        acked = awaitOtaProgress(10_000)
+                        acked = awaitOtaProgress(30_000)
+                        if (acked < offset) {
+                            offset = acked
+                            break
+                        }
                         if (acked > windowEndOffset) {
                             throw Exception("Node acked $acked past window end $windowEndOffset")
                         }
                     }
+                    if (acked < windowEndOffset) continue
                     offset = windowEndOffset
                     _otaState.value = OtaState(
                         active = true,
@@ -1379,7 +1401,6 @@ class AetherMeshRepository(private val context: Context) {
                     progress = 100, done = true,
                     status = "Update verified — reconnecting after node reboot…"
                 )
-                // Node reboots into new firmware; give it time then reattach BLE.
                 delay(4_000)
                 try {
                     bleManager.resumeAfterDfu()
@@ -1410,12 +1431,15 @@ class AetherMeshRepository(private val context: Context) {
                     else
                         "Update failed: ${e.message}"
                 )
+            } finally {
+                bleManager.otaExclusive = false
             }
         }
     }
 
     fun cancelFirmwareUpdate() {
         otaJob?.cancel()
+        bleManager.otaExclusive = false
         dfuController?.abort()
     }
 
@@ -1618,13 +1642,22 @@ class AetherMeshRepository(private val context: Context) {
             .setOtaControl(ctl)
             .build()
             .toByteArray()
-        if (!bleManager.sendPacket(pkt)) {
+        if (!bleManager.sendPacket(pkt, otaStream = true)) {
             throw Exception("BLE write failed (${op.name})")
         }
     }
 
     // Wait for a specific state and return its next_offset (READY uses it as a
     // capability hint). ERROR from the node always throws.
+    private fun otaNodeErrorMessage(raw: String): String {
+        val msg = raw.ifEmpty { "node reported error" }
+        return if (msg.contains("Offset gap", ignoreCase = true)) {
+            "$msg — this Heltec build needs one USB flash from the web flasher, then BLE OTA will work."
+        } else {
+            msg
+        }
+    }
+
     private suspend fun awaitOtaState(
         wanted: com.example.aethermesh.proto.OtaStatus.State,
         timeoutMs: Long,
@@ -1638,7 +1671,7 @@ class AetherMeshRepository(private val context: Context) {
                 when (st.state) {
                     wanted -> { value = st.nextOffset; got = true }
                     com.example.aethermesh.proto.OtaStatus.State.ERROR ->
-                        throw Exception(st.message.ifEmpty { "node reported error" })
+                        throw Exception(otaNodeErrorMessage(st.message))
                     else -> { /* keep waiting */ }
                 }
             }
@@ -1656,7 +1689,7 @@ class AetherMeshRepository(private val context: Context) {
                 when (st.state) {
                     com.example.aethermesh.proto.OtaStatus.State.IN_PROGRESS -> acked = st.nextOffset
                     com.example.aethermesh.proto.OtaStatus.State.ERROR ->
-                        throw Exception(st.message.ifEmpty { "node reported error" })
+                        throw Exception(otaNodeErrorMessage(st.message))
                     else -> { /* keep waiting */ }
                 }
             }

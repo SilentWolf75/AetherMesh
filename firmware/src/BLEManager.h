@@ -19,6 +19,10 @@ public:
     
     // Callback registers
     void onReceivedFromPhone(void (*callback)(uint8_t* data, size_t len));
+
+    // When true, phone writes are delivered inline from the BLE callback
+    // (blocks ATT response until handled). Used during OTA for flow control.
+    void setInlinePhoneDelivery(bool enabled) { inlinePhoneDelivery = enabled; }
     
     bool isDeviceConnected() { return isConnected; }
     void stopAdvertising();
@@ -27,6 +31,7 @@ public:
     bool isConnected;
     bool isAdvertising;
     void (*phoneCallback)(uint8_t* data, size_t len);
+    volatile bool inlinePhoneDelivery;
 
 private:
     uint32_t nodeUniqueId;
