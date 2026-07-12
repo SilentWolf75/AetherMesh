@@ -5,12 +5,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.res.painterResource
-import com.example.aethermesh.R
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -24,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import com.example.aethermesh.ui.components.AnimatedAetherMeshLogo
 import com.example.aethermesh.ui.components.AetherSectionHeader
 import com.example.aethermesh.ui.components.BatteryArcGauge
 import com.example.aethermesh.ui.components.ExpandableSectionHeader
@@ -688,13 +686,7 @@ fun HeaderBar(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_aethermesh_logo),
-                    contentDescription = "AetherMesh",
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                )
+                AnimatedAetherMeshLogo(size = 40.dp)
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
