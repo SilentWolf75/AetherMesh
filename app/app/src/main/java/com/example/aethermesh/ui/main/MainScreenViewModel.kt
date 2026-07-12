@@ -134,7 +134,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return link
     }
 
-    /** After popping NodeDetails, MainScreen should open remote config for this node. */
+    /** Overlay remote-config dialog for this node (does not switch tabs). */
     private val _pendingRemoteConfigNodeId = MutableStateFlow<Long?>(null)
     val pendingRemoteConfigNodeId: StateFlow<Long?> = _pendingRemoteConfigNodeId.asStateFlow()
 
@@ -142,10 +142,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         _pendingRemoteConfigNodeId.value = nodeId
     }
 
-    fun consumeRemoteConfigNodeId(): Long? {
-        val id = _pendingRemoteConfigNodeId.value ?: return null
+    fun dismissRemoteConfigDialog() {
         _pendingRemoteConfigNodeId.value = null
-        return id
     }
 
     fun addBreadcrumb(lat: Double, lon: Double) {

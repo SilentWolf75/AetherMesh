@@ -172,7 +172,7 @@ fun NodeDetailsScreen(
                             Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (appLanguage == "Spanish") "Mensaje directo" else "Direct Message",
+                                text = if (appLanguage == "Spanish") "Mensaje" else "Message",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
@@ -183,7 +183,7 @@ fun NodeDetailsScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             RoundActionButton(
                                 Icons.Default.Settings,
-                                if (appLanguage == "Spanish") "Configurar" else "Remote Config",
+                                if (appLanguage == "Spanish") "Config. remota" else "Remote config",
                                 onRemoteConfig
                             )
                         }
@@ -207,9 +207,9 @@ fun NodeDetailsScreen(
                                 icon = Icons.Default.Speed,
                                 label = if (appLanguage == "Spanish") "Prueba de rango" else "Range test",
                                 subtitle = if (appLanguage == "Spanish")
-                                    "Abrir Conexión con este nodo como objetivo"
+                                    "Abrir diálogo de prueba de rango para este nodo"
                                 else
-                                    "Open Connection with this node as the target",
+                                    "Open range test dialog for this node",
                                 onClick = onStartRangeTest
                             )
                             HorizontalDivider(color = BorderDark)
