@@ -35,6 +35,7 @@ message MeshPacket {
     OtaStatus ota_status = 20;
     TraceRoute trace_route = 21;
     MeshDiagnostics diagnostics = 22;
+    RangeTestControl range_test_control = 27;
   }
 }
 
@@ -58,6 +59,22 @@ message MeshDiagnostics {
   uint32 airtime_ms = 15;
   uint32 uptime_seconds = 16;
   uint32 protocol_version = 17;
+  // Range-test session counters (reset on RangeTestControl START).
+  uint32 range_pings_rx = 18;
+  uint32 range_pongs_queued = 19;
+  uint32 range_pongs_sent = 20;
+  uint32 range_pong_tx_failures = 21;
+  bool quiet_mode = 22;
+}
+
+// BLE-only: phone signals the connected node to quiet mesh traffic during a
+// direct range test (pause store-forward retries + LoRa telemetry broadcasts).
+message RangeTestControl {
+  enum Op {
+    START = 0;
+    STOP = 1;
+  }
+  Op op = 1;
 }
 
 // --- BLE firmware update (OTA). These messages travel over BLE only, never

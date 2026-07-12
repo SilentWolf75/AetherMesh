@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 17
+        private const val DATABASE_VERSION = 18
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -91,6 +91,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         // and filter rows with poor fixes.
         const val COL_LOG_SPEED_MPS = "speed_mps"
         const val COL_LOG_GPS_ACCURACY_M = "gps_accuracy_m"
+        // Why a ping failed: timeout, ble_send_fail, auth_blocked, test_stopped, etc.
+        const val COL_LOG_FAILURE_REASON = "failure_reason"
 
         // Channels Table
         const val TABLE_CHANNELS = "channels"
@@ -162,7 +164,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_LOG_REMOTE_RSSI REAL,
                 $COL_LOG_REMOTE_SNR REAL,
                 $COL_LOG_SPEED_MPS REAL,
-                $COL_LOG_GPS_ACCURACY_M REAL
+                $COL_LOG_GPS_ACCURACY_M REAL,
+                $COL_LOG_FAILURE_REASON TEXT
             )
         """.trimIndent()
 
@@ -380,6 +383,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         if (oldVersion < 17) {
             db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1")
         }
+        if (oldVersion < 18) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_RANGE_TEST_LOGS ADD COLUMN $COL_LOG_FAILURE_REASON TEXT")
+            } catch (_: Exception) { }
+            try {
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN range_pings_rx INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN range_pongs_queued INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN range_pongs_sent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN range_pong_tx_failures INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN quiet_mode INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) { }
+        }
     }
 
     private fun meshDiagnosticsTableSql() = """
@@ -402,7 +417,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             pending_ack_depth INTEGER NOT NULL,
             airtime_ms INTEGER NOT NULL,
             uptime_seconds INTEGER NOT NULL,
-            protocol_version INTEGER NOT NULL
+            protocol_version INTEGER NOT NULL,
+            range_pings_rx INTEGER NOT NULL DEFAULT 0,
+            range_pongs_queued INTEGER NOT NULL DEFAULT 0,
+            range_pongs_sent INTEGER NOT NULL DEFAULT 0,
+            range_pong_tx_failures INTEGER NOT NULL DEFAULT 0,
+            quiet_mode INTEGER NOT NULL DEFAULT 0
         )
     """.trimIndent()
 
@@ -426,6 +446,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put("airtime_ms", snapshot.airtimeMs)
             put("uptime_seconds", snapshot.uptimeSeconds)
             put("protocol_version", snapshot.protocolVersion)
+            put("range_pings_rx", snapshot.rangePingsRx)
+            put("range_pongs_queued", snapshot.rangePongsQueued)
+            put("range_pongs_sent", snapshot.rangePongsSent)
+            put("range_pong_tx_failures", snapshot.rangePongTxFailures)
+            put("quiet_mode", if (snapshot.quietMode) 1 else 0)
         }
         writableDatabase.insert(TABLE_MESH_DIAGNOSTICS, null, values)
         writableDatabase.execSQL(
@@ -444,6 +469,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         ).use { cursor ->
             fun long(name: String) = cursor.getLong(cursor.getColumnIndexOrThrow(name))
             fun int(name: String) = cursor.getInt(cursor.getColumnIndexOrThrow(name))
+            fun longOrZero(name: String): Long {
+                val idx = cursor.getColumnIndex(name)
+                return if (idx < 0 || cursor.isNull(idx)) 0L else cursor.getLong(idx)
+            }
+            fun intOrZero(name: String): Int {
+                val idx = cursor.getColumnIndex(name)
+                return if (idx < 0 || cursor.isNull(idx)) 0 else cursor.getInt(idx)
+            }
             while (cursor.moveToNext()) {
                 snapshots += MeshDiagnosticsSnapshot(
                     timestamp = long("timestamp"),
@@ -463,7 +496,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     pendingAckDepth = int("pending_ack_depth"),
                     airtimeMs = long("airtime_ms"),
                     uptimeSeconds = long("uptime_seconds"),
-                    protocolVersion = int("protocol_version")
+                    protocolVersion = int("protocol_version"),
+                    rangePingsRx = longOrZero("range_pings_rx"),
+                    rangePongsQueued = longOrZero("range_pongs_queued"),
+                    rangePongsSent = longOrZero("range_pongs_sent"),
+                    rangePongTxFailures = longOrZero("range_pong_tx_failures"),
+                    quietMode = intOrZero("quiet_mode") != 0
                 )
             }
         }
@@ -705,7 +743,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         remoteSnr: Float? = null,
         speedMps: Float? = null,
         gpsAccuracyM: Float? = null,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        failureReason: String? = null
     ): Long {
         val db = this.writableDatabase
         val values = ContentValues().apply {
@@ -720,6 +759,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             if (remoteSnr != null) put(COL_LOG_REMOTE_SNR, remoteSnr.toDouble()) else putNull(COL_LOG_REMOTE_SNR)
             if (speedMps != null) put(COL_LOG_SPEED_MPS, speedMps.toDouble()) else putNull(COL_LOG_SPEED_MPS)
             if (gpsAccuracyM != null) put(COL_LOG_GPS_ACCURACY_M, gpsAccuracyM.toDouble()) else putNull(COL_LOG_GPS_ACCURACY_M)
+            if (failureReason != null) put(COL_LOG_FAILURE_REASON, failureReason) else putNull(COL_LOG_FAILURE_REASON)
         }
         return db.insert(TABLE_RANGE_TEST_LOGS, null, values)
     }
@@ -729,6 +769,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val remoteSnrIdx = cursor.getColumnIndexOrThrow(COL_LOG_REMOTE_SNR)
         val speedIdx = cursor.getColumnIndexOrThrow(COL_LOG_SPEED_MPS)
         val accuracyIdx = cursor.getColumnIndexOrThrow(COL_LOG_GPS_ACCURACY_M)
+        val failureIdx = cursor.getColumnIndex(COL_LOG_FAILURE_REASON)
         return RangeTestLog(
             id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_ID)),
             timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_LOG_TIMESTAMP)),
@@ -741,7 +782,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             remoteRssi = if (cursor.isNull(remoteRssiIdx)) null else cursor.getDouble(remoteRssiIdx).toFloat(),
             remoteSnr = if (cursor.isNull(remoteSnrIdx)) null else cursor.getDouble(remoteSnrIdx).toFloat(),
             speedMps = if (cursor.isNull(speedIdx)) null else cursor.getDouble(speedIdx).toFloat(),
-            gpsAccuracyM = if (cursor.isNull(accuracyIdx)) null else cursor.getDouble(accuracyIdx).toFloat()
+            gpsAccuracyM = if (cursor.isNull(accuracyIdx)) null else cursor.getDouble(accuracyIdx).toFloat(),
+            failureReason = if (failureIdx < 0 || cursor.isNull(failureIdx)) null else cursor.getString(failureIdx)
         )
     }
 
@@ -1244,5 +1286,7 @@ data class RangeTestLog(
     val remoteSnr: Float? = null,
     // Phone GPS metadata at ping time; null when no fresh fix was available
     val speedMps: Float? = null,
-    val gpsAccuracyM: Float? = null
+    val gpsAccuracyM: Float? = null,
+    // timeout | ble_send_fail | auth_blocked | test_stopped | null on success
+    val failureReason: String? = null
 )

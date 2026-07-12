@@ -33,6 +33,11 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     duplicatePackets = 0;
     queueDrops = 0;
     routeChanges = 0;
+    rangePingsRx = 0;
+    rangePongsQueued = 0;
+    rangePongsSent = 0;
+    rangePongTxFailures = 0;
+    quietMode = false;
     
     // Clear tables
     for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
@@ -80,6 +85,11 @@ void MeshRouter::loop() {
         if (pendingRebroadcasts[i].active &&
             (int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
             bool urgent = isRangeTestTextPacket(pendingRebroadcasts[i].packet);
+            // Quiet mode: only emit range-test control traffic; hold other relays.
+            if (quietMode && !urgent) {
+                pendingRebroadcasts[i].transmitTime = now + 1000;
+                continue;
+            }
             if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
                 if (pendingRebroadcasts[i].packet.sender_id == localNodeId) {
                     retryPackets++;
@@ -105,6 +115,12 @@ void MeshRouter::loop() {
     // Retransmit locally-originated want_ack packets that haven't been ACKed.
     // Same packet_id on purpose: the recipient's dedup cache prevents double
     // delivery, and duplicates addressed to it trigger a fresh ACK.
+    // Quiet mode (phone range test): pause store-forward / ACK retries so
+    // CAD-busy contention does not eat direct PONG airtime.
+    if (quietMode) {
+        drainPendingPongReplies();
+        return;
+    }
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         if (pendingAcks[i].active && (int32_t)(now - pendingAcks[i].nextRetryTime) >= 0) {
             if ((int32_t)(now - pendingAcks[i].expiresAt) >= 0) {
@@ -911,6 +927,7 @@ void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, 
         char pingId[11];
         memcpy(pingId, encoded, idLength);
         pingId[idLength] = '\0';
+        rangePingsRx++;
         queuePongReply(packet.sender_id, pingId, rssi, snr, directOnly);
     } else if (idLength > 10) {
         Serial.printf("Ignoring oversized range-test ping id (%u digits)\n", (unsigned)idLength);
@@ -981,6 +998,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
     pendingPongs[slot].firstQueuedMs = millis();
     pendingPongs[slot].sendCount = 0;
     pendingPongs[slot].active = true;
+    rangePongsQueued++;
     Serial.printf("Queued %s to 0x%08X (slot %d)\n", pongContent, recipientId, slot);
     drainPendingPongReplies();
 }
@@ -1008,6 +1026,7 @@ void MeshRouter::drainPendingPongReplies() {
                 pendingPongs[i].hopLimit
             )) {
             pendingPongs[i].sendCount++;
+            rangePongsSent++;
             Serial.printf("Sent range-test %s (attempt %u)\n",
                           pendingPongs[i].content, pendingPongs[i].sendCount);
             if (pendingPongs[i].directOnly) {
@@ -1024,6 +1043,7 @@ void MeshRouter::drainPendingPongReplies() {
             pendingPongs[i].sendAtMs = now +
                 PONG_RESEND_INTERVAL_MS * pendingPongs[i].sendCount + random(0, 400);
         } else {
+            rangePongTxFailures++;
             pendingPongs[i].sendAtMs = now +
                 meshmath::radioBusyRetryDelayMs(random(0, 181));
         }
@@ -1203,6 +1223,23 @@ void MeshRouter::getDiagnostics(aethermesh_MeshDiagnostics& diagnostics) const {
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         if (pendingAcks[i].active) diagnostics.pending_ack_depth++;
     }
+    diagnostics.range_pings_rx = rangePingsRx;
+    diagnostics.range_pongs_queued = rangePongsQueued;
+    diagnostics.range_pongs_sent = rangePongsSent;
+    diagnostics.range_pong_tx_failures = rangePongTxFailures;
+    diagnostics.quiet_mode = quietMode;
+}
+
+void MeshRouter::setQuietMode(bool enabled) {
+    quietMode = enabled;
+    Serial.printf("Range-test quiet mode %s\n", enabled ? "ON" : "OFF");
+}
+
+void MeshRouter::resetRangeTestCounters() {
+    rangePingsRx = 0;
+    rangePongsQueued = 0;
+    rangePongsSent = 0;
+    rangePongTxFailures = 0;
 }
 
 void MeshRouter::cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {

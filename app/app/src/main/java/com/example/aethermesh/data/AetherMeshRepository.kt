@@ -10,6 +10,7 @@ import com.example.aethermesh.proto.Telemetry
 import com.example.aethermesh.proto.Ack
 import com.example.aethermesh.proto.DeliveryStatus
 import com.example.aethermesh.proto.TraceRoute
+import com.example.aethermesh.proto.RangeTestControl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +52,12 @@ data class MeshDiagnosticsSnapshot(
     val pendingAckDepth: Int = 0,
     val airtimeMs: Long = 0,
     val uptimeSeconds: Long = 0,
-    val protocolVersion: Int = 1
+    val protocolVersion: Int = 1,
+    val rangePingsRx: Long = 0,
+    val rangePongsQueued: Long = 0,
+    val rangePongsSent: Long = 0,
+    val rangePongTxFailures: Long = 0,
+    val quietMode: Boolean = false
 )
 
 data class TraceHop(
@@ -493,7 +499,12 @@ class AetherMeshRepository(private val context: Context) {
                 pendingAckDepth = value.pendingAckDepth,
                 airtimeMs = value.airtimeMs.toLong(),
                 uptimeSeconds = value.uptimeSeconds.toLong(),
-                protocolVersion = value.protocolVersion
+                protocolVersion = value.protocolVersion,
+                rangePingsRx = value.rangePingsRx.toLong(),
+                rangePongsQueued = value.rangePongsQueued.toLong(),
+                rangePongsSent = value.rangePongsSent.toLong(),
+                rangePongTxFailures = value.rangePongTxFailures.toLong(),
+                quietMode = value.quietMode
             )
             dbHelper.insertMeshDiagnostics(snapshot)
             _meshDiagnostics.value = snapshot
@@ -1760,6 +1771,7 @@ class AetherMeshRepository(private val context: Context) {
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
         startRangeTestLocationUpdates()
         pendingRangePings.clear()
+        sendRangeTestControl(RangeTestControl.Op.START)
 
         rangeTestJob = repositoryScope.launch {
             while (_isRangeTestActive.value) {
@@ -1785,9 +1797,38 @@ class AetherMeshRepository(private val context: Context) {
         rangeTestJob?.cancel()
         rangeTestJob = null
         _isRangeTestActive.value = false
-        pendingRangePings.clear()
+        // Score outstanding pings as stopped rather than silent drops.
+        pendingRangePings.entries.toList().forEach { entry ->
+            if (pendingRangePings.remove(entry.key, entry.value)) {
+                logRangeTestResult(
+                    pending = entry.value,
+                    success = false,
+                    rssi = -140f,
+                    snr = -20f,
+                    failureReason = "test_stopped"
+                )
+            }
+        }
         stopRangeTestLocationUpdates()
+        sendRangeTestControl(RangeTestControl.Op.STOP)
         Log.d(TAG, "Range Test stopped.")
+    }
+
+    private fun sendRangeTestControl(op: RangeTestControl.Op) {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return
+        val control = RangeTestControl.newBuilder().setOp(op).build()
+        val packet = MeshPacket.newBuilder()
+            .setSenderId(bleManager.connectedNodeId.toInt())
+            .setRecipientId(bleManager.connectedNodeId.toInt())
+            .setPacketId(PacketIdGenerator.next())
+            .setHopLimit(0)
+            .setWantAck(false)
+            .setPrevHopId(bleManager.connectedNodeId.toInt())
+            .setRangeTestControl(control)
+            .build()
+        if (!bleManager.sendPacket(packet.toByteArray())) {
+            Log.w(TAG, "Failed to send range-test control $op (quiet mode may be unavailable on older firmware).")
+        }
     }
 
     private fun sendRangePing(targetId: Long) {
@@ -1797,6 +1838,17 @@ class AetherMeshRepository(private val context: Context) {
         }
         if (!_isDeviceAuthenticated.value) {
             Log.w(TAG, "Range test ping skipped: BLE not authenticated.")
+            logRangeTestResult(
+                pending = PendingRangePing(
+                    targetId = targetId,
+                    sentAtMs = System.currentTimeMillis(),
+                    position = captureRangeTestPosition()
+                ),
+                success = false,
+                rssi = -140f,
+                snr = -20f,
+                failureReason = "auth_blocked"
+            )
             return
         }
 
@@ -1842,7 +1894,15 @@ class AetherMeshRepository(private val context: Context) {
             Log.d(TAG, "Range test ping sent: packetId=$generatedPacketId")
         } else {
             Log.w(TAG, "Range test ping failed to send over BLE.")
-            pendingRangePings.remove(generatedPacketId)
+            if (pendingRangePings.remove(generatedPacketId, pending)) {
+                logRangeTestResult(
+                    pending = pending,
+                    success = false,
+                    rssi = -140f,
+                    snr = -20f,
+                    failureReason = "ble_send_fail"
+                )
+            }
         }
     }
 
@@ -1879,7 +1939,8 @@ class AetherMeshRepository(private val context: Context) {
                         pending = entry.value,
                         success = false,
                         rssi = -140f,
-                        snr = -20f
+                        snr = -20f,
+                        failureReason = "timeout"
                     )
                 }
             }
@@ -1891,7 +1952,8 @@ class AetherMeshRepository(private val context: Context) {
         rssi: Float,
         snr: Float,
         remoteRssi: Float? = null,
-        remoteSnr: Float? = null
+        remoteSnr: Float? = null,
+        failureReason: String? = null
     ) {
         val position = pending.position
         dbHelper.insertRangeTestLog(
@@ -1905,7 +1967,8 @@ class AetherMeshRepository(private val context: Context) {
             remoteSnr,
             position.speedMps,
             position.gpsAccuracyM,
-            pending.sentAtMs
+            pending.sentAtMs,
+            failureReason = if (success) null else failureReason
         )
         if (pending.targetId == rangeTestTargetId) {
             _rangeTestLogs.value = dbHelper.getRangeTestLogs(pending.targetId)

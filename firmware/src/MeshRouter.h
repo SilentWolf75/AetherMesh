@@ -111,6 +111,12 @@ public:
     void printRoutingTable();
     void getDiagnostics(aethermesh_MeshDiagnostics& diagnostics) const;
 
+    // Quiet mesh during phone-driven direct range tests: pause store-forward
+    // retries and expose session counters via MeshDiagnostics.
+    void setQuietMode(bool enabled);
+    bool isQuietMode() const { return quietMode; }
+    void resetRangeTestCounters();
+
     // True if this (sender, packet) pair is already in the dedup cache.
     // Lets callers (e.g. the BLE forward path) skip mesh rebroadcast duplicates.
     bool hasSeen(uint32_t senderId, uint32_t packetId) { return hasSeenPacketId(senderId, packetId); }
@@ -139,6 +145,11 @@ private:
     uint32_t duplicatePackets;
     uint32_t queueDrops;
     uint32_t routeChanges;
+    uint32_t rangePingsRx;
+    uint32_t rangePongsQueued;
+    uint32_t rangePongsSent;
+    uint32_t rangePongTxFailures;
+    bool quietMode;
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);

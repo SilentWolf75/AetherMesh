@@ -12,6 +12,9 @@ PB_BIND(aethermesh_MeshPacket, aethermesh_MeshPacket, 2)
 PB_BIND(aethermesh_MeshDiagnostics, aethermesh_MeshDiagnostics, AUTO)
 
 
+PB_BIND(aethermesh_RangeTestControl, aethermesh_RangeTestControl, AUTO)
+
+
 PB_BIND(aethermesh_OtaControl, aethermesh_OtaControl, AUTO)
 
 
@@ -46,6 +49,8 @@ PB_BIND(aethermesh_AuthRequest, aethermesh_AuthRequest, AUTO)
 
 
 PB_BIND(aethermesh_AuthResponse, aethermesh_AuthResponse, AUTO)
+
+
 
 
 

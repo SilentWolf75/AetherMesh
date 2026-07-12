@@ -10,6 +10,11 @@
 #endif
 
 /* Enum definitions */
+typedef enum _aethermesh_RangeTestControl_Op {
+    aethermesh_RangeTestControl_Op_START = 0,
+    aethermesh_RangeTestControl_Op_STOP = 1
+} aethermesh_RangeTestControl_Op;
+
 typedef enum _aethermesh_OtaControl_Op {
     aethermesh_OtaControl_Op_BEGIN = 0,
     aethermesh_OtaControl_Op_END = 1,
@@ -75,7 +80,19 @@ typedef struct _aethermesh_MeshDiagnostics {
     uint32_t airtime_ms;
     uint32_t uptime_seconds;
     uint32_t protocol_version;
+    /* Range-test session counters (reset on RangeTestControl START). */
+    uint32_t range_pings_rx;
+    uint32_t range_pongs_queued;
+    uint32_t range_pongs_sent;
+    uint32_t range_pong_tx_failures;
+    bool quiet_mode;
 } aethermesh_MeshDiagnostics;
+
+/* BLE-only: phone signals the connected node to quiet mesh traffic during a
+ direct range test (pause store-forward retries + LoRa telemetry broadcasts). */
+typedef struct _aethermesh_RangeTestControl {
+    aethermesh_RangeTestControl_Op op;
+} aethermesh_RangeTestControl;
 
 typedef struct _aethermesh_OtaControl {
     aethermesh_OtaControl_Op op;
@@ -232,6 +249,7 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_OtaStatus ota_status;
         aethermesh_TraceRoute trace_route;
         aethermesh_MeshDiagnostics diagnostics;
+        aethermesh_RangeTestControl range_test_control;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
@@ -249,6 +267,10 @@ extern "C" {
 #endif
 
 /* Helper constants for enums */
+#define _aethermesh_RangeTestControl_Op_MIN aethermesh_RangeTestControl_Op_START
+#define _aethermesh_RangeTestControl_Op_MAX aethermesh_RangeTestControl_Op_STOP
+#define _aethermesh_RangeTestControl_Op_ARRAYSIZE ((aethermesh_RangeTestControl_Op)(aethermesh_RangeTestControl_Op_STOP+1))
+
 #define _aethermesh_OtaControl_Op_MIN aethermesh_OtaControl_Op_BEGIN
 #define _aethermesh_OtaControl_Op_MAX aethermesh_OtaControl_Op_ENTER_DFU
 #define _aethermesh_OtaControl_Op_ARRAYSIZE ((aethermesh_OtaControl_Op)(aethermesh_OtaControl_Op_ENTER_DFU+1))
@@ -275,6 +297,8 @@ extern "C" {
 
 
 
+#define aethermesh_RangeTestControl_op_ENUMTYPE aethermesh_RangeTestControl_Op
+
 #define aethermesh_OtaControl_op_ENUMTYPE aethermesh_OtaControl_Op
 
 
@@ -296,7 +320,8 @@ extern "C" {
 
 /* Initializer values for message structs */
 #define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
-#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_RangeTestControl_init_default {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
@@ -310,7 +335,8 @@ extern "C" {
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
-#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_RangeTestControl_init_zero    {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
@@ -342,6 +368,12 @@ extern "C" {
 #define aethermesh_MeshDiagnostics_airtime_ms_tag 15
 #define aethermesh_MeshDiagnostics_uptime_seconds_tag 16
 #define aethermesh_MeshDiagnostics_protocol_version_tag 17
+#define aethermesh_MeshDiagnostics_range_pings_rx_tag 18
+#define aethermesh_MeshDiagnostics_range_pongs_queued_tag 19
+#define aethermesh_MeshDiagnostics_range_pongs_sent_tag 20
+#define aethermesh_MeshDiagnostics_range_pong_tx_failures_tag 21
+#define aethermesh_MeshDiagnostics_quiet_mode_tag 22
+#define aethermesh_RangeTestControl_op_tag       1
 #define aethermesh_OtaControl_op_tag             1
 #define aethermesh_OtaControl_total_size_tag     2
 #define aethermesh_OtaControl_md5_tag            3
@@ -429,6 +461,7 @@ extern "C" {
 #define aethermesh_MeshPacket_ota_status_tag     20
 #define aethermesh_MeshPacket_trace_route_tag    21
 #define aethermesh_MeshPacket_diagnostics_tag    22
+#define aethermesh_MeshPacket_range_test_control_tag 27
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
@@ -465,7 +498,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,diagnostics,payload.diagnostics),  2
 X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  23) \
 X(a, STATIC,   SINGULAR, UINT64,   session_id,       24) \
 X(a, STATIC,   SINGULAR, UINT32,   auth_counter,     25) \
-X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26)
+X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_test_control),  27)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -481,6 +515,7 @@ X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26)
 #define aethermesh_MeshPacket_payload_ota_status_MSGTYPE aethermesh_OtaStatus
 #define aethermesh_MeshPacket_payload_trace_route_MSGTYPE aethermesh_TraceRoute
 #define aethermesh_MeshPacket_payload_diagnostics_MSGTYPE aethermesh_MeshDiagnostics
+#define aethermesh_MeshPacket_payload_range_test_control_MSGTYPE aethermesh_RangeTestControl
 
 #define aethermesh_MeshDiagnostics_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   tx_packets,        1) \
@@ -499,9 +534,19 @@ X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_queue_depth,  13) \
 X(a, STATIC,   SINGULAR, UINT32,   pending_ack_depth,  14) \
 X(a, STATIC,   SINGULAR, UINT32,   airtime_ms,       15) \
 X(a, STATIC,   SINGULAR, UINT32,   uptime_seconds,   16) \
-X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  17)
+X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  17) \
+X(a, STATIC,   SINGULAR, UINT32,   range_pings_rx,   18) \
+X(a, STATIC,   SINGULAR, UINT32,   range_pongs_queued,  19) \
+X(a, STATIC,   SINGULAR, UINT32,   range_pongs_sent,  20) \
+X(a, STATIC,   SINGULAR, UINT32,   range_pong_tx_failures,  21) \
+X(a, STATIC,   SINGULAR, BOOL,     quiet_mode,       22)
 #define aethermesh_MeshDiagnostics_CALLBACK NULL
 #define aethermesh_MeshDiagnostics_DEFAULT NULL
+
+#define aethermesh_RangeTestControl_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    op,                1)
+#define aethermesh_RangeTestControl_CALLBACK NULL
+#define aethermesh_RangeTestControl_DEFAULT NULL
 
 #define aethermesh_OtaControl_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
@@ -622,6 +667,7 @@ X(a, STATIC,   SINGULAR, BOOL,     password_not_set,   3)
 
 extern const pb_msgdesc_t aethermesh_MeshPacket_msg;
 extern const pb_msgdesc_t aethermesh_MeshDiagnostics_msg;
+extern const pb_msgdesc_t aethermesh_RangeTestControl_msg;
 extern const pb_msgdesc_t aethermesh_OtaControl_msg;
 extern const pb_msgdesc_t aethermesh_OtaData_msg;
 extern const pb_msgdesc_t aethermesh_OtaStatus_msg;
@@ -638,6 +684,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define aethermesh_MeshPacket_fields &aethermesh_MeshPacket_msg
 #define aethermesh_MeshDiagnostics_fields &aethermesh_MeshDiagnostics_msg
+#define aethermesh_RangeTestControl_fields &aethermesh_RangeTestControl_msg
 #define aethermesh_OtaControl_fields &aethermesh_OtaControl_msg
 #define aethermesh_OtaData_fields &aethermesh_OtaData_msg
 #define aethermesh_OtaStatus_fields &aethermesh_OtaStatus_msg
@@ -657,12 +704,13 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_DeliveryStatus_size           22
-#define aethermesh_MeshDiagnostics_size          104
+#define aethermesh_MeshDiagnostics_size          135
 #define aethermesh_MeshPacket_size               411
 #define aethermesh_NodeConfig_size               139
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
+#define aethermesh_RangeTestControl_size         2
 #define aethermesh_RouteDiscovery_size           14
 #define aethermesh_Telemetry_size                118
 #define aethermesh_TextMessage_size              205

@@ -3151,6 +3151,17 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             return;
         }
 
+        // BLE-only range-test quiet mode (never forwarded over LoRa).
+        if (packet.which_payload == aethermesh_MeshPacket_range_test_control_tag) {
+            if (packet.payload.range_test_control.op == aethermesh_RangeTestControl_Op_START) {
+                router.resetRangeTestCounters();
+                router.setQuietMode(true);
+            } else {
+                router.setQuietMode(false);
+            }
+            return;
+        }
+
         // Intercept NodeConfig settings ONLY when addressed to this node. A config
         // aimed at a different node (remote config) must fall through to the LoRa
         // send path below, not reconfigure/reboot the phone's own connected node.
@@ -4108,7 +4119,14 @@ void loop() {
             float txLat = lat;
             float txLon = lon;
             meshmath::blurPosition(lat, lon, positionPrecisionM, txLat, txLon);
-            router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM);
+            // Quiet mode (phone range test): keep BLE loopback so the app still
+            // sees local GPS, but skip LoRa telemetry broadcasts that contend
+            // with direct PING/PONG airtime.
+            if (!router.isQuietMode()) {
+                router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM);
+            } else {
+                Serial.println("Quiet mode: skipping LoRa telemetry broadcast.");
+            }
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
             if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {

@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -3161,57 +3162,58 @@ fun AetherBottomNav(
     appLanguage: String,
     onTabSelected: (TabItem) -> Unit
 ) {
-    val itemColors = NavigationBarItemDefaults.colors(
-        selectedIconColor = AccentCyan,
-        selectedTextColor = AccentCyan,
-        unselectedIconColor = TextMuted,
-        unselectedTextColor = TextMuted,
-        indicatorColor = AccentCyanDim
+    data class NavTab(
+        val tab: TabItem,
+        val icon: ImageVector,
+        val labelKey: String,
+        val color: Color
     )
-    NavigationBar(
-        containerColor = SurfaceRaised,
-        tonalElevation = 0.dp
+    val tabs = listOf(
+        NavTab(TabItem.CHATS, Icons.AutoMirrored.Filled.Chat, "Chats", AccentCyan),
+        NavTab(TabItem.NODES, Icons.Default.Hub, "Nodes", AccentMint),
+        NavTab(TabItem.MAP, Icons.Default.Map, "Map", AccentSteel),
+        NavTab(TabItem.SETTINGS, Icons.Default.Settings, "Settings", AccentAmber),
+        NavTab(TabItem.CONNECTION, Icons.Default.SettingsInputAntenna, "Connection", AccentOrange)
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(SurfaceRaised)
     ) {
-        NavigationBarItem(
-            selected = selectedTab == TabItem.CHATS,
-            onClick = { onTabSelected(TabItem.CHATS) },
-            icon = {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Chat,
-                    contentDescription = t("Chats", appLanguage)
-                )
-            },
-            label = { Text(t("Chats", appLanguage)) },
-            colors = itemColors
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(BorderDark.copy(alpha = 0.7f))
         )
-        NavigationBarItem(
-            selected = selectedTab == TabItem.NODES,
-            onClick = { onTabSelected(TabItem.NODES) },
-            icon = { Icon(imageVector = Icons.Default.People, contentDescription = t("Nodes", appLanguage)) },
-            label = { Text(t("Nodes", appLanguage)) },
-            colors = itemColors
-        )
-        NavigationBarItem(
-            selected = selectedTab == TabItem.MAP,
-            onClick = { onTabSelected(TabItem.MAP) },
-            icon = { Icon(imageVector = Icons.Default.Map, contentDescription = t("Map", appLanguage)) },
-            label = { Text(t("Map", appLanguage)) },
-            colors = itemColors
-        )
-        NavigationBarItem(
-            selected = selectedTab == TabItem.SETTINGS,
-            onClick = { onTabSelected(TabItem.SETTINGS) },
-            icon = { Icon(imageVector = Icons.Default.Settings, contentDescription = t("Settings", appLanguage)) },
-            label = { Text(t("Settings", appLanguage)) },
-            colors = itemColors
-        )
-        NavigationBarItem(
-            selected = selectedTab == TabItem.CONNECTION,
-            onClick = { onTabSelected(TabItem.CONNECTION) },
-            icon = { Icon(imageVector = Icons.Default.Bluetooth, contentDescription = t("Connection", appLanguage)) },
-            label = { Text(t("Connection", appLanguage)) },
-            colors = itemColors
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEach { item ->
+                val selected = selectedTab == item.tab
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (selected) item.color.copy(alpha = 0.18f) else Color.Transparent)
+                        .clickable { onTabSelected(item.tab) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = t(item.labelKey, appLanguage),
+                        tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -6463,6 +6465,18 @@ fun ConnectionView(
                             color = TextMuted,
                             fontSize = 11.sp
                         )
+                        if (diagnostics.rangePingsRx > 0L || diagnostics.rangePongsSent > 0L || diagnostics.quietMode) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                buildString {
+                                    if (diagnostics.quietMode) append("Quiet ON  ·  ")
+                                    append("Range ping RX ${diagnostics.rangePingsRx}")
+                                    append("  ·  PONG q/s/fail ${diagnostics.rangePongsQueued}/${diagnostics.rangePongsSent}/${diagnostics.rangePongTxFailures}")
+                                },
+                                color = if (diagnostics.quietMode) AccentMint else TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
                         TextButton(
                             onClick = { exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory()) },
                             contentPadding = PaddingValues(0.dp)
@@ -6662,6 +6676,8 @@ fun ConnectionView(
                         val totalPings = rangeTestLogs.size
                         val successfulPings = rangeTestLogs.count { it.success }
                         val successRate = if (totalPings > 0) (successfulPings * 100 / totalPings) else 0
+                        val timeoutFails = rangeTestLogs.count { !it.success && (it.failureReason == null || it.failureReason == "timeout") }
+                        val otherFails = rangeTestLogs.count { !it.success && it.failureReason != null && it.failureReason != "timeout" }
                         
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -6679,6 +6695,17 @@ fun ConnectionView(
                                 Text("SUCCESS RATE", color = TextMuted, fontSize = 10.sp)
                                 Text("$successRate%", color = if (successRate > 75) AccentMint else if (successRate > 40) Color(0xFFFBBF24) else Color(0xFFF87171), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
+                        }
+                        if (timeoutFails + otherFails > 0) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                "Misses: $timeoutFails timeout" +
+                                    if (otherFails > 0) " · $otherFails other" else "",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
                         }
 
                         // Live distance to the target (phone GPS -> target's reported position),
@@ -7959,7 +7986,7 @@ fun exportRangeTestLogsToCsv(
     //   distance_m = row GPS -> target node's last reported position
     // Signal columns are blank (not placeholder values) on timeouts/unreported.
     val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,distance_m,speed_mps,gps_accuracy_m,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success\n")
+    val csv = StringBuilder("timestamp_ms,datetime,target_id,latitude,longitude,distance_m,speed_mps,gps_accuracy_m,ping_rssi_dbm,ping_snr_db,ack_rssi_dbm,ack_snr_db,success,failure_reason\n")
     logs.forEach {
         val ackRssi = if (it.success) "${it.rssi}" else ""
         val ackSnr = if (it.success) "${it.snr}" else ""
@@ -7967,13 +7994,14 @@ fun exportRangeTestLogsToCsv(
         val pingSnr = it.remoteSnr?.toString() ?: ""
         val speed = it.speedMps?.toString() ?: ""
         val accuracy = it.gpsAccuracyM?.toString() ?: ""
+        val failure = if (it.success) "" else (it.failureReason ?: "timeout")
         val targetPos = nodePositions[it.targetId]
         val distance = if (targetPos != null && hasValidPosition(it.latitude, it.longitude) &&
             targetPos.first != 0.0 && targetPos.second != 0.0
         ) {
             (calculateDistance(it.latitude, it.longitude, targetPos.first, targetPos.second) * 1000).toInt().toString()
         } else ""
-        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$distance,$speed,$accuracy,$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success}\n")
+        csv.append("${it.timestamp},${iso.format(java.util.Date(it.timestamp))},0x${it.targetId.toString(16).uppercase()},${it.latitude},${it.longitude},$distance,$speed,$accuracy,$pingRssi,$pingSnr,$ackRssi,$ackSnr,${it.success},$failure\n")
     }
 
     try {
@@ -8011,7 +8039,8 @@ fun exportMeshDiagnosticsToCsv(
     val csv = StringBuilder(
         "timestamp_ms,tx_packets,tx_failures,rx_packets,relayed,retries,acked,ack_timeouts," +
             "duplicates,cad_busy,queue_drops,route_changes,active_routes,rebroadcast_depth," +
-            "pending_ack_depth,airtime_ms,uptime_seconds,protocol_version\n"
+            "pending_ack_depth,airtime_ms,uptime_seconds,protocol_version," +
+            "range_pings_rx,range_pongs_queued,range_pongs_sent,range_pong_tx_failures,quiet_mode\n"
     )
     snapshots.sortedBy { it.timestamp }.forEach { value ->
         csv.append(
@@ -8019,7 +8048,9 @@ fun exportMeshDiagnosticsToCsv(
                 "${value.relayedPackets},${value.retries},${value.ackedPackets},${value.ackTimeouts}," +
                 "${value.duplicatePackets},${value.cadBusyEvents},${value.queueDrops},${value.routeChanges}," +
                 "${value.activeRoutes},${value.rebroadcastQueueDepth},${value.pendingAckDepth}," +
-                "${value.airtimeMs},${value.uptimeSeconds},${value.protocolVersion}\n"
+                "${value.airtimeMs},${value.uptimeSeconds},${value.protocolVersion}," +
+                "${value.rangePingsRx},${value.rangePongsQueued},${value.rangePongsSent}," +
+                "${value.rangePongTxFailures},${value.quietMode}\n"
         )
     }
     try {
