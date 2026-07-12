@@ -351,7 +351,15 @@ private fun DetailsCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .width(28.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(AccentMint)
+            )
             Spacer(modifier = Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -421,7 +429,15 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, color = AccentMint, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .width(28.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(AccentMint)
+            )
             Spacer(modifier = Modifier.height(12.dp))
             content()
         }

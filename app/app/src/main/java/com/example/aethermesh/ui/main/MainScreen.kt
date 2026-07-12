@@ -23,10 +23,18 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import com.example.aethermesh.ui.components.AetherSectionHeader
 import com.example.aethermesh.ui.components.ExpandableSectionHeader
+import com.example.aethermesh.ui.components.IconWell
 import com.example.aethermesh.ui.components.NodeBadge
+import com.example.aethermesh.ui.components.PulseDot
 import com.example.aethermesh.ui.components.SecureChip
 import com.example.aethermesh.ui.components.aetherFilledFieldColors
 import com.example.aethermesh.ui.components.aetherTextFieldColors
+import com.example.aethermesh.theme.appBackgroundBrush
+import com.example.aethermesh.theme.headerBarBrush
+import com.example.aethermesh.theme.AccentCyanDim
+import com.example.aethermesh.theme.AccentSteel
+import com.example.aethermesh.theme.AccentSteelDim
+import com.example.aethermesh.theme.SurfaceRaised as ThemeSurfaceRaised
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -100,6 +108,8 @@ val AccentMint = com.example.aethermesh.theme.AccentMint
 val AccentRed = com.example.aethermesh.theme.AccentRed
 val AccentAmber = com.example.aethermesh.theme.AccentAmber
 val AccentOrange = com.example.aethermesh.theme.AccentOrange
+val AccentSteel = com.example.aethermesh.theme.AccentSteel
+val SurfaceRaised: Color get() = com.example.aethermesh.theme.SurfaceRaised
 
 fun batteryLevelColor(level: Int): Color = com.example.aethermesh.theme.batteryLevelColor(level)
 
@@ -435,7 +445,7 @@ fun MainScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(appBackgroundBrush())
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Header Bar
@@ -658,49 +668,66 @@ fun HeaderBar(
     isConnected: Boolean,
     connectedNodeName: String?
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(SurfaceDark)
-            .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+            .background(headerBarBrush())
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = title.uppercase(),
-                color = AccentCyan,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.2.sp
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(if (isConnected) AccentMint else AccentRed)
-            )
-        }
-
-        if (isConnected && !connectedNodeName.isNullOrBlank()) {
-            val shortName = getShortName(connectedNodeName, 0L)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(AccentOrange)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = shortName,
-                    color = Color.Black,
+                    text = title.uppercase(),
+                    color = AccentCyan,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
+                    letterSpacing = 1.4.sp
                 )
+                Spacer(modifier = Modifier.width(10.dp))
+                PulseDot(active = isConnected)
+            }
+
+            if (isConnected && !connectedNodeName.isNullOrBlank()) {
+                val shortName = getShortName(connectedNodeName, 0L)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            Brush.horizontalGradient(listOf(AccentOrange, AccentCyan))
+                        )
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = shortName,
+                        color = Color(0xFF1A1008),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            AccentCyan.copy(alpha = 0.7f),
+                            AccentMint.copy(alpha = 0.5f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
     }
 }
 
@@ -779,8 +806,8 @@ fun ChatView(
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(AccentCyan.copy(alpha = 0.15f)),
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(AccentCyanDim),
                             contentAlignment = Alignment.Center
                         ) {
                             Text("#", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -1379,13 +1406,14 @@ fun NodesView(
         if (displayNodes.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
-                    Icon(
-                        imageVector = Icons.Default.People,
-                        contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(40.dp)
+                    IconWell(
+                        icon = Icons.Default.People,
+                        tint = AccentSteel,
+                        well = AccentSteelDim,
+                        size = 56.dp,
+                        iconSize = 28.dp
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     Text(
                         t("No nodes discovered yet. Waiting for telemetry...", appLanguage),
                         color = TextMuted,
@@ -1909,7 +1937,7 @@ fun MapViewCompose(
                 if (route.targetId == viewModel.connectedNodeId) return@forEach
                 mapView.overlays.add(Polyline(mapView).apply {
                     outlinePaint.apply {
-                        color = AccentCyan.copy(alpha = 0.6f).toArgb()
+                        color = AccentSteel.copy(alpha = 0.7f).toArgb()
                         strokeWidth = 6f
                         strokeCap = Paint.Cap.ROUND
                         pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f)
@@ -2420,7 +2448,7 @@ fun MapViewCompose(
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentCyan.copy(alpha = 0.5f)))
+                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentSteel))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("1-hop", color = TextMuted, fontSize = 10.sp)
                         }
@@ -3126,10 +3154,10 @@ fun AetherBottomNav(
         selectedTextColor = AccentCyan,
         unselectedIconColor = TextMuted,
         unselectedTextColor = TextMuted,
-        indicatorColor = BorderDark.copy(alpha = 0.85f)
+        indicatorColor = AccentCyanDim
     )
     NavigationBar(
-        containerColor = SurfaceDark,
+        containerColor = SurfaceRaised,
         tonalElevation = 0.dp
     ) {
         NavigationBarItem(
@@ -6917,14 +6945,15 @@ fun ConnectionView(
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.BluetoothSearching,
-                        contentDescription = null,
+                    IconWell(
+                        icon = Icons.Default.BluetoothSearching,
                         tint = AccentCyan,
-                        modifier = Modifier.size(36.dp)
+                        well = AccentCyanDim,
+                        size = 56.dp,
+                        iconSize = 28.dp
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("No Node Connected", color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("No Node Connected", color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     Text(
                         "Scan for a WisBlock or Heltec node, then tap it to pair.",
                         color = TextMuted,
@@ -6937,22 +6966,25 @@ fun ConnectionView(
                             if (!isScanning) viewModel.startScanning()
                         },
                         enabled = !isScanning,
-                        modifier = Modifier.fillMaxWidth().height(44.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
-                        shape = RoundedCornerShape(10.dp)
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AccentCyan,
+                            contentColor = Color(0xFF1A1008)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isScanning) {
                             CircularProgressIndicator(
-                                color = DarkBackground,
+                                color = Color(0xFF1A1008),
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scanning…", color = DarkBackground, fontWeight = FontWeight.Bold)
+                            Text("Scanning…", color = Color(0xFF1A1008), fontWeight = FontWeight.Bold)
                         } else {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = DarkBackground)
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF1A1008))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scan for devices", color = DarkBackground, fontWeight = FontWeight.Bold)
+                            Text("Scan for devices", color = Color(0xFF1A1008), fontWeight = FontWeight.Bold)
                         }
                     }
                 }

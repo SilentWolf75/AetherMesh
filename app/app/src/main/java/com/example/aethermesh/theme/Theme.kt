@@ -6,19 +6,23 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Color
+
+/** Dark text on ember buttons for contrast. */
+private val ColorOnEmber = Color(0xFF1A1008)
 
 private val DarkColorScheme = darkColorScheme(
     primary = AccentCyan,
-    onPrimary = DarkPalette.background,
+    onPrimary = ColorOnEmber,
     secondary = AccentMint,
     onSecondary = DarkPalette.background,
-    tertiary = AccentAmber,
+    tertiary = AccentSteel,
     onTertiary = DarkPalette.background,
     background = DarkPalette.background,
     onBackground = DarkPalette.textPrimary,
     surface = DarkPalette.surface,
     onSurface = DarkPalette.textPrimary,
-    surfaceVariant = DarkPalette.border,
+    surfaceVariant = DarkPalette.surfaceRaised,
     onSurfaceVariant = DarkPalette.textMuted,
     outline = DarkPalette.border,
     error = AccentRed,
@@ -27,16 +31,16 @@ private val DarkColorScheme = darkColorScheme(
 
 private val LightColorScheme = lightColorScheme(
     primary = AccentCyan,
-    onPrimary = LightPalette.background,
+    onPrimary = ColorOnEmber,
     secondary = AccentMint,
     onSecondary = LightPalette.background,
-    tertiary = AccentOrange,
+    tertiary = AccentSteel,
     onTertiary = LightPalette.background,
     background = LightPalette.background,
     onBackground = LightPalette.textPrimary,
     surface = LightPalette.surface,
     onSurface = LightPalette.textPrimary,
-    surfaceVariant = LightPalette.border,
+    surfaceVariant = LightPalette.surfaceRaised,
     onSurfaceVariant = LightPalette.textMuted,
     outline = LightPalette.border,
     error = AccentRed,

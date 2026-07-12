@@ -15,26 +15,36 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.aethermesh.theme.AccentCyan
+import com.example.aethermesh.theme.AccentCyanDim
 import com.example.aethermesh.theme.AccentMint
+import com.example.aethermesh.theme.AccentMintDim
+import com.example.aethermesh.theme.AccentOrange
+import com.example.aethermesh.theme.AccentRed
+import com.example.aethermesh.theme.AccentSteel
 import com.example.aethermesh.theme.BorderDark
 import com.example.aethermesh.theme.DarkBackground
 import com.example.aethermesh.theme.SectionHeaderStyle
 import com.example.aethermesh.theme.SurfaceDark
+import com.example.aethermesh.theme.SurfaceRaised
 import com.example.aethermesh.theme.TextLight
 import com.example.aethermesh.theme.TextMuted
 
@@ -49,14 +59,33 @@ fun AetherSectionHeader(
         horizontalArrangement = if (trailing != null) Arrangement.SpaceBetween else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title.uppercase(),
-            style = SectionHeaderStyle,
-            color = AccentCyan
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(
+                        Brush.verticalGradient(listOf(AccentCyan, AccentMint))
+                    )
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = title.uppercase(),
+                style = SectionHeaderStyle,
+                color = AccentCyan
+            )
+        }
         if (trailing != null) {
             Spacer(modifier = Modifier.width(8.dp))
-            Text(trailing, color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(AccentCyanDim)
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(trailing, color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
@@ -66,9 +95,10 @@ fun AetherCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     contentPadding: Dp = 16.dp,
+    accentStripe: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(14.dp)
     Card(
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
         shape = shape,
@@ -79,7 +109,19 @@ fun AetherCard(
             modifier.fillMaxWidth()
         }
     ) {
-        Column(modifier = Modifier.padding(contentPadding), content = content)
+        Column {
+            if (accentStripe) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(
+                            Brush.horizontalGradient(listOf(AccentCyan, AccentMint, AccentSteel))
+                        )
+                )
+            }
+            Column(modifier = Modifier.padding(contentPadding), content = content)
+        }
     }
 }
 
@@ -94,7 +136,7 @@ fun AetherListRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(SurfaceDark)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -122,7 +164,7 @@ fun NodeBadge(
     Box(
         modifier = modifier
             .size(width = 48.dp, height = 34.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(if (muted) color.copy(alpha = 0.45f) else color),
         contentAlignment = Alignment.Center
     ) {
@@ -136,9 +178,29 @@ fun NodeBadge(
 }
 
 @Composable
+fun IconWell(
+    icon: ImageVector,
+    tint: Color = AccentCyan,
+    well: Color = AccentCyanDim,
+    size: Dp = 44.dp,
+    iconSize: Dp = 22.dp,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(12.dp))
+            .background(well),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(iconSize))
+    }
+}
+
+@Composable
 fun StatusChip(
     text: String,
-    background: Color = AccentOrangeChipBg,
+    background: Color = AccentOrange,
     contentColor: Color = Color.Black,
     modifier: Modifier = Modifier
 ) {
@@ -152,8 +214,6 @@ fun StatusChip(
         Text(text = text, color = contentColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
-
-private val AccentOrangeChipBg = Color(0xFFF59E0B)
 
 @Composable
 fun aetherTextFieldColors() = TextFieldDefaults.colors(
@@ -173,7 +233,7 @@ fun aetherTextFieldColors() = TextFieldDefaults.colors(
 
 @Composable
 fun aetherFilledFieldColors() = TextFieldDefaults.colors(
-    focusedContainerColor = SurfaceDark,
+    focusedContainerColor = SurfaceRaised,
     unfocusedContainerColor = SurfaceDark,
     focusedTextColor = TextLight,
     unfocusedTextColor = TextLight,
@@ -189,7 +249,7 @@ fun SecureChip(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(AccentMint.copy(alpha = 0.2f))
+            .background(AccentMintDim)
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
         Text("SECURE", color = AccentMint, fontSize = 9.sp, fontWeight = FontWeight.Bold)
@@ -207,17 +267,33 @@ fun ExpandableSectionHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceRaised)
             .clickable(onClick = onToggle)
-            .padding(vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Brush.verticalGradient(listOf(AccentCyan, AccentSteel)))
+            )
+            Spacer(modifier = Modifier.width(8.dp))
             Text(title.uppercase(), style = SectionHeaderStyle, color = AccentCyan)
             if (badge != null) {
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(badge, color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(AccentMintDim)
+                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                ) {
+                    Text(badge, color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
         Text(
@@ -226,5 +302,33 @@ fun ExpandableSectionHeader(
             fontSize = 12.sp
         )
     }
-    Spacer(modifier = Modifier.height(4.dp))
+    Spacer(modifier = Modifier.height(8.dp))
+}
+
+@Composable
+fun PulseDot(
+    active: Boolean,
+    activeColor: Color = AccentMint,
+    inactiveColor: Color = AccentRed,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier.size(14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (active) {
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(activeColor.copy(alpha = 0.25f))
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(if (active) activeColor else inactiveColor)
+        )
+    }
 }
