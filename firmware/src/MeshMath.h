@@ -64,6 +64,12 @@ inline uint32_t ackRetryDelayMs(uint32_t retryCount, uint8_t routeMetric,
     return 3000u * multiplier + routePenalty + jitterMs;
 }
 
+// A failed send usually means another asynchronous LoRa transmission is still
+// in flight. Delay the queue item instead of retrying on every main-loop pass.
+inline uint32_t radioBusyRetryDelayMs(uint32_t jitterMs) {
+    return 120u + (jitterMs > 180u ? 180u : jitterMs);
+}
+
 inline bool deadlineBefore(uint32_t left, uint32_t right, uint32_t now) {
     return (int32_t)(left - now) < (int32_t)(right - now);
 }

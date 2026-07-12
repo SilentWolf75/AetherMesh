@@ -86,6 +86,13 @@ void test_ack_retry_delay_backs_off_and_caps_route_penalty() {
     TEST_ASSERT_EQUAL_UINT32(15000, ackRetryDelayMs(9, 30, 0));
 }
 
+void test_radio_busy_retry_delay_is_bounded() {
+    TEST_ASSERT_EQUAL_UINT32(120, radioBusyRetryDelayMs(0));
+    TEST_ASSERT_EQUAL_UINT32(200, radioBusyRetryDelayMs(80));
+    TEST_ASSERT_EQUAL_UINT32(300, radioBusyRetryDelayMs(180));
+    TEST_ASSERT_EQUAL_UINT32(300, radioBusyRetryDelayMs(999));
+}
+
 void test_deadline_order_handles_millis_wrap() {
     TEST_ASSERT_TRUE(deadlineBefore(1100, 1200, 1000));
     TEST_ASSERT_FALSE(deadlineBefore(1200, 1100, 1000));
@@ -171,6 +178,7 @@ int main(int, char**) {
     RUN_TEST(test_seen_entry_expires_and_handles_millis_wrap);
     RUN_TEST(test_packet_sequence_seed_is_deterministic_nonzero_and_well_mixed);
     RUN_TEST(test_ack_retry_delay_backs_off_and_caps_route_penalty);
+    RUN_TEST(test_radio_busy_retry_delay_is_bounded);
     RUN_TEST(test_deadline_order_handles_millis_wrap);
     RUN_TEST(test_route_metric_smoothing_and_backup_freshness);
     RUN_TEST(test_blur_zero_radius_passthrough);

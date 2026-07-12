@@ -89,14 +89,16 @@ void MeshRouter::loop() {
                 pendingRebroadcasts[i].active = false;
                 Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
                               pendingRebroadcasts[i].packet.packet_id, pendingRebroadcasts[i].packet.sender_id);
-            } else if (now - pendingRebroadcasts[i].transmitTime > 5000) {
-                // Radio stayed busy for 5s past the scheduled time; give up.
+            } else if (now - pendingRebroadcasts[i].queuedAtTime > 5000) {
+                // Radio stayed busy for 5s after queueing; give up.
                 pendingRebroadcasts[i].active = false;
                 queueDrops++;
                 Serial.printf("Dropping queued rebroadcast for packet %u (radio busy too long)\n",
                               pendingRebroadcasts[i].packet.packet_id);
+            } else {
+                pendingRebroadcasts[i].transmitTime = now +
+                    meshmath::radioBusyRetryDelayMs(random(0, 181));
             }
-            // else: radio busy (e.g. mid-transmit) — slot stays active, retry next loop
         }
     }
 
@@ -137,8 +139,11 @@ void MeshRouter::loop() {
             }
             // If we still have no route, ask again while retrying (the direct
             // transmission below may still reach a 1-hop recipient).
-            if (getRoute(pendingAcks[i].packet.recipient_id) == nullptr) {
-                sendRouteRequest(pendingAcks[i].packet.recipient_id);
+            if (getRoute(pendingAcks[i].packet.recipient_id) == nullptr &&
+                sendRouteRequest(pendingAcks[i].packet.recipient_id)) {
+                pendingAcks[i].nextRetryTime = now +
+                    meshmath::radioBusyRetryDelayMs(random(0, 181));
+                continue;
             }
             pendingAcks[i].packet.retry_count++;
             if (serializeAndSend(&pendingAcks[i].packet)) {
@@ -163,8 +168,9 @@ void MeshRouter::loop() {
                 );
             } else {
                 pendingAcks[i].packet.retry_count--;
+                pendingAcks[i].nextRetryTime = now +
+                    meshmath::radioBusyRetryDelayMs(random(0, 181));
             }
-            // Radio busy: leave the slot as-is and try again next loop pass
         }
     }
 }
@@ -602,13 +608,12 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     strncpy(packet.payload.text.channel, "General", sizeof(packet.payload.text.channel) - 1);
     terminateTextFields(packet.payload.text);
     
-    // If unicast with no route, kick off discovery but still transmit — a 1-hop
-    // recipient hears us regardless, and the retransmit queue covers the rest.
+    // Send the payload first. Starting route discovery here would occupy the
+    // asynchronous radio and make this payload attempt fail.
     if (recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
         Serial.print("No route to recipient 0x");
         Serial.print(recipientId, HEX);
-        Serial.println(". Sending anyway + requesting route discovery...");
-        sendRouteRequest(recipientId);
+        Serial.println(". Sending direct; retry path will discover a route if needed...");
     }
 
     trackForAck(packet);
@@ -629,10 +634,6 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     packet.payload.text.content[sizeof(packet.payload.text.content) - 1] = '\0';
     packet.payload.text.channel[0] = '\0';
     packet.payload.text.is_encrypted = false;
-
-    if (hopLimit > 1 && recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
-        sendRouteRequest(recipientId);
-    }
 
     return serializeAndSend(&packet, urgent);
 }
@@ -708,14 +709,14 @@ void MeshRouter::handleRouteReply(uint32_t senderId, uint32_t prevHopId, const a
     Serial.println(rrep.target_id, HEX);
 }
 
-void MeshRouter::sendRouteRequest(uint32_t targetId) {
+bool MeshRouter::sendRouteRequest(uint32_t targetId) {
     uint32_t now = millis();
     int slot = -1;
     int oldest = 0;
     for (int i = 0; i < 6; i++) {
         if (routeDiscoveries[i].targetId == targetId) {
             if (now - routeDiscoveries[i].lastRequestMs < ROUTE_DISCOVERY_COOLDOWN_MS) {
-                return;
+                return false;
             }
             slot = i;
             break;
@@ -724,8 +725,6 @@ void MeshRouter::sendRouteRequest(uint32_t targetId) {
         if (routeDiscoveries[i].lastRequestMs < routeDiscoveries[oldest].lastRequestMs) oldest = i;
     }
     if (slot < 0) slot = oldest;
-    routeDiscoveries[slot].targetId = targetId;
-    routeDiscoveries[slot].lastRequestMs = now;
 
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
@@ -740,7 +739,12 @@ void MeshRouter::sendRouteRequest(uint32_t targetId) {
     packet.payload.route_discovery.target_id = targetId;
     packet.payload.route_discovery.metric = 0;
     
-    serializeAndSend(&packet);
+    bool sent = serializeAndSend(&packet);
+    if (sent) {
+        routeDiscoveries[slot].targetId = targetId;
+        routeDiscoveries[slot].lastRequestMs = now;
+    }
+    return sent;
 }
 
 void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t metric) {
@@ -867,9 +871,6 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
     // Range-test PINGs set want_ack=false and are scored via PONG replies.
     if (packet->want_ack) {
         trackForAck(*packet);
-        if (getRoute(packet->recipient_id) == nullptr) {
-            sendRouteRequest(packet->recipient_id);
-        }
     }
     bool sent = serializeAndSend(packet, urgent);
 
@@ -1007,8 +1008,10 @@ void MeshRouter::drainPendingPongReplies() {
                           pendingPongs[i].content, pendingPongs[i].sendCount);
             pendingPongs[i].sendAtMs = now +
                 PONG_RESEND_INTERVAL_MS * pendingPongs[i].sendCount + random(0, 400);
+        } else {
+            pendingPongs[i].sendAtMs = now +
+                meshmath::radioBusyRetryDelayMs(random(0, 181));
         }
-        // Radio busy: leave slot active and retry next loop pass until window expires.
     }
 }
 
@@ -1053,6 +1056,7 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
     
     pendingRebroadcasts[emptySlot].packet = packet;
     pendingRebroadcasts[emptySlot].transmitTime = transmitTime;
+    pendingRebroadcasts[emptySlot].queuedAtTime = millis();
     pendingRebroadcasts[emptySlot].priority = priority;
     pendingRebroadcasts[emptySlot].active = true;
     

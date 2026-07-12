@@ -48,6 +48,7 @@ struct SeenPacket {
 struct PendingRebroadcast {
     aethermesh_MeshPacket packet;
     uint32_t transmitTime;
+    uint32_t queuedAtTime;
     uint8_t priority;
     bool active;
 };
@@ -152,7 +153,7 @@ private:
     bool handleRouteRequest(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rreq);
     void handleRouteReply(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rrep);
     
-    void sendRouteRequest(uint32_t targetId);
+    bool sendRouteRequest(uint32_t targetId);
     void sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t metric);
 
     void appendTraceHop(aethermesh_TraceRoute& trace, bool returning, float rssi, float snr);
