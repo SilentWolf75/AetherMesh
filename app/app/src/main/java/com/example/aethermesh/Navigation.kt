@@ -223,6 +223,16 @@ private fun NodeDetailsRoute(
                 viewModel.requestRemoteConfig(node.nodeId)
                 onBack()
             }
+        } else null,
+        onViewOnMap = {
+            viewModel.requestOpenMapTab()
+            onBack()
+        },
+        onStartRangeTest = if (node.nodeId != viewModel.connectedNodeId) {
+            {
+                viewModel.requestOpenConnectionForRangeTest(node.nodeId)
+                onBack()
+            }
         } else null
     )
 }

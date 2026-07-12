@@ -27,11 +27,13 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
@@ -75,7 +77,9 @@ fun NodeDetailsScreen(
     onMessage: () -> Unit,
     onRename: () -> Unit,
     onTraceRoute: () -> Unit,
-    onRemoteConfig: (() -> Unit)? = null
+    onRemoteConfig: (() -> Unit)? = null,
+    onViewOnMap: (() -> Unit)? = null,
+    onStartRangeTest: (() -> Unit)? = null
 ) {
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
     val route = observedRoutes[node.nodeId]
@@ -196,6 +200,27 @@ fun NodeDetailsScreen(
                             subtitle = if (appLanguage == "Spanish") "Ruta en vivo hacia este nodo" else "Live forward and return path",
                             onClick = onTraceRoute,
                             trailingRefresh = true
+                        )
+                        HorizontalDivider(color = BorderDark)
+                        if (onStartRangeTest != null) {
+                            ToolRow(
+                                icon = Icons.Default.Speed,
+                                label = if (appLanguage == "Spanish") "Prueba de rango" else "Range test",
+                                subtitle = if (appLanguage == "Spanish")
+                                    "Abrir Conexión con este nodo como objetivo"
+                                else
+                                    "Open Connection with this node as the target",
+                                onClick = onStartRangeTest
+                            )
+                            HorizontalDivider(color = BorderDark)
+                        }
+                    }
+                    if (onViewOnMap != null && hasValidPosition(node.latitude, node.longitude)) {
+                        ToolRow(
+                            icon = Icons.Default.Map,
+                            label = if (appLanguage == "Spanish") "Ver en el mapa" else "View on map",
+                            subtitle = if (appLanguage == "Spanish") "Abrir la pestaña Mapa" else "Open the Map tab",
+                            onClick = onViewOnMap
                         )
                         HorizontalDivider(color = BorderDark)
                     }

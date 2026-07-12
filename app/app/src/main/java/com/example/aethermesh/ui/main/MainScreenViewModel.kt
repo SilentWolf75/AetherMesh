@@ -78,6 +78,41 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return true
     }
 
+    private val _pendingOpenMapTab = MutableStateFlow(false)
+    val pendingOpenMapTab: StateFlow<Boolean> = _pendingOpenMapTab.asStateFlow()
+
+    fun requestOpenMapTab() {
+        _pendingOpenMapTab.value = true
+    }
+
+    fun consumeOpenMapTab(): Boolean {
+        if (!_pendingOpenMapTab.value) return false
+        _pendingOpenMapTab.value = false
+        return true
+    }
+
+    private val _pendingOpenConnectionTab = MutableStateFlow(false)
+    val pendingOpenConnectionTab: StateFlow<Boolean> = _pendingOpenConnectionTab.asStateFlow()
+
+    fun requestOpenConnectionForRangeTest(targetId: Long) {
+        _preferredRangeTestTargetId.value = targetId
+        _pendingOpenConnectionTab.value = true
+    }
+
+    private val _preferredRangeTestTargetId = MutableStateFlow<Long?>(null)
+
+    fun consumePreferredRangeTestTargetId(): Long? {
+        val id = _preferredRangeTestTargetId.value ?: return null
+        _preferredRangeTestTargetId.value = null
+        return id
+    }
+
+    fun consumeOpenConnectionTab(): Boolean {
+        if (!_pendingOpenConnectionTab.value) return false
+        _pendingOpenConnectionTab.value = false
+        return true
+    }
+
     /** After popping NodeDetails, MainScreen should open remote config for this node. */
     private val _pendingRemoteConfigNodeId = MutableStateFlow<Long?>(null)
     val pendingRemoteConfigNodeId: StateFlow<Long?> = _pendingRemoteConfigNodeId.asStateFlow()

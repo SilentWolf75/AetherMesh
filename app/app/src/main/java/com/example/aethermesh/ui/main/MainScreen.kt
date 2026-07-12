@@ -189,6 +189,9 @@ fun t(text: String, lang: String): String {
         "Map" -> "Mapa"
         "Settings" -> "Ajustes"
         "Connection" -> "Conexión"
+        "Channels" -> "Canales"
+        "Direct Messages" -> "Mensajes directos"
+        "GPS & Position Settings" -> "Ajustes GPS y Posición"
         "Clear Chat History" -> "Borrar Historial de Chat"
         "Delete all messages from database" -> "Eliminar todos los mensajes de la base de datos"
         "Reset Node Directory" -> "Reiniciar Directorio de Nodos"
@@ -210,7 +213,6 @@ fun t(text: String, lang: String): String {
         "Diagnostic Console Logs" -> "Registro de Consola de Diagnóstico"
         "View raw system messages" -> "Ver mensajes del sistema sin procesar"
         "Version" -> "Versión"
-        "Channels" -> "Canales"
         "Radio Configuration" -> "Configuración de Radio"
         "LoRa Radio Configuration" -> "Configuración de Radio LoRa"
         "Apply Settings" -> "Aplicar Ajustes"
@@ -374,6 +376,18 @@ fun MainScreen(
             activeTab = TabItem.CHATS
         }
     }
+    val pendingOpenMap by viewModel.pendingOpenMapTab.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingOpenMap) {
+        if (viewModel.consumeOpenMapTab()) {
+            activeTab = TabItem.MAP
+        }
+    }
+    val pendingOpenConnection by viewModel.pendingOpenConnectionTab.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingOpenConnection) {
+        if (viewModel.consumeOpenConnectionTab()) {
+            activeTab = TabItem.CONNECTION
+        }
+    }
     val pendingRemoteConfigId by viewModel.pendingRemoteConfigNodeId.collectAsStateWithLifecycle()
     LaunchedEffect(pendingRemoteConfigId) {
         val id = viewModel.consumeRemoteConfigNodeId() ?: return@LaunchedEffect
@@ -464,11 +478,11 @@ fun MainScreen(
     }
 
     val headerTitle = when (activeTab) {
-        TabItem.CHATS -> "Chats"
-        TabItem.NODES -> "Nodes"
-        TabItem.MAP -> "Map"
-        TabItem.SETTINGS -> "Settings"
-        TabItem.CONNECTION -> "Connection"
+        TabItem.CHATS -> t("Chats", appLanguage)
+        TabItem.NODES -> t("Nodes", appLanguage)
+        TabItem.MAP -> t("Map", appLanguage)
+        TabItem.SETTINGS -> t("Settings", appLanguage)
+        TabItem.CONNECTION -> t("Connection", appLanguage)
     }
     
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
@@ -486,7 +500,8 @@ fun MainScreen(
                 isConnected = isConnected,
                 connectionPhase = blePhase,
                 reconnectAttempt = bleReconnectAttempt,
-                connectedNodeName = connectedNodeName
+                connectedNodeName = connectedNodeName,
+                appLanguage = appLanguage
             )
 
             // Content Area based on Tab Selection
@@ -558,6 +573,9 @@ fun MainScreen(
                             localNodeId = viewModel.connectedNodeId,
                             activeChatId = activeChatId,
                             nodes = nodes,
+                            appLanguage = appLanguage,
+                            isConnected = isConnected,
+                            isAuthenticated = isDeviceAuthenticated,
                             onSelectChannel = { viewModel.selectChannel(it) },
                             onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
                             onCreateChannel = { viewModel.createChannel(it) },
@@ -566,7 +584,8 @@ fun MainScreen(
                             getChatKey = { viewModel.getChatKey(it) },
                             saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) },
                             channelPreviews = viewModel.getChannelInboxPreviews(),
-                            dmPreviews = viewModel.getDmInboxPreviews(viewModel.connectedNodeId)
+                            dmPreviews = viewModel.getDmInboxPreviews(viewModel.connectedNodeId),
+                            onGoToConnection = { activeTab = TabItem.CONNECTION }
                         )
                         TabItem.NODES -> NodesView(
                             nodes = nodes,
@@ -754,15 +773,17 @@ fun HeaderBar(
     connectionPhase: com.example.aethermesh.ble.BleConnectionPhase =
         com.example.aethermesh.ble.BleConnectionPhase.Disconnected,
     reconnectAttempt: Int = 0,
-    connectedNodeName: String?
+    connectedNodeName: String?,
+    appLanguage: String = "English"
 ) {
+    val spanish = appLanguage == "Spanish"
     val statusLabel = when {
-        isConnected -> "LINK UP"
+        isConnected -> if (spanish) "ENLACE" else "LINK UP"
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ->
-            "RECONNECT $reconnectAttempt"
+            if (spanish) "RECON $reconnectAttempt" else "RECONNECT $reconnectAttempt"
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting ->
-            "CONNECTING"
-        else -> "OFFLINE"
+            if (spanish) "CONECTANDO" else "CONNECTING"
+        else -> if (spanish) "SIN RED" else "OFFLINE"
     }
     val statusColor = when {
         isConnected -> AccentMint
@@ -855,6 +876,9 @@ fun ChatView(
     localNodeId: Long,
     activeChatId: Long?,
     nodes: List<MeshNode>,
+    appLanguage: String = "English",
+    isConnected: Boolean = true,
+    isAuthenticated: Boolean = true,
     onSelectChannel: (String) -> Unit,
     onSelectDirectMessage: (Long) -> Unit,
     onCreateChannel: (String) -> Unit,
@@ -863,13 +887,16 @@ fun ChatView(
     getChatKey: (String) -> String?,
     saveChatKey: (String, String) -> Unit,
     channelPreviews: Map<String, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
-    dmPreviews: Map<Long, com.example.aethermesh.data.ChatInboxPreview> = emptyMap()
+    dmPreviews: Map<Long, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
+    onGoToConnection: () -> Unit = {}
 ) {
     var textState by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf<String?>(null) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
     var inThread by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val canSend = isConnected && isAuthenticated
+    val spanish = appLanguage == "Spanish"
 
     fun formatInboxTime(ts: Long): String {
         if (ts <= 0L) return ""
@@ -881,13 +908,13 @@ fun ChatView(
         return if (trimmed.length <= 48) trimmed else trimmed.take(45) + "…"
     }
 
-    // Opening a DM from Nodes (or similar) should land in the thread.
     LaunchedEffect(activeChatId) {
         if (activeChatId != null && activeChatId != 0L) inThread = true
     }
 
     if (showNewChannelDialog) {
         NewChannelDialog(
+            appLanguage = appLanguage,
             onCreate = {
                 onCreateChannel(it)
                 showNewChannelDialog = false
@@ -909,12 +936,17 @@ fun ChatView(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         AetherSectionHeader(
-                            title = "Channels",
+                            title = t("Channels", appLanguage),
                             trailing = "${channels.size}",
                             modifier = Modifier.weight(1f)
                         )
                         TextButton(onClick = { showNewChannelDialog = true }) {
-                            Text("+ Channel", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(
+                                if (spanish) "+ Canal" else "+ Channel",
+                                color = AccentCyan,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.height(6.dp))
@@ -946,7 +978,8 @@ fun ChatView(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(channel, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                preview?.let { previewSnippet(it.snippet) } ?: "Channel chat",
+                                preview?.let { previewSnippet(it.snippet) }
+                                    ?: if (spanish) "Chat de canal" else "Channel chat",
                                 color = TextMuted,
                                 fontSize = 12.sp,
                                 maxLines = 1
@@ -963,7 +996,7 @@ fun ChatView(
                 item {
                     Spacer(modifier = Modifier.height(12.dp))
                     AetherSectionHeader(
-                        title = "Direct Messages",
+                        title = if (spanish) "Mensajes directos" else "Direct Messages",
                         trailing = "${dmNodes.size}",
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -973,7 +1006,10 @@ fun ChatView(
                 if (dmNodes.isEmpty()) {
                     item {
                         Text(
-                            "No nodes discovered yet. Connect a radio to see contacts.",
+                            if (spanish)
+                                "Aún no hay nodos. Conecta una radio para ver contactos."
+                            else
+                                "No nodes discovered yet. Connect a radio to see contacts.",
                             color = TextMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(vertical = 12.dp)
@@ -1003,8 +1039,11 @@ fun ChatView(
                                 Text(
                                     when {
                                         preview != null -> previewSnippet(preview.snippet)
-                                        stale -> "Last heard ${formatLastHeard(node.lastActive)}"
-                                        else -> "Direct message"
+                                        stale -> if (spanish)
+                                            "Último aviso ${formatLastHeard(node.lastActive)}"
+                                        else
+                                            "Last heard ${formatLastHeard(node.lastActive)}"
+                                        else -> if (spanish) "Mensaje directo" else "Direct message"
                                     },
                                     color = TextMuted,
                                     fontSize = 12.sp,
@@ -1032,7 +1071,6 @@ fun ChatView(
     }
     val isChannelThread = activeChatId == null
 
-    // Keep the thread pinned to the latest message on open / send.
     LaunchedEffect(activeChatId, selectedChannel, inThread) {
         if (inThread && messages.isNotEmpty()) {
             listState.scrollToItem(messages.lastIndex)
@@ -1052,7 +1090,11 @@ fun ChatView(
             Column(modifier = Modifier.weight(1f)) {
                 Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    if (isChannelThread) "Channel" else "Direct message",
+                    if (isChannelThread) {
+                        if (spanish) "Canal" else "Channel"
+                    } else {
+                        if (spanish) "Mensaje directo" else "Direct message"
+                    },
                     color = TextMuted,
                     fontSize = 12.sp
                 )
@@ -1061,6 +1103,37 @@ fun ChatView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        if (!canSend) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AccentAmber.copy(alpha = 0.15f))
+                    .clickable { onGoToConnection() }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        !isConnected -> if (spanish)
+                            "Sin conexión BLE. Toca para ir a Conexión."
+                        else
+                            "Not connected. Tap to open Connection."
+                        else -> if (spanish)
+                            "Dispositivo bloqueado. Autentica en Conexión."
+                        else
+                            "Device locked. Authenticate on Connection."
+                    },
+                    color = TextLight,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         if (activeChatId == null || activeChatId != 0L) {
             val chatIdentifier = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
             var passcode by remember(chatIdentifier) { mutableStateOf(getChatKey(chatIdentifier)) }
@@ -1068,7 +1141,14 @@ fun ChatView(
 
             if (showPasscodeDialog) {
                 PasscodeEntryDialog(
-                    title = if (activeChatId == null) "Channel Key (#$selectedChannel)" else "Direct Key (Node 0x${activeChatId.toString(16).uppercase()})",
+                    title = if (activeChatId == null) {
+                        if (spanish) "Clave del canal (#$selectedChannel)" else "Channel Key (#$selectedChannel)"
+                    } else {
+                        if (spanish)
+                            "Clave directa (Nodo 0x${activeChatId.toString(16).uppercase()})"
+                        else
+                            "Direct Key (Node 0x${activeChatId.toString(16).uppercase()})"
+                    },
                     initialPasscode = passcode ?: "",
                     onSave = { newKey ->
                         saveChatKey(chatIdentifier, newKey)
@@ -1099,7 +1179,11 @@ fun ChatView(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (!passcode.isNullOrEmpty()) "Encrypted" else "Cleartext — tap to set key",
+                        text = if (!passcode.isNullOrEmpty()) {
+                            if (spanish) "Cifrado" else "Encrypted"
+                        } else {
+                            if (spanish) "Texto claro — toca para clave" else "Cleartext — tap to set key"
+                        },
                         color = TextMuted,
                         fontSize = 12.sp
                     )
@@ -1115,7 +1199,10 @@ fun ChatView(
         if (activeChatId != null && activeChatId == 0L) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
-                    "No nodes available for private chat.\nWait for other nodes to broadcast telemetries.",
+                    if (spanish)
+                        "No hay nodos para chat privado.\nEspera a que otros nodos emitan telemetría."
+                    else
+                        "No nodes available for private chat.\nWait for other nodes to broadcast telemetries.",
                     color = TextMuted,
                     textAlign = TextAlign.Center,
                     fontSize = 14.sp
@@ -1127,6 +1214,24 @@ fun ChatView(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 reverseLayout = false
             ) {
+                if (messages.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                if (spanish) "Aún no hay mensajes. Escribe el primero."
+                                else "No messages yet. Say hello.",
+                                color = TextMuted,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
                 items(messages, key = { it.id }) { message ->
                     val senderNode = nodes.find { it.nodeId == message.senderId }
                     val senderLabel = when {
@@ -1142,7 +1247,8 @@ fun ChatView(
                         message = message,
                         localNodeId = localNodeId,
                         onRetryMessage = onRetryMessage,
-                        senderLabel = senderLabel
+                        senderLabel = senderLabel,
+                        appLanguage = appLanguage
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
@@ -1153,9 +1259,12 @@ fun ChatView(
 
         if (activeChatId == null || activeChatId != 0L) {
             val placeholderText = if (activeChatId == null) {
-                "Message #$selectedChannel..."
+                if (spanish) "Mensaje #$selectedChannel…" else "Message #$selectedChannel..."
             } else {
-                "Message ${selectedNode?.name ?: "node"}..."
+                if (spanish)
+                    "Mensaje a ${selectedNode?.name ?: "nodo"}…"
+                else
+                    "Message ${selectedNode?.name ?: "node"}..."
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1164,6 +1273,7 @@ fun ChatView(
                 TextField(
                     value = textState,
                     onValueChange = { textState = it },
+                    enabled = canSend,
                     placeholder = { Text(placeholderText, color = TextMuted) },
                     colors = aetherFilledFieldColors(),
                     shape = RoundedCornerShape(24.dp),
@@ -1172,19 +1282,33 @@ fun ChatView(
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = {
+                        if (!canSend) {
+                            sendError = if (!isConnected) {
+                                if (spanish) "Conecta y autentica el nodo primero."
+                                else "Connect and authenticate the node first."
+                            } else {
+                                if (spanish) "Autentica el dispositivo para enviar."
+                                else "Authenticate the device to send."
+                            }
+                            return@IconButton
+                        }
                         if (textState.trim().isNotEmpty()) {
                             if (onSendMessage(textState)) {
                                 textState = ""
                                 sendError = null
                             } else {
-                                sendError = "Message not sent. Check the node connection and authentication."
+                                sendError = if (spanish)
+                                    "No se envió. Revisa conexión BLE y autenticación."
+                                else
+                                    "Message not sent. Check BLE connection and authentication."
                             }
                         }
                     },
+                    enabled = canSend,
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(AccentCyan)
+                        .background(if (canSend) AccentCyan else TextMuted.copy(alpha = 0.35f))
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
@@ -1205,60 +1329,15 @@ fun ChatView(
     }
 }
 
-@Composable
-fun ChannelSelector(
-    channels: List<String>,
-    selectedChannel: String,
-    onSelectChannel: (String) -> Unit,
-    onAddChannel: () -> Unit
-) {
-    LazyRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        items(channels) { channel ->
-            val isSelected = channel == selectedChannel
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (isSelected) AccentCyan else SurfaceDark)
-                    .clickable { onSelectChannel(channel) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "# $channel",
-                    color = if (isSelected) DarkBackground else TextMuted,
-                    fontSize = 13.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                )
-            }
-        }
-        item {
-            Box(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(SurfaceDark)
-                    .clickable { onAddChannel() }
-                    .padding(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "New channel",
-                    tint = AccentMint,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
 
 @Composable
 fun NewChannelDialog(
     onCreate: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    appLanguage: String = "English"
 ) {
     var name by remember { mutableStateOf("") }
+    val spanish = appLanguage == "Spanish"
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -1266,17 +1345,31 @@ fun NewChannelDialog(
                 onClick = { if (name.trim().isNotEmpty()) onCreate(name.trim()) },
                 enabled = name.trim().isNotEmpty()
             ) {
-                Text("Create", color = if (name.trim().isNotEmpty()) AccentMint else TextMuted)
+                Text(
+                    if (spanish) "Crear" else "Create",
+                    color = if (name.trim().isNotEmpty()) AccentMint else TextMuted
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Cancelar" else "Cancel", color = TextMuted)
+            }
         },
-        title = { Text("New Channel", color = TextLight, fontWeight = FontWeight.Bold) },
+        title = {
+            Text(
+                if (spanish) "Nuevo canal" else "New Channel",
+                color = TextLight,
+                fontWeight = FontWeight.Bold
+            )
+        },
         text = {
             Column {
                 Text(
-                    "Messages you send here are broadcast on this channel name. Only nodes tuned to the same channel will display them.",
+                    if (spanish)
+                        "Los mensajes se emiten en este nombre de canal. Solo los nodos sintonizados al mismo canal los verán."
+                    else
+                        "Messages you send here are broadcast on this channel name. Only nodes tuned to the same channel will display them.",
                     color = TextMuted,
                     fontSize = 12.sp
                 )
@@ -1296,14 +1389,68 @@ fun NewChannelDialog(
 }
 
 @Composable
+fun PasscodeEntryDialog(
+    title: String,
+    initialPasscode: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var keyState by remember { mutableStateOf(initialPasscode) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(keyState.trim()) }
+            ) {
+                Text("Save", color = AccentMint)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+        },
+        title = { Text(title, color = TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        text = {
+            Column {
+                Text(
+                    "All messages in this chat will be encrypted and decrypted using AES-256 with the key below. Keep this key secret and share it off-grid with other participants.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                TextField(
+                    value = keyState,
+                    onValueChange = { keyState = it },
+                    singleLine = true,
+                    placeholder = { Text("Enter passcode (e.g. secret123)", color = TextMuted) },
+                    colors = aetherTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (keyState.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Leave blank to disable encryption and clear key.",
+                        color = Color(0xFFFCA5A5),
+                        fontSize = 10.sp
+                    )
+                }
+            }
+        },
+        containerColor = SurfaceDark
+    )
+}
+
+@Composable
 fun MessageBubble(
     message: ChatMessage,
     localNodeId: Long,
     onRetryMessage: (ChatMessage) -> Unit,
-    senderLabel: String? = null
+    senderLabel: String? = null,
+    appLanguage: String = "English"
 ) {
     val isMe = localNodeId != 0L && message.senderId == localNodeId
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
+    val spanish = appLanguage == "Spanish"
     val statusIcon = when (message.status) {
         "DELIVERED" -> "✓"
         "PENDING", "QUEUED" -> "…"
@@ -1316,6 +1463,13 @@ fun MessageBubble(
         "FAILED", "EXPIRED" -> AccentRed
         "PENDING", "QUEUED" -> AccentAmber
         else -> TextMuted
+    }
+    val statusText = when (message.status) {
+        "EXPIRED" -> if (spanish) "$statusIcon sin ACK" else "$statusIcon no ACK"
+        "FAILED" -> if (spanish) "$statusIcon falló · reintentar" else "$statusIcon failed · retry"
+        "PENDING", "QUEUED" -> if (spanish) "$statusIcon enviando" else statusIcon
+        "RETRIED" -> if (spanish) "$statusIcon reenviado" else statusIcon
+        else -> statusIcon
     }
     val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
 
@@ -1363,7 +1517,7 @@ fun MessageBubble(
             if (isMe) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (canRetry) "$statusIcon retry" else statusIcon,
+                    text = statusText,
                     color = statusColor,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
@@ -1786,6 +1940,7 @@ fun NodesView(
                             onClick = { onOpenNodeDetails(connectedNode.nodeId) },
                             onRenameClick = { renamingNode = connectedNode },
                             onTraceRoute = { false },
+                            onMessageClick = { onNodeClick(connectedNode.nodeId) },
                             isConnectedNode = true
                         )
                     }
@@ -1800,6 +1955,7 @@ fun NodesView(
                         onClick = { onOpenNodeDetails(node.nodeId) },
                         onRenameClick = { renamingNode = node },
                         onTraceRoute = { onTraceRoute(node.nodeId) },
+                        onMessageClick = { onNodeClick(node.nodeId) },
                         isConnectedNode = false
                     )
                 }
@@ -1823,6 +1979,7 @@ fun NodesView(
                             onClick = { onOpenNodeDetails(node.nodeId) },
                             onRenameClick = { renamingNode = node },
                             onTraceRoute = { onTraceRoute(node.nodeId) },
+                            onMessageClick = { onNodeClick(node.nodeId) },
                             isConnectedNode = false
                         )
                     }
@@ -1879,6 +2036,7 @@ fun NodeItem(
     onClick: () -> Unit,
     onRenameClick: () -> Unit,
     onTraceRoute: () -> Boolean = { false },
+    onMessageClick: () -> Unit = {},
     isConnectedNode: Boolean = false
 ) {
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
@@ -1998,6 +2156,18 @@ fun NodeItem(
                             }
                         )
                         if (!isConnectedNode) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (appLanguage == "Spanish") "Mensaje" else "Message",
+                                        color = TextLight
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onMessageClick()
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Traceroute", color = TextLight) },
                                 onClick = {
@@ -3881,54 +4051,6 @@ fun MapViewCompose(
     }
 }
 
-@Composable
-fun DiagnosticsView(nodes: List<MeshNode>, messages: List<ChatMessage>) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("AetherMesh Diagnostic Console", color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Row(modifier = Modifier.fillMaxWidth()) {
-            DiagnosticCard(
-                title = "Total Nodes",
-                value = nodes.size.toString(),
-                color = AccentCyan,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            DiagnosticCard(
-                title = "Packets Heard",
-                value = messages.size.toString(),
-                color = AccentMint,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        Text("Network Telemetry Log", color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(SurfaceDark)
-                .padding(12.dp)
-        ) {
-            item {
-                Text("System initialized on US915.", color = AccentCyan, fontSize = 12.sp)
-            }
-            items(messages.takeLast(10)) { msg ->
-                Text(
-                    "Packet from 0x${msg.senderId.toString(16).uppercase()}: Msg size ${msg.content.length} bytes.",
-                    color = TextLight,
-                    fontSize = 11.sp
-                )
-            }
-        }
-    }
-}
 
 @Composable
 fun DiagnosticCard(
@@ -3959,6 +4081,51 @@ fun DiagnosticCard(
         }
     }
 }
+
+data class RadioProfile(val label: String, val sf: Int, val bw: Float, val hint: String)
+
+val radioProfiles = listOf(
+    RadioProfile("Fast", 9, 125f, "Baseline. Quick messages, shortest range."),
+    RadioProfile("Balanced", 10, 125f, "+2.5 dB range vs Fast, 2x airtime."),
+    RadioProfile("Long range", 11, 125f, "+5 dB range vs Fast, 4x airtime."),
+    RadioProfile("Max range", 12, 125f, "+7.5 dB range vs Fast, 8x airtime. Use 10s+ ping intervals.")
+)
+
+@Composable
+fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile) -> Unit) {
+    val selectedProfile = radioProfiles.firstOrNull { it.sf == currentSf && it.bw == currentBw }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        radioProfiles.forEach { p ->
+            val isSel = selectedProfile == p
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isSel) AccentCyan else DarkBackground)
+                    .clickable { onSelect(p) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    p.label,
+                    color = if (isSel) SurfaceDark else TextLight,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        selectedProfile?.hint ?: "Custom SF/BW (not a preset)",
+        color = TextMuted,
+        fontSize = 10.sp
+    )
+    Text(
+        "Every node must run the same profile - mismatched nodes can't hear each other.",
+        color = Color(0xFFFACC15),
+        fontSize = 10.sp
+    )
+}
+
 
 @Composable
 fun AetherBottomNav(
@@ -4021,122 +4188,6 @@ fun AetherBottomNav(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun BleScanDialog(
-    devices: List<BleDeviceItem>,
-    onConnect: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = AccentCyan)
-            }
-        },
-        title = {
-            Text("Select AetherMesh Node", color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
-                Text("Make sure your WisBlock or Heltec node is turned on and BLE is advertising.", color = TextMuted, fontSize = 12.sp)
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                if (devices.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = AccentCyan)
-                    }
-                } else {
-                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        items(devices) { device ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onConnect(device.mac) }
-                                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Share,
-                                    contentDescription = "Device",
-                                    tint = AccentCyan,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(device.name, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(device.mac, color = TextMuted, fontSize = 12.sp)
-                                }
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Connect",
-                                    tint = AccentMint,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            HorizontalDivider(color = BorderDark)
-                        }
-                    }
-                }
-            }
-        },
-        containerColor = SurfaceDark
-    )
-}
-
-@Composable
-fun PasscodeEntryDialog(
-    title: String,
-    initialPasscode: String,
-    onSave: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var keyState by remember { mutableStateOf(initialPasscode) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(
-                onClick = { onSave(keyState.trim()) }
-            ) {
-                Text("Save", color = AccentMint)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
-        },
-        title = { Text(title, color = TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-        text = {
-            Column {
-                Text(
-                    "All messages in this chat will be encrypted and decrypted using AES-256 with the key below. Keep this key secret and share it off-grid with other participants.",
-                    color = TextMuted,
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                TextField(
-                    value = keyState,
-                    onValueChange = { keyState = it },
-                    singleLine = true,
-                    placeholder = { Text("Enter passcode (e.g. secret123)", color = TextMuted) },
-                    colors = aetherTextFieldColors(),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (keyState.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Leave blank to disable encryption and clear key.",
-                        color = Color(0xFFFCA5A5),
-                        fontSize = 10.sp
-                    )
-                }
-            }
-        },
-        containerColor = SurfaceDark
-    )
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -4149,9 +4200,6 @@ fun SettingsView(
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
-    val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
-    var authPasswordInput by remember { mutableStateOf("") }
-    var authPasswordError by remember { mutableStateOf(false) }
 
     var nodeName by remember { mutableStateOf("") }
     var nodeShortName by remember { mutableStateOf("") }
@@ -4299,12 +4347,6 @@ fun SettingsView(
         onDispose {
             sharedPrefs.unregisterOnSharedPreferenceChangeListener(listener)
         }
-    }
-
-    // Only reset transient auth state when the connected node actually changes
-    LaunchedEffect(viewModel.connectedNodeId) {
-        authPasswordInput = ""
-        authPasswordError = false
     }
 
     // Populate the config form ONCE per connected node. Keying this on `nodes`
@@ -4456,6 +4498,12 @@ fun SettingsView(
             )
 
             categories.forEach { (cat, title, desc) ->
+                val needsDevice = cat == SettingsCategory.CHANNELS ||
+                    cat == SettingsCategory.RADIO ||
+                    cat == SettingsCategory.POSITION ||
+                    cat == SettingsCategory.FIRMWARE ||
+                    cat == SettingsCategory.SECURITY
+                val enabled = !needsDevice || isConnected
                 val icon = when(cat) {
                     SettingsCategory.CHANNELS -> Icons.Default.Layers
                     SettingsCategory.RADIO -> Icons.Default.Settings
@@ -4476,13 +4524,15 @@ fun SettingsView(
                 }
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (enabled) SurfaceDark else SurfaceDark.copy(alpha = 0.55f)
+                    ),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, BorderDark),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 12.dp)
-                        .clickable { activeCategory = cat }
+                        .clickable(enabled = enabled) { activeCategory = cat }
                 ) {
                     Row(
                         modifier = Modifier
@@ -4495,17 +4545,38 @@ fun SettingsView(
                             modifier = Modifier
                                 .size(40.dp)
                                 .clip(CircleShape)
-                                .background(iconColor.copy(alpha = 0.15f)),
+                                .background(iconColor.copy(alpha = if (enabled) 0.15f else 0.08f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(imageVector = icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(20.dp))
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = if (enabled) iconColor else TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                         
                         Spacer(modifier = Modifier.width(16.dp))
                         
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(text = t(title, appLanguage), color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                            Text(text = t(desc, appLanguage), color = TextMuted, fontSize = 11.sp)
+                            Text(
+                                text = t(title, appLanguage),
+                                color = if (enabled) TextLight else TextMuted,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (!enabled) {
+                                    if (appLanguage == "Spanish")
+                                        "Conecta un nodo para configurar esto."
+                                    else
+                                        "Connect a node to configure this."
+                                } else {
+                                    t(desc, appLanguage)
+                                },
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
                         }
                         
                         Icon(
@@ -4541,6 +4612,7 @@ fun SettingsView(
                         SettingsCategory.PREFERENCES -> t("App Preferences", appLanguage)
                         SettingsCategory.DEVELOPER -> t("Developer & Diagnostics", appLanguage)
                         SettingsCategory.FIRMWARE -> t("Firmware Update", appLanguage)
+                        SettingsCategory.POSITION -> t("GPS & Position Settings", appLanguage)
                         else -> ""
                     },
                     color = TextLight,
@@ -6931,142 +7003,6 @@ fun SettingsView(
             containerColor = SurfaceDark
         )
     }
-
-    // --- INITIAL CONNECTION AUTHENTICATION OVERLAY ---
-    if (isConnected && !isDeviceAuthenticated) {
-        if (authenticationRequired == true) {
-            AlertDialog(
-                onDismissRequest = { /* Force authentication, do not dismiss */ },
-                title = { Text(if (appLanguage == "Spanish") "Autenticación del Nodo" else "Node Authentication", color = TextLight, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column {
-                        Text(
-                            text = if (appLanguage == "Spanish") 
-                                "Este nodo está protegido. Ingrese la contraseña del dispositivo." 
-                                else "This node is password-protected. Please enter the device password to connect.",
-                            color = TextMuted,
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedTextField(
-                            value = authPasswordInput,
-                            onValueChange = {
-                                authPasswordInput = it
-                                authPasswordError = false
-                            },
-                            label = { Text(if (appLanguage == "Spanish") "Contraseña" else "Password", color = TextMuted) },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextLight,
-                                unfocusedTextColor = TextLight,
-                                cursorColor = AccentCyan,
-                                focusedBorderColor = AccentCyan,
-                                unfocusedBorderColor = BorderDark
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (authPasswordError) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (appLanguage == "Spanish") "Contraseña incorrecta." else "Incorrect password.",
-                                color = AccentRed,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            val success = viewModel.sendAuthRequest(authPasswordInput.trim())
-                            if (!success) {
-                                authPasswordError = true
-                            }
-                        }
-                    ) {
-                        Text(if (appLanguage == "Spanish") "Ingresar" else "Unlock", color = AccentCyan, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            viewModel.disconnect()
-                        }
-                    ) {
-                        Text(if (appLanguage == "Spanish") "Desconectar" else "Disconnect", color = TextMuted)
-                    }
-                },
-                containerColor = SurfaceDark
-            )
-        } else if (authenticationRequired == false) {
-            AlertDialog(
-                onDismissRequest = { /* Force initial setup, do not dismiss */ },
-                title = { Text(if (appLanguage == "Spanish") "Establecer Contraseña" else "Set Node Password", color = TextLight, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column {
-                        Text(
-                            text = if (appLanguage == "Spanish")
-                                "Este es el primer inicio del nodo. Establezca una contraseña para proteger la red."
-                                else "This is the node's first connection. Please set a password to secure your device.",
-                            color = TextMuted,
-                            fontSize = 13.sp
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedTextField(
-                            value = authPasswordInput,
-                            onValueChange = {
-                                authPasswordInput = it
-                                authPasswordError = false
-                            },
-                            label = { Text(if (appLanguage == "Spanish") "Contraseña Nueva" else "New Password", color = TextMuted) },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextLight,
-                                unfocusedTextColor = TextLight,
-                                cursorColor = AccentCyan,
-                                focusedBorderColor = AccentCyan,
-                                unfocusedBorderColor = BorderDark
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (authPasswordError) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (appLanguage == "Spanish") "La contraseña no puede estar vacía." else "Password cannot be empty.",
-                                color = AccentRed,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            if (authPasswordInput.trim().isNotEmpty()) {
-                                viewModel.sendAuthRequest(authPasswordInput.trim())
-                            } else {
-                                authPasswordError = true
-                            }
-                        }
-                    ) {
-                        Text(if (appLanguage == "Spanish") "Establecer" else "Set Password", color = AccentCyan, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            viewModel.disconnect()
-                        }
-                    ) {
-                        Text(if (appLanguage == "Spanish") "Desconectar" else "Disconnect", color = TextMuted)
-                    }
-                },
-                containerColor = SurfaceDark
-            )
-        }
-    }
 }
 
 
@@ -7092,15 +7028,35 @@ fun ConnectionView(
     val batteryVal = connectedNode?.battery ?: 98
     var toolsExpanded by remember { mutableStateOf(false) }
     val toolsPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
-    val hasLocationPermission = remember {
-        ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasLocationPermission by remember {
+        mutableStateOf(
             ContextCompat.checkSelfPermission(
                 context,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasLocationPermission =
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(isRangeTestActive) {
@@ -7495,6 +7451,12 @@ fun ConnectionView(
                 mutableFloatStateOf(toolsPrefs.getFloat("range_test_interval_sec", 5f).coerceIn(2f, 30f))
             }
 
+            LaunchedEffect(Unit) {
+                viewModel.consumePreferredRangeTestTargetId()?.let { id ->
+                    rangeTargets.find { it.nodeId == id }?.let { selectedRangeTargetNode = it }
+                    toolsExpanded = true
+                }
+            }
             LaunchedEffect(rangeTargets) {
                 if (selectedRangeTargetNode == null && rangeTargets.isNotEmpty()) {
                     selectedRangeTargetNode = rangeTargets.first()
@@ -8278,746 +8240,6 @@ fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): St
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SubPortalView(
-    portalName: String,
-    onBack: () -> Unit,
-    context: Context,
-    sharedPrefs: android.content.SharedPreferences,
-    viewModel: MainScreenViewModel,
-    connectedNode: MeshNode?,
-    telemetryIntervalSecs: Int,
-    onTelemetryIntervalChanged: (Int) -> Unit
-) {
-    val nodeKey = connectedNode?.nodeId ?: 0L
-    val nodePrefs = remember(nodeKey) { context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE) }
-    
-    // Sub-states per category (initialized with saved values or defaults)
-    // 1. Device Portal State
-    var deviceRole by remember { mutableIntStateOf(nodePrefs.getInt("lora_role", 0)) }
-    var rebroadcastMode by remember { mutableStateOf(nodePrefs.getString("rebroadcast_mode", "LOCAL_ONLY") ?: "LOCAL_ONLY") }
-    var nodeInfoInterval by remember { mutableStateOf(nodePrefs.getString("node_info_interval", "3 hours") ?: "3 hours") }
-    var doubleTapButton by remember { mutableStateOf(nodePrefs.getBoolean("double_tap_button", false)) }
-    var tripleClickPing by remember { mutableStateOf(nodePrefs.getBoolean("triple_click_ping", true)) }
-    var buttonGpio by remember { mutableStateOf(nodePrefs.getString("button_gpio", "0") ?: "0") }
-    var buzzerGpio by remember { mutableStateOf(nodePrefs.getString("buzzer_gpio", "21") ?: "21") }
-
-    // 2. Position Portal State
-    var posInterval by remember { mutableStateOf(nodePrefs.getString("pos_interval", "1 hour") ?: "1 hour") }
-    var smartPosition by remember { mutableStateOf(nodePrefs.getBoolean("smart_position", true)) }
-    var smartInterval by remember { mutableStateOf(nodePrefs.getString("smart_interval", "5 minutes") ?: "5 minutes") }
-    var smartDistance by remember { mutableStateOf(nodePrefs.getString("smart_distance", "100") ?: "100") }
-    var gpsMode by remember { mutableStateOf(nodePrefs.getString("gps_mode", "ENABLED") ?: "ENABLED") }
-    var fixedPosition by remember { mutableStateOf(nodePrefs.getBoolean("fixed_position", false)) }
-
-    // 3. Power Portal State
-    var powerSaveMode by remember { mutableStateOf(nodePrefs.getBoolean("power_save_mode", false)) }
-    var shutdownPowerLoss by remember { mutableStateOf(nodePrefs.getString("shutdown_power_loss", "Unset") ?: "Unset") }
-    var waitBluetoothDuration by remember { mutableStateOf(nodePrefs.getString("wait_ble_duration", "1 minute") ?: "1 minute") }
-    var superDeepSleepDuration by remember { mutableStateOf(nodePrefs.getString("deep_sleep_duration", "Unset") ?: "Unset") }
-    var minWakeTime by remember { mutableStateOf(nodePrefs.getString("min_wake_time", "10 seconds") ?: "10 seconds") }
-
-    // 4. Network Portal State
-    var wifiEnabled by remember { mutableStateOf(nodePrefs.getBoolean("wifi_enabled", false)) }
-    var ethernetEnabled by remember { mutableStateOf(nodePrefs.getBoolean("ethernet_enabled", false)) }
-    var ntpServer by remember { mutableStateOf(nodePrefs.getString("ntp_server", "meshtastic.pool.ntp.org") ?: "meshtastic.pool.ntp.org") }
-    var udpBroadcasting by remember { mutableStateOf(nodePrefs.getBoolean("udp_broadcasting", false)) }
-    var ipv4Mode by remember { mutableStateOf(nodePrefs.getString("ipv4_mode", "DHCP") ?: "DHCP") }
-
-    // 5. Display Portal State
-    var carouselInterval by remember { mutableStateOf(nodePrefs.getString("carousel_interval", "Unset") ?: "Unset") }
-    var wakeOnMotion by remember { mutableStateOf(nodePrefs.getBoolean("wake_on_motion", true)) }
-    var flipScreen by remember { mutableStateOf(nodePrefs.getBoolean("flip_screen", false)) }
-    var alwaysPointNorth by remember { mutableStateOf(nodePrefs.getBoolean("always_point_north", false)) }
-    var use12hClock by remember { mutableStateOf(nodePrefs.getBoolean("use_12h_clock", true)) }
-    var boldHeading by remember { mutableStateOf(nodePrefs.getBoolean("bold_heading", false)) }
-    var displayUnits by remember { mutableStateOf(nodePrefs.getString("display_units", "IMPERIAL") ?: "IMPERIAL") }
-    var screenOnFor by remember { mutableStateOf(nodePrefs.getString("screen_on_for", "10 minutes") ?: "10 minutes") }
-
-    // 6. Bluetooth Portal State
-    var bleEnabled by remember { mutableStateOf(nodePrefs.getBoolean("ble_enabled", true)) }
-    var blePincodeAuth by remember { mutableStateOf(nodePrefs.getBoolean("ble_pincode_auth", true)) }
-    var bleTxPower by remember { mutableStateOf(nodePrefs.getString("ble_tx_power", "High") ?: "High") }
-
-    // Dropdown expansion triggers
-    var isExpandedRole by remember { mutableStateOf(false) }
-    var isExpandedRebroadcast by remember { mutableStateOf(false) }
-    var isExpandedInfoInterval by remember { mutableStateOf(false) }
-    var isExpandedPosInterval by remember { mutableStateOf(false) }
-    var isExpandedSmartInterval by remember { mutableStateOf(false) }
-    var isExpandedGpsMode by remember { mutableStateOf(false) }
-    var isExpandedShutdown by remember { mutableStateOf(false) }
-    var isExpandedBleDur by remember { mutableStateOf(false) }
-    var isExpandedDeepSleep by remember { mutableStateOf(false) }
-    var isExpandedMinWake by remember { mutableStateOf(false) }
-    var isExpandedIpv4 by remember { mutableStateOf(false) }
-    var isExpandedCarousel by remember { mutableStateOf(false) }
-    var isExpandedUnits by remember { mutableStateOf(false) }
-    var isExpandedScreenOn by remember { mutableStateOf(false) }
-    var isExpandedBlePower by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState())
-    ) {
-        // Sub-portal Header
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = AccentCyan)
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = when (portalName) {
-                    "DEVICE" -> "Device configuration"
-                    "POSITION" -> "Position configuration"
-                    "POWER" -> "Power configuration"
-                    "NETWORK" -> "Network configuration"
-                    "DISPLAY" -> "Display configuration"
-                    else -> "Bluetooth configuration"
-                },
-                color = TextLight,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                when (portalName) {
-                    "DEVICE" -> {
-                        Text("Options", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-                        
-                        // Device Role Dropdown
-                        Text("Device Role", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { isExpandedRole = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight),
-                                border = ButtonDefaults.outlinedButtonBorder
-                            ) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(text = when(deviceRole) {
-                                        0 -> "CLIENT"
-                                        1 -> "ROUTER"
-                                        2 -> "LOW_POWER_REPEATER"
-                                        else -> "CLIENT_BASE"
-                                    })
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedRole, onDismissRequest = { isExpandedRole = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("CLIENT", "ROUTER", "LOW_POWER_REPEATER", "CLIENT_BASE").forEachIndexed { idx, name ->
-                                    DropdownMenuItem(text = { Text(name, color = TextLight) }, onClick = { deviceRole = idx; isExpandedRole = false })
-                                }
-                            }
-                        }
-                        Text("Treats packets from or to favorited nodes as ROUTER_LATE, and all other packets as CLIENT.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Rebroadcast Mode Dropdown
-                        Text("Rebroadcast Mode", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedRebroadcast = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(rebroadcastMode)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedRebroadcast, onDismissRequest = { isExpandedRebroadcast = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("ALL", "LOCAL_ONLY", "NONE").forEach { mode ->
-                                    DropdownMenuItem(text = { Text(mode, color = TextLight) }, onClick = { rebroadcastMode = mode; isExpandedRebroadcast = false })
-                                }
-                            }
-                        }
-                        Text("Ignores observed messages from foreign meshes that are open or those which it cannot decrypt. Only rebroadcasts message on the nodes local primary / secondary channels.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Node Info Interval
-                        Text("Node Info Broadcast Interval", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedInfoInterval = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(nodeInfoInterval)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedInfoInterval, onDismissRequest = { isExpandedInfoInterval = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("1 hour", "3 hours", "6 hours", "12 hours").forEach { interval ->
-                                    DropdownMenuItem(text = { Text(interval, color = TextLight) }, onClick = { nodeInfoInterval = interval; isExpandedInfoInterval = false })
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Text("Hardware", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Switches
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Double Tap as Button", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Treat double tap on supported accelerometers as a user button press.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = doubleTapButton, onCheckedChange = { doubleTapButton = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-                        
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Triple Click Ad Hoc Ping", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Send a position on the primary channel when the user button is triple clicked.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = tripleClickPing, onCheckedChange = { tripleClickPing = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("GPIO Settings", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text("Button GPIO", color = TextLight, fontSize = 13.sp)
-                        TextField(value = buttonGpio, onValueChange = { buttonGpio = it }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = DarkBackground, unfocusedContainerColor = DarkBackground, focusedTextColor = TextLight, unfocusedTextColor = TextLight), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth())
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text("Buzzer GPIO", color = TextLight, fontSize = 13.sp)
-                        TextField(value = buzzerGpio, onValueChange = { buzzerGpio = it }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = DarkBackground, unfocusedContainerColor = DarkBackground, focusedTextColor = TextLight, unfocusedTextColor = TextLight), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth())
-                    }
-                    
-                    "POSITION" -> {
-                        Text("Position Packet", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Broadcast Interval
-                        Text("Broadcast Interval", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedPosInterval = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(posInterval)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedPosInterval, onDismissRequest = { isExpandedPosInterval = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("15 mins", "30 mins", "1 hour", "2 hours").forEach { interval ->
-                                    DropdownMenuItem(text = { Text(interval, color = TextLight) }, onClick = { posInterval = interval; isExpandedPosInterval = false })
-                                }
-                            }
-                        }
-                        Text("The maximum interval that can elapse without a node broadcasting a position.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Smart Position
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Smart Position", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Vary broadcast rate dynamically depending on motion thresholds.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = smartPosition, onCheckedChange = { smartPosition = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        if (smartPosition) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Smart Interval", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                OutlinedButton(onClick = { isExpandedSmartInterval = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                        Text(smartInterval)
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                    }
-                                }
-                                DropdownMenu(expanded = isExpandedSmartInterval, onDismissRequest = { isExpandedSmartInterval = false }, modifier = Modifier.background(SurfaceDark)) {
-                                    listOf("1 minute", "5 minutes", "15 minutes").forEach { interval ->
-                                        DropdownMenuItem(text = { Text(interval, color = TextLight) }, onClick = { smartInterval = interval; isExpandedSmartInterval = false })
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Text("Smart Distance (meters)", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            TextField(value = smartDistance, onValueChange = { smartDistance = it }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = DarkBackground, unfocusedContainerColor = DarkBackground, focusedTextColor = TextLight, unfocusedTextColor = TextLight), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth())
-                            Text("The minimum distance change in meters to be considered for a smart position broadcast.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Device GPS Settings", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Fixed Position", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Configure static stationary beacon mode.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = fixedPosition, onCheckedChange = { fixedPosition = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text("GPS Mode (Physical Hardware)", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedGpsMode = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(gpsMode)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedGpsMode, onDismissRequest = { isExpandedGpsMode = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("ENABLED", "DISABLED", "NOT_PRESENT").forEach { mode ->
-                                    DropdownMenuItem(text = { Text(mode, color = TextLight) }, onClick = { gpsMode = mode; isExpandedGpsMode = false })
-                                }
-                            }
-                        }
-                    }
-
-                    "POWER" -> {
-                        Text("Power Config", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Power saving mode
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Enable power saving mode", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Will sleep everything as much as possible, for the tracker and sensor role this will also include the lora radio.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = powerSaveMode, onCheckedChange = { powerSaveMode = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Shutdown on power loss
-                        Text("Shutdown on power loss", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedShutdown = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(shutdownPowerLoss)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedShutdown, onDismissRequest = { isExpandedShutdown = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("Unset", "1 minute", "5 minutes", "15 minutes").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { shutdownPowerLoss = duration; isExpandedShutdown = false })
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Wait for bluetooth duration
-                        Text("Wait for Bluetooth duration", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedBleDur = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(waitBluetoothDuration)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedBleDur, onDismissRequest = { isExpandedBleDur = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("1 minute", "5 minutes", "10 minutes", "30 minutes").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { waitBluetoothDuration = duration; isExpandedBleDur = false })
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Super deep sleep
-                        Text("Super deep sleep duration", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedDeepSleep = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(superDeepSleepDuration)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedDeepSleep, onDismissRequest = { isExpandedDeepSleep = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("Unset", "30 minutes", "1 hour", "3 hours", "6 hours").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { superDeepSleepDuration = duration; isExpandedDeepSleep = false })
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Minimum wake time
-                        Text("Minimum wake time", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedMinWake = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(minWakeTime)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedMinWake, onDismissRequest = { isExpandedMinWake = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("10 seconds", "30 seconds", "1 minute", "5 minutes").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { minWakeTime = duration; isExpandedMinWake = false })
-                                }
-                            }
-                        }
-                    }
-
-                    "NETWORK" -> {
-                        Text("Network Settings", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // WiFi enabled
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("WiFi enabled", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Enabling WiFi will disable the bluetooth connection to the app.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = wifiEnabled, onCheckedChange = { wifiEnabled = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Ethernet enabled
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Ethernet enabled", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Enabling Ethernet will disable the bluetooth connection to the app.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = ethernetEnabled, onCheckedChange = { ethernetEnabled = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Ethernet Options", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Text("NTP Server", color = TextLight, fontSize = 13.sp)
-                        TextField(value = ntpServer, onValueChange = { ntpServer = it }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = DarkBackground, unfocusedContainerColor = DarkBackground, focusedTextColor = TextLight, unfocusedTextColor = TextLight), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth())
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("UDP Broadcasting", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Enable broadcasting packets via UDP over the local network.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = udpBroadcasting, onCheckedChange = { udpBroadcasting = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text("IPv4 Mode", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedIpv4 = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(ipv4Mode)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedIpv4, onDismissRequest = { isExpandedIpv4 = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("DHCP", "STATIC").forEach { mode ->
-                                    DropdownMenuItem(text = { Text(mode, color = TextLight) }, onClick = { ipv4Mode = mode; isExpandedIpv4 = false })
-                                }
-                            }
-                        }
-                    }
-
-                    "DISPLAY" -> {
-                        Text("Device Display Options", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Carousel interval
-                        Text("Carousel interval", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedCarousel = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(carouselInterval)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedCarousel, onDismissRequest = { isExpandedCarousel = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("Unset", "5 seconds", "10 seconds", "20 seconds").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { carouselInterval = duration; isExpandedCarousel = false })
-                                }
-                            }
-                        }
-                        Text("Automatically toggles to the next page on the screen like a carousel, based the specified interval.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Wake on tap/motion
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Wake on tap or motion", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Requires that there be an accelerometer on your device.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = wakeOnMotion, onCheckedChange = { wakeOnMotion = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        // Flip screen
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Flip screen", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Flip screen vertically.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = flipScreen, onCheckedChange = { flipScreen = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        // Always point north
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Always point north", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("The compass heading on the screen outside of the circle will always point north.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = alwaysPointNorth, onCheckedChange = { alwaysPointNorth = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        // 12h format
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Use 12h clock format", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("When enabled, the device will display the time in 12-hour format on screen.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = use12hClock, onCheckedChange = { use12hClock = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        // Bold Heading
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Bold Heading", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Bold the heading text on the screen.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = boldHeading, onCheckedChange = { boldHeading = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Display units
-                        Text("Display units", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedUnits = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(displayUnits)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedUnits, onDismissRequest = { isExpandedUnits = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("METRIC", "IMPERIAL").forEach { unit ->
-                                    DropdownMenuItem(text = { Text(unit, color = TextLight) }, onClick = { displayUnits = unit; isExpandedUnits = false })
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Screen on for
-                        Text("Screen on for", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedScreenOn = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(screenOnFor)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedScreenOn, onDismissRequest = { isExpandedScreenOn = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("1 minute", "5 minutes", "10 minutes", "30 minutes").forEach { duration ->
-                                    DropdownMenuItem(text = { Text(duration, color = TextLight) }, onClick = { screenOnFor = duration; isExpandedScreenOn = false })
-                                }
-                            }
-                        }
-                    }
-
-                    else -> {
-                        Text("Bluetooth Settings", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Bluetooth enabled", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Enables local BLE advertisement and pairing requests.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = bleEnabled, onCheckedChange = { bleEnabled = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Require PIN authentication", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Forces pairing passkey verification dialogue on first connection.", color = TextMuted, fontSize = 11.sp)
-                            }
-                            Switch(checked = blePincodeAuth, onCheckedChange = { blePincodeAuth = it }, colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan, checkedTrackColor = AccentCyan.copy(alpha = 0.5f)))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text("Advertising Power Level", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(onClick = { isExpandedBlePower = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = DarkBackground, contentColor = TextLight), border = ButtonDefaults.outlinedButtonBorder) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(bleTxPower)
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan)
-                                }
-                            }
-                            DropdownMenu(expanded = isExpandedBlePower, onDismissRequest = { isExpandedBlePower = false }, modifier = Modifier.background(SurfaceDark)) {
-                                listOf("High", "Medium", "Low").forEach { power ->
-                                    DropdownMenuItem(text = { Text(power, color = TextLight) }, onClick = { bleTxPower = power; isExpandedBlePower = false })
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Save button for sub-portals
-                Button(
-                    onClick = {
-                        // Persist to SharedPrefs for this specific node
-                        nodePrefs.edit().apply {
-                            putInt("lora_role", deviceRole)
-                            putString("rebroadcast_mode", rebroadcastMode)
-                            putString("node_info_interval", nodeInfoInterval)
-                            putBoolean("double_tap_button", doubleTapButton)
-                            putBoolean("triple_click_ping", tripleClickPing)
-                            putString("button_gpio", buttonGpio)
-                            putString("buzzer_gpio", buzzerGpio)
-
-                            putString("pos_interval", posInterval)
-                            putBoolean("smart_position", smartPosition)
-                            putString("smart_interval", smartInterval)
-                            putString("smart_distance", smartDistance)
-                            putString("gps_mode", gpsMode)
-                            putBoolean("fixed_position", fixedPosition)
-
-                            putBoolean("power_save_mode", powerSaveMode)
-                            putString("shutdown_power_loss", shutdownPowerLoss)
-                            putString("wait_ble_duration", waitBluetoothDuration)
-                            putString("deep_sleep_duration", superDeepSleepDuration)
-                            putString("min_wake_time", minWakeTime)
-
-                            putBoolean("wifi_enabled", wifiEnabled)
-                            putBoolean("ethernet_enabled", ethernetEnabled)
-                            putString("ntp_server", ntpServer)
-                            putBoolean("udp_broadcasting", udpBroadcasting)
-                            putString("ipv4_mode", ipv4Mode)
-
-                            putString("carousel_interval", carouselInterval)
-                            putBoolean("wake_on_motion", wakeOnMotion)
-                            putBoolean("flip_screen", flipScreen)
-                            putBoolean("always_point_north", alwaysPointNorth)
-                            putBoolean("use_12h_clock", use12hClock)
-                            putBoolean("bold_heading", boldHeading)
-                            putString("display_units", displayUnits)
-                            putString("screen_on_for", screenOnFor)
-
-                            putBoolean("ble_enabled", bleEnabled)
-                            putBoolean("ble_pincode_auth", blePincodeAuth)
-                            putString("ble_tx_power", bleTxPower)
-                            apply()
-                        }
-                        
-                        // Sync role/telemetry if Device config modified. Pass the
-                        // saved screen-timeout/power-save/position-precision values
-                        // too — omitting them pushes the proto defaults and silently
-                        // resets those settings on the node.
-                        if (portalName == "DEVICE") {
-                            viewModel.sendNodeConfig(
-                                name = connectedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: "Wolf Base",
-                                shortName = connectedNode?.shortName ?: "BASE",
-                                sf = nodePrefs.getInt("lora_sf", 9),
-                                bw = nodePrefs.getFloat("lora_bw", 125f),
-                                txPower = nodePrefs.getInt("lora_tx_power", 22),
-                                region = nodePrefs.getInt("region", 0),
-                                role = deviceRole,
-                                telemetryInterval = telemetryIntervalSecs,
-                                screenTimeout = nodePrefs.getInt("screen_timeout", 30),
-                                powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
-                                positionPrecision = nodePrefs.getInt("position_precision", 0),
-                                gpsMode = nodePrefs.getInt("gps_mode", 0)
-                            )
-                        }
-
-                        android.widget.Toast.makeText(context, "Configurations saved & synced successfully!", android.widget.Toast.LENGTH_SHORT).show()
-                        onBack()
-                    },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
-                ) {
-                    Text("Save Configuration", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-// Radio profiles: matched SF/BW presets so every node in the mesh can be flipped
-// to the same configuration without slider mismatches. Link budget is relative
-// to Fast (SF9); each SF step roughly doubles airtime.
-data class RadioProfile(val label: String, val sf: Int, val bw: Float, val hint: String)
-
-val radioProfiles = listOf(
-    RadioProfile("Fast", 9, 125f, "Baseline. Quick messages, shortest range."),
-    RadioProfile("Balanced", 10, 125f, "+2.5 dB range vs Fast, 2x airtime."),
-    RadioProfile("Long range", 11, 125f, "+5 dB range vs Fast, 4x airtime."),
-    RadioProfile("Max range", 12, 125f, "+7.5 dB range vs Fast, 8x airtime. Use 10s+ ping intervals.")
-)
-
-@Composable
-fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile) -> Unit) {
-    val selectedProfile = radioProfiles.firstOrNull { it.sf == currentSf && it.bw == currentBw }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        radioProfiles.forEach { p ->
-            val isSel = selectedProfile == p
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (isSel) AccentCyan else DarkBackground)
-                    .clickable { onSelect(p) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    p.label,
-                    color = if (isSel) SurfaceDark else TextLight,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-        selectedProfile?.hint ?: "Custom SF/BW (not a preset)",
-        color = TextMuted,
-        fontSize = 10.sp
-    )
-    Text(
-        "Every node must run the same profile - mismatched nodes can't hear each other.",
-        color = Color(0xFFFACC15),
-        fontSize = 10.sp
-    )
-}
 
 fun exportRangeTestLogsToCsv(
     context: Context,
