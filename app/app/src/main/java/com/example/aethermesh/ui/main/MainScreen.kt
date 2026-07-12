@@ -5,9 +5,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.res.painterResource
+import com.example.aethermesh.R
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -685,9 +688,13 @@ fun HeaderBar(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(contentAlignment = Alignment.Center) {
-                    RadarGraphic(size = 36.dp)
-                }
+                Image(
+                    painter = painterResource(id = R.drawable.ic_aethermesh_logo),
+                    contentDescription = "AetherMesh",
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AetherMesh brand mark for in-app chrome (matches web-flasher / launcher foreground). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M18,0h72a18,18 0,0 1,18 18v72a18,18 0,0 1,-18 18h-72a18,18 0,0 1,-18 -18v-72a18,18 0,0 1,18 -18z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:type="linear">
+                <item android:color="#FF070C14" android:offset="0.0" />
+                <item android:color="#FF142136" android:offset="0.5" />
+                <item android:color="#FF1A2D4A" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Signal arcs -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M38,20 A20,20 0 0,1 70,20"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#00E5FF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M45,26 A12,12 0 0,1 63,26"
+        android:strokeWidth="3.0"
+        android:strokeLineCap="round"
+        android:strokeColor="#00B0FF" />
+
+    <!-- Mesh peak -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M32,76 L54,34 L76,76"
+        android:strokeWidth="5"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:endX="76"
+                android:endY="76"
+                android:startX="32"
+                android:startY="34"
+                android:type="linear">
+                <item android:color="#00E5FF" android:offset="0.0" />
+                <item android:color="#0072FF" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M40,62 L68,62"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeColor="#00B0FF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,34 L54,62"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeColor="#00E5FF" />
+
+    <!-- Node junctions -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,34m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M32,76m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M76,76m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,62m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+</vector>
