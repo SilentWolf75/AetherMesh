@@ -14,11 +14,15 @@
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
 #define SEEN_PACKET_TIMEOUT_MS 120000
-// Direct-range (_D) PONGs: one successful TX then stop. Extra retries of an
-// already-sent PONG collide with the next ping on half-duplex radios.
-// Failed first attempts keep retrying (CAD/radio-busy) within this window.
+// Direct-range (_D) PONGs: a few short CAD-skipped copies (~400ms apart)
+// recover when the pinger is deaf during relay/other TX. Keep the burst
+// well under a 5s ping interval so we do not recreate the old retry storm.
+// Failed attempts (radio busy) keep retrying within this window.
 #define PONG_RETRY_WINDOW_MS 6000
 #define PONG_RESEND_INTERVAL_MS 2500
+#define DIRECT_PONG_MAX_ATTEMPTS 3
+#define DIRECT_PONG_RESEND_MS 400
+#define DIRECT_PONG_INITIAL_DELAY_MS 350
 #define ACK_MAX_RETRIES 3
 #define STORE_FORWARD_TTL_MS 1800000UL
 #define STORE_FORWARD_RETRY_MS 60000UL

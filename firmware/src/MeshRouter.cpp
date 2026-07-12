@@ -938,7 +938,8 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
             pendingPongs[i].content[sizeof(pendingPongs[i].content) - 1] = '\0';
             pendingPongs[i].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
             pendingPongs[i].directOnly = directOnly;
-            pendingPongs[i].sendAtMs = millis() + 100 + random(0, 100);
+            // Clear PING airtime on the pinger before the first reply.
+            pendingPongs[i].sendAtMs = millis() + DIRECT_PONG_INITIAL_DELAY_MS + random(0, 150);
             pendingPongs[i].firstQueuedMs = millis();
             pendingPongs[i].sendCount = 0;
             Serial.printf("Refreshed queued %s to 0x%08X (slot %d)\n", pongContent, recipientId, i);
@@ -976,7 +977,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
     pendingPongs[slot].recipientId = recipientId;
     pendingPongs[slot].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
     pendingPongs[slot].directOnly = directOnly;
-    pendingPongs[slot].sendAtMs = millis() + 100 + random(0, 100);
+    pendingPongs[slot].sendAtMs = millis() + DIRECT_PONG_INITIAL_DELAY_MS + random(0, 150);
     pendingPongs[slot].firstQueuedMs = millis();
     pendingPongs[slot].sendCount = 0;
     pendingPongs[slot].active = true;
@@ -1010,9 +1011,14 @@ void MeshRouter::drainPendingPongReplies() {
             Serial.printf("Sent range-test %s (attempt %u)\n",
                           pendingPongs[i].content, pendingPongs[i].sendCount);
             if (pendingPongs[i].directOnly) {
-                // One clean TX is enough on the strong link; further airtime
-                // only collides with the pinger's next PING.
-                pendingPongs[i].active = false;
+                // startTransmit success != pinger RX. A few short copies cover
+                // half-duplex deaf windows without a multi-second retry storm.
+                if (pendingPongs[i].sendCount >= DIRECT_PONG_MAX_ATTEMPTS) {
+                    pendingPongs[i].active = false;
+                } else {
+                    pendingPongs[i].sendAtMs =
+                        now + DIRECT_PONG_RESEND_MS + random(0, 150);
+                }
                 continue;
             }
             pendingPongs[i].sendAtMs = now +
