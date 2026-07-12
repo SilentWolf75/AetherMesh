@@ -328,7 +328,7 @@ fun NodeDetailsScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 14.sp
                                 )
-                                Text(formatLastHeard(node.lastActive), color = TextMuted, fontSize = 12.sp)
+                                Text(formatLastHeard(node.lastActive, appLanguage), color = TextMuted, fontSize = 12.sp)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     "%.5f, %.5f".format(node.latitude, node.longitude),
@@ -414,7 +414,7 @@ private fun DetailsCard(
                 Column(modifier = Modifier.weight(1f)) {
                     MetaItem(Icons.Default.Person, if (appLanguage == "Spanish") "Nombre corto" else "Short Name", shortName)
                     MetaItem(Icons.Default.Tag, if (appLanguage == "Spanish") "ID del nodo" else "Node ID", "0x${node.nodeId.toString(16).uppercase()}")
-                    MetaItem(Icons.Default.Refresh, if (appLanguage == "Spanish") "Último oído" else "Last heard", formatLastHeard(node.lastActive))
+                    MetaItem(Icons.Default.Refresh, if (appLanguage == "Spanish") "Último oído" else "Last heard", formatLastHeard(node.lastActive, appLanguage))
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     MetaItem(

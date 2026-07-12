@@ -225,7 +225,7 @@ private fun NodeDetailsRoute(
             }
         } else null,
         onViewOnMap = {
-            viewModel.requestOpenMapTab()
+            viewModel.requestOpenMapTab(focusNodeId = node.nodeId)
             onBack()
         },
         onStartRangeTest = if (node.nodeId != viewModel.connectedNodeId) {

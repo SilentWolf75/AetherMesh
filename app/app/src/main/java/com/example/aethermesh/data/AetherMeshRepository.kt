@@ -1642,6 +1642,11 @@ class AetherMeshRepository(private val context: Context) {
 
         val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
             flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (isBroadcast) {
+                putExtra(com.example.aethermesh.MainActivity.EXTRA_OPEN_CHANNEL, channel)
+            } else {
+                putExtra(com.example.aethermesh.MainActivity.EXTRA_OPEN_DM_PEER, senderId)
+            }
         }
         val pendingIntent = android.app.PendingIntent.getActivity(
             context, chatIdentifier.hashCode(), tapIntent,

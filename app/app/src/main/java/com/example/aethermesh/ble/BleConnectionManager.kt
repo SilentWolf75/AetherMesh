@@ -148,7 +148,7 @@ class BleConnectionManager(private val context: Context) {
     var onConnectionStateChanged: ((Boolean) -> Unit)? = null
     var onConnectionPhaseChanged: ((BleConnectionPhase, Int) -> Unit)? = null
     var onPacketReceived: ((ByteArray) -> Unit)? = null
-    var onDeviceDiscovered: ((String, String) -> Unit)? = null // Device Name, MAC Address
+    var onDeviceDiscovered: ((String, String, Int) -> Unit)? = null // Name, MAC, RSSI
 
     // Scan for AetherMesh devices.
     // We scan WITHOUT a hardware ScanFilter (offloaded 128-bit-UUID filtering is unreliable
@@ -178,7 +178,7 @@ class BleConnectionManager(private val context: Context) {
                 if (advertisesOurService || nameMatches) {
                     // Fall back to a generic label if the advert has no readable name yet.
                     val label = deviceName ?: "AetherMesh Node"
-                    onDeviceDiscovered?.invoke(label, result.device.address)
+                    onDeviceDiscovered?.invoke(label, result.device.address, result.rssi)
                 }
             }
 

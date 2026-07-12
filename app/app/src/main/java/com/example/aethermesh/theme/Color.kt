@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 /**
  * Night-radar scheme: deep navy field, azure primary, lime success.
@@ -84,13 +85,32 @@ fun batteryLevelColor(level: Int): Color {
     }
 }
 
-fun appBackgroundBrush(): Brush = Brush.radialGradient(
-    colors = listOf(
-        Color(0xFF122038),
-        activePalette.background,
+fun appBackgroundBrush(): Brush {
+    val bg = activePalette.background
+    val raised = activePalette.surfaceRaised
+    // Light theme: soft cool wash. Dark: navy radial that matches night-radar chrome.
+    val highlight = if (bg.luminance() > 0.5f) {
+        Color(
+            red = (raised.red * 0.92f + 0.08f).coerceIn(0f, 1f),
+            green = (raised.green * 0.94f + 0.06f).coerceIn(0f, 1f),
+            blue = (raised.blue * 0.98f + 0.02f).coerceIn(0f, 1f),
+            alpha = 1f
+        )
+    } else {
+        Color(0xFF122038)
+    }
+    val edge = if (bg.luminance() > 0.5f) {
+        Color(
+            red = (bg.red * 0.88f).coerceIn(0f, 1f),
+            green = (bg.green * 0.90f).coerceIn(0f, 1f),
+            blue = (bg.blue * 0.94f).coerceIn(0f, 1f),
+            alpha = 1f
+        )
+    } else {
         Color(0xFF04070C)
-    )
-)
+    }
+    return Brush.radialGradient(colors = listOf(highlight, bg, edge))
+}
 
 fun headerBarBrush(): Brush = Brush.verticalGradient(
     colors = listOf(

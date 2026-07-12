@@ -81,7 +81,14 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     private val _pendingOpenMapTab = MutableStateFlow(false)
     val pendingOpenMapTab: StateFlow<Boolean> = _pendingOpenMapTab.asStateFlow()
 
-    fun requestOpenMapTab() {
+    /** When opening Map from NodeDetails, fly to / select this node. */
+    private val _pendingFocusNodeId = MutableStateFlow<Long?>(null)
+    val pendingFocusNodeId: StateFlow<Long?> = _pendingFocusNodeId.asStateFlow()
+
+    fun requestOpenMapTab(focusNodeId: Long? = null) {
+        if (focusNodeId != null && focusNodeId != 0L) {
+            _pendingFocusNodeId.value = focusNodeId
+        }
         _pendingOpenMapTab.value = true
     }
 
@@ -91,15 +98,22 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return true
     }
 
+    fun consumeFocusNodeId(): Long? {
+        val id = _pendingFocusNodeId.value ?: return null
+        _pendingFocusNodeId.value = null
+        return id
+    }
+
     private val _pendingOpenConnectionTab = MutableStateFlow(false)
     val pendingOpenConnectionTab: StateFlow<Boolean> = _pendingOpenConnectionTab.asStateFlow()
+
+    private val _preferredRangeTestTargetId = MutableStateFlow<Long?>(null)
+    val preferredRangeTestTargetId: StateFlow<Long?> = _preferredRangeTestTargetId.asStateFlow()
 
     fun requestOpenConnectionForRangeTest(targetId: Long) {
         _preferredRangeTestTargetId.value = targetId
         _pendingOpenConnectionTab.value = true
     }
-
-    private val _preferredRangeTestTargetId = MutableStateFlow<Long?>(null)
 
     fun consumePreferredRangeTestTargetId(): Long? {
         val id = _preferredRangeTestTargetId.value ?: return null
@@ -111,6 +125,25 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         if (!_pendingOpenConnectionTab.value) return false
         _pendingOpenConnectionTab.value = false
         return true
+    }
+
+    /** Notification deep-link: open this chat after MainActivity resumes. */
+    private val _pendingChatDeepLink = MutableStateFlow<PendingChatDeepLink?>(null)
+    val pendingChatDeepLink: StateFlow<PendingChatDeepLink?> = _pendingChatDeepLink.asStateFlow()
+
+    private val _chatDeepLinkEpoch = MutableStateFlow(0)
+    val chatDeepLinkEpoch: StateFlow<Int> = _chatDeepLinkEpoch.asStateFlow()
+
+    fun requestChatDeepLink(channel: String?, dmPeerId: Long?) {
+        _pendingChatDeepLink.value = PendingChatDeepLink(channel = channel, dmPeerId = dmPeerId)
+        _chatDeepLinkEpoch.value = _chatDeepLinkEpoch.value + 1
+        requestOpenChatsTab()
+    }
+
+    fun consumeChatDeepLink(): PendingChatDeepLink? {
+        val link = _pendingChatDeepLink.value ?: return null
+        _pendingChatDeepLink.value = null
+        return link
     }
 
     /** After popping NodeDetails, MainScreen should open remote config for this node. */
@@ -158,22 +191,23 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     init {
         // Setup BLE device discovery callback
-        repository.bleManager.onDeviceDiscovered = { name, mac ->
+        repository.bleManager.onDeviceDiscovered = { name, mac, rssi ->
             viewModelScope.launch {
                 val currentList = _scannedDevices.value.toMutableList()
-                val index = currentList.indexOfFirst { it.mac == mac }
+                val index = currentList.indexOfFirst { it.mac.equals(mac, ignoreCase = true) }
                 if (index == -1) {
-                    currentList.add(BleDeviceItem(name, mac))
-                    _scannedDevices.value = currentList
-                    Log.d(TAG, "BLE Discovered: $name ($mac)")
+                    currentList.add(BleDeviceItem(name, mac, rssi))
                 } else {
-                    // Update name dynamically if a better/different name is discovered
                     val existing = currentList[index]
-                    if (existing.name != name && name != "AetherMesh Node") {
-                        currentList[index] = existing.copy(name = name)
-                        _scannedDevices.value = currentList
-                        Log.d(TAG, "BLE Discovered Name Update: $name ($mac)")
-                    }
+                    val betterName = existing.name != name && name != "AetherMesh Node"
+                    currentList[index] = existing.copy(
+                        name = if (betterName) name else existing.name,
+                        rssi = rssi
+                    )
+                }
+                _scannedDevices.value = currentList.sortedByDescending { it.rssi }
+                if (index == -1) {
+                    Log.d(TAG, "BLE Discovered: $name ($mac) rssi=$rssi")
                 }
             }
         }
@@ -405,5 +439,11 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
 data class BleDeviceItem(
     val name: String,
-    val mac: String
+    val mac: String,
+    val rssi: Int = -127
+)
+
+data class PendingChatDeepLink(
+    val channel: String? = null,
+    val dmPeerId: Long? = null
 )

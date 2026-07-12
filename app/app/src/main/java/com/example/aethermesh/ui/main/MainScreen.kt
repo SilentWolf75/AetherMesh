@@ -167,15 +167,40 @@ fun formatPositionPrecision(meters: Int, imperial: Boolean, language: String): S
     }
 }
 
-fun formatLastHeard(lastActive: Long): String {
+fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String {
     val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
+    val spanish = appLanguage == "Spanish"
     return when {
-        elapsedSeconds < 60 -> "${elapsedSeconds}s ago"
-        elapsedSeconds < 3600 -> "${elapsedSeconds / 60}m ago"
-        elapsedSeconds < 86_400 -> "${elapsedSeconds / 3600}h ago"
-        else -> "${elapsedSeconds / 86_400}d ago"
+        elapsedSeconds < 60 -> if (spanish) "hace ${elapsedSeconds}s" else "${elapsedSeconds}s ago"
+        elapsedSeconds < 3600 -> if (spanish) "hace ${elapsedSeconds / 60}m" else "${elapsedSeconds / 60}m ago"
+        elapsedSeconds < 86_400 -> if (spanish) "hace ${elapsedSeconds / 3600}h" else "${elapsedSeconds / 3600}h ago"
+        else -> if (spanish) "hace ${elapsedSeconds / 86_400}d" else "${elapsedSeconds / 86_400}d ago"
     }
 }
+
+/** Reject clearly wrong OTA payloads before flashing (Heltec .bin / RAK .zip). */
+fun isValidOtaPayload(bytes: ByteArray, fileName: String, isRakNode: Boolean): String? {
+    if (bytes.isEmpty()) return "Empty file"
+    val lower = fileName.lowercase()
+    return if (isRakNode) {
+        when {
+            !lower.endsWith(".zip") -> "RAK updates need a .zip DFU package"
+            bytes.size < 256 -> "File too small to be a DFU package"
+            bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte() -> "Not a valid ZIP (DFU) package"
+            else -> null
+        }
+    } else {
+        when {
+            lower.endsWith(".zip") -> "Heltec updates need a .bin image (not .zip)"
+            bytes.size < 1024 -> "Firmware image looks too small"
+            bytes[0] != 0xE9.toByte() && !lower.endsWith(".bin") ->
+                "Does not look like an ESP32 .bin image"
+            else -> null
+        }
+    }
+}
+
+const val WEB_FLASHER_URL = "https://silentwolf75.github.io/AetherMesh/"
 
 
 fun t(text: String, lang: String): String {
@@ -348,6 +373,7 @@ fun MainScreen(
     var activeTab by remember { mutableStateOf(TabItem.CHATS) }
     var fitTraceRouteToken by remember { mutableIntStateOf(0) }
     var pendingMapRemoteConfigId by remember { mutableStateOf<Long?>(null) }
+    var pendingMapFocusNodeId by remember { mutableStateOf<Long?>(null) }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
@@ -369,6 +395,7 @@ fun MainScreen(
     val channels by viewModel.channels.collectAsStateWithLifecycle()
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val activeChatId by viewModel.activeChatId.collectAsStateWithLifecycle()
+    val chatDeepLinkEpoch by viewModel.chatDeepLinkEpoch.collectAsStateWithLifecycle()
 
     val pendingOpenChats by viewModel.pendingOpenChatsTab.collectAsStateWithLifecycle()
     LaunchedEffect(pendingOpenChats) {
@@ -380,6 +407,7 @@ fun MainScreen(
     LaunchedEffect(pendingOpenMap) {
         if (viewModel.consumeOpenMapTab()) {
             activeTab = TabItem.MAP
+            pendingMapFocusNodeId = viewModel.consumeFocusNodeId()
         }
     }
     val pendingOpenConnection by viewModel.pendingOpenConnectionTab.collectAsStateWithLifecycle()
@@ -393,6 +421,21 @@ fun MainScreen(
         val id = viewModel.consumeRemoteConfigNodeId() ?: return@LaunchedEffect
         activeTab = TabItem.MAP
         pendingMapRemoteConfigId = id
+    }
+    val pendingChatDeep by viewModel.pendingChatDeepLink.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingChatDeep) {
+        val link = viewModel.consumeChatDeepLink() ?: return@LaunchedEffect
+        activeTab = TabItem.CHATS
+        when {
+            link.dmPeerId != null && link.dmPeerId != 0L -> viewModel.selectDirectMessage(link.dmPeerId)
+            !link.channel.isNullOrBlank() -> viewModel.selectChannel(link.channel)
+        }
+    }
+    val app = context.applicationContext as AetherMeshApplication
+    val pendingNotifChat by app.pendingNotificationChat.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingNotifChat) {
+        val link = app.consumeNotificationChat() ?: return@LaunchedEffect
+        viewModel.requestChatDeepLink(link.channel, link.dmPeerId)
     }
     DisposableEffect(context) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
@@ -585,7 +628,8 @@ fun MainScreen(
                             saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) },
                             channelPreviews = viewModel.getChannelInboxPreviews(),
                             dmPreviews = viewModel.getDmInboxPreviews(viewModel.connectedNodeId),
-                            onGoToConnection = { activeTab = TabItem.CONNECTION }
+                            onGoToConnection = { activeTab = TabItem.CONNECTION },
+                            deepLinkEpoch = chatDeepLinkEpoch
                         )
                         TabItem.NODES -> NodesView(
                             nodes = nodes,
@@ -603,6 +647,9 @@ fun MainScreen(
                             getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
                             connectedNodeId = viewModel.connectedNodeId,
                             onTraceRoute = { viewModel.startTraceRoute(it) },
+                            onRemoteConfig = { node -> viewModel.requestRemoteConfig(node.nodeId) },
+                            onViewOnMap = { nodeId -> viewModel.requestOpenMapTab(focusNodeId = nodeId) },
+                            onRangeTest = { nodeId -> viewModel.requestOpenConnectionForRangeTest(nodeId) },
                             onOpenNodeDetails = { nodeId ->
                                 onItemClick(com.example.aethermesh.NodeDetails(nodeId))
                             }
@@ -624,6 +671,8 @@ fun MainScreen(
                             },
                             onNavigateToChats = { activeTab = TabItem.CHATS },
                             fitTraceRouteToken = fitTraceRouteToken,
+                            focusNodeId = pendingMapFocusNodeId,
+                            onFocusNodeConsumed = { pendingMapFocusNodeId = null },
                             onOpenNodeDetails = { nodeId ->
                                 onItemClick(com.example.aethermesh.NodeDetails(nodeId))
                             },
@@ -675,6 +724,7 @@ fun MainScreen(
         // Overlay dialog for device password setting / authentication
         if (isConnected && !isDeviceAuthenticated && authenticationRequired != null) {
             val isFirstTime = authenticationRequired == false
+            val spanish = appLanguage == "Spanish"
             AlertDialog(
                 onDismissRequest = { /* Force auth, don't dismiss */ },
                 title = {
@@ -687,7 +737,12 @@ fun MainScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isFirstTime) "Setup Device Password" else "Unlock Device",
+                            text = when {
+                                isFirstTime && spanish -> "Configurar contraseña"
+                                isFirstTime -> "Setup Device Password"
+                                spanish -> "Desbloquear dispositivo"
+                                else -> "Unlock Device"
+                            },
                             color = TextLight,
                             fontWeight = FontWeight.Bold
                         )
@@ -696,10 +751,15 @@ fun MainScreen(
                 text = {
                     Column {
                         Text(
-                            text = if (isFirstTime) {
-                                "This node does not have a password configured. Please set a secure password for this device. The app will remember it for future connections."
-                            } else {
-                                "Enter the password for this node to authenticate."
+                            text = when {
+                                isFirstTime && spanish ->
+                                    "Este nodo no tiene contraseña. Configura una segura; la app la recordará."
+                                isFirstTime ->
+                                    "This node does not have a password configured. Please set a secure password for this device. The app will remember it for future connections."
+                                spanish ->
+                                    "Introduce la contraseña de este nodo para autenticarte."
+                                else ->
+                                    "Enter the password for this node to authenticate."
                             },
                             color = TextMuted,
                             fontSize = 13.sp
@@ -712,7 +772,7 @@ fun MainScreen(
                                 authPasswordInput = it
                                 authError = false
                             },
-                            label = { Text("Password", color = TextMuted) },
+                            label = { Text(if (spanish) "Contraseña" else "Password", color = TextMuted) },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -728,7 +788,10 @@ fun MainScreen(
                         if (authError) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Authentication failed. Incorrect password.",
+                                text = if (spanish)
+                                    "Autenticación fallida. Contraseña incorrecta."
+                                else
+                                    "Authentication failed. Incorrect password.",
                                 color = AccentRed,
                                 fontSize = 12.sp
                             )
@@ -748,7 +811,14 @@ fun MainScreen(
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
                     ) {
-                        Text(if (isFirstTime) "Set Password" else "Unlock")
+                        Text(
+                            when {
+                                isFirstTime && spanish -> "Establecer"
+                                isFirstTime -> "Set Password"
+                                spanish -> "Desbloquear"
+                                else -> "Unlock"
+                            }
+                        )
                     }
                 },
                 dismissButton = {
@@ -757,7 +827,7 @@ fun MainScreen(
                             viewModel.disconnect()
                         }
                     ) {
-                        Text("Disconnect", color = TextMuted)
+                        Text(if (spanish) "Desconectar" else "Disconnect", color = TextMuted)
                     }
                 },
                 containerColor = SurfaceDark
@@ -888,7 +958,8 @@ fun ChatView(
     saveChatKey: (String, String) -> Unit,
     channelPreviews: Map<String, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
     dmPreviews: Map<Long, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
-    onGoToConnection: () -> Unit = {}
+    onGoToConnection: () -> Unit = {},
+    deepLinkEpoch: Int = 0
 ) {
     var textState by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf<String?>(null) }
@@ -911,6 +982,9 @@ fun ChatView(
     LaunchedEffect(activeChatId) {
         if (activeChatId != null && activeChatId != 0L) inThread = true
     }
+    LaunchedEffect(deepLinkEpoch) {
+        if (deepLinkEpoch > 0) inThread = true
+    }
 
     if (showNewChannelDialog) {
         NewChannelDialog(
@@ -928,6 +1002,14 @@ fun ChatView(
     if (!inThread) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             val dmNodes = nodes.filter { it.nodeId != localNodeId }
+            val sortedChannels = remember(channels, channelPreviews) {
+                channels.sortedByDescending { channelPreviews[it]?.timestamp ?: 0L }
+            }
+            val sortedDmNodes = remember(dmNodes, dmPreviews) {
+                dmNodes.sortedByDescending { node ->
+                    dmPreviews[node.nodeId]?.timestamp?.takeIf { it > 0L } ?: node.lastActive
+                }
+            }
             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Row(
@@ -951,7 +1033,7 @@ fun ChatView(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                 }
-                items(channels) { channel ->
+                items(sortedChannels) { channel ->
                     val preview = channelPreviews[channel]
                     Row(
                         modifier = Modifier
@@ -997,13 +1079,13 @@ fun ChatView(
                     Spacer(modifier = Modifier.height(12.dp))
                     AetherSectionHeader(
                         title = if (spanish) "Mensajes directos" else "Direct Messages",
-                        trailing = "${dmNodes.size}",
+                        trailing = "${sortedDmNodes.size}",
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                 }
 
-                if (dmNodes.isEmpty()) {
+                if (sortedDmNodes.isEmpty()) {
                     item {
                         Text(
                             if (spanish)
@@ -1016,7 +1098,7 @@ fun ChatView(
                         )
                     }
                 } else {
-                    items(dmNodes) { node ->
+                    items(sortedDmNodes) { node ->
                         val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
                         val stale = isNodeStale(node.lastActive)
                         val preview = dmPreviews[node.nodeId]
@@ -1040,9 +1122,9 @@ fun ChatView(
                                     when {
                                         preview != null -> previewSnippet(preview.snippet)
                                         stale -> if (spanish)
-                                            "Último aviso ${formatLastHeard(node.lastActive)}"
+                                            "Último aviso ${formatLastHeard(node.lastActive, appLanguage)}"
                                         else
-                                            "Last heard ${formatLastHeard(node.lastActive)}"
+                                            "Last heard ${formatLastHeard(node.lastActive, appLanguage)}"
                                         else -> if (spanish) "Mensaje directo" else "Direct message"
                                     },
                                     color = TextMuted,
@@ -1685,6 +1767,8 @@ fun NodesView(
     connectedNodeId: Long = 0L,
     onTraceRoute: (Long) -> Boolean = { false },
     onRemoteConfig: ((MeshNode) -> Unit)? = null,
+    onViewOnMap: (Long) -> Unit = {},
+    onRangeTest: (Long) -> Unit = {},
     onOpenNodeDetails: (Long) -> Unit = {}
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -1941,6 +2025,11 @@ fun NodesView(
                             onRenameClick = { renamingNode = connectedNode },
                             onTraceRoute = { false },
                             onMessageClick = { onNodeClick(connectedNode.nodeId) },
+                            onViewOnMap = {
+                                if (hasValidPosition(connectedNode.latitude, connectedNode.longitude)) {
+                                    onViewOnMap(connectedNode.nodeId)
+                                }
+                            },
                             isConnectedNode = true
                         )
                     }
@@ -1956,6 +2045,11 @@ fun NodesView(
                         onRenameClick = { renamingNode = node },
                         onTraceRoute = { onTraceRoute(node.nodeId) },
                         onMessageClick = { onNodeClick(node.nodeId) },
+                        onViewOnMap = {
+                            if (hasValidPosition(node.latitude, node.longitude)) onViewOnMap(node.nodeId)
+                        },
+                        onRangeTest = { onRangeTest(node.nodeId) },
+                        onRemoteConfig = { onRemoteConfig?.invoke(node) },
                         isConnectedNode = false
                     )
                 }
@@ -1980,6 +2074,11 @@ fun NodesView(
                             onRenameClick = { renamingNode = node },
                             onTraceRoute = { onTraceRoute(node.nodeId) },
                             onMessageClick = { onNodeClick(node.nodeId) },
+                            onViewOnMap = {
+                                if (hasValidPosition(node.latitude, node.longitude)) onViewOnMap(node.nodeId)
+                            },
+                            onRangeTest = { onRangeTest(node.nodeId) },
+                            onRemoteConfig = { onRemoteConfig?.invoke(node) },
                             isConnectedNode = false
                         )
                     }
@@ -2037,6 +2136,9 @@ fun NodeItem(
     onRenameClick: () -> Unit,
     onTraceRoute: () -> Boolean = { false },
     onMessageClick: () -> Unit = {},
+    onViewOnMap: (() -> Unit)? = null,
+    onRangeTest: (() -> Unit)? = null,
+    onRemoteConfig: (() -> Unit)? = null,
     isConnectedNode: Boolean = false
 ) {
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
@@ -2082,7 +2184,7 @@ fun NodeItem(
         Column(modifier = Modifier.weight(1f)) {
             Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(formatLastHeard(node.lastActive), color = TextMuted, fontSize = 12.sp)
+                Text(formatLastHeard(node.lastActive, appLanguage), color = TextMuted, fontSize = 12.sp)
                 if (distanceLabel != null) {
                     Text("  ·  ", color = TextMuted, fontSize = 12.sp)
                     Text(distanceLabel, color = if (stale) TextMuted else AccentMint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -2173,6 +2275,64 @@ fun NodeItem(
                                 onClick = {
                                     menuExpanded = false
                                     onTraceRoute()
+                                }
+                            )
+                            if (onViewOnMap != null && hasValidPosition(node.latitude, node.longitude)) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (appLanguage == "Spanish") "Ver en mapa" else "View on map",
+                                            color = TextLight
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onViewOnMap()
+                                    }
+                                )
+                            }
+                            if (onRangeTest != null) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (appLanguage == "Spanish") "Prueba de rango" else "Range test",
+                                            color = TextLight
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onRangeTest()
+                                    }
+                                )
+                            }
+                            if (onRemoteConfig != null) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (appLanguage == "Spanish") "Config. remota" else "Remote config",
+                                            color = TextLight
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onRemoteConfig()
+                                    }
+                                )
+                            }
+                        }
+                        if (isConnectedNode && onViewOnMap != null &&
+                            hasValidPosition(node.latitude, node.longitude)
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (appLanguage == "Spanish") "Ver en mapa" else "View on map",
+                                        color = TextLight
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onViewOnMap()
                                 }
                             )
                         }
@@ -2514,6 +2674,8 @@ fun MapViewCompose(
     onPhoneLocationChanged: (GeoPoint) -> Unit,
     onNavigateToChats: () -> Unit,
     fitTraceRouteToken: Int = 0,
+    focusNodeId: Long? = null,
+    onFocusNodeConsumed: () -> Unit = {},
     onOpenNodeDetails: (Long) -> Unit = {},
     openRemoteConfigNodeId: Long? = null,
     onRemoteConfigOpened: () -> Unit = {}
@@ -3119,6 +3281,22 @@ fun MapViewCompose(
         hasCentered = true
     }
 
+    // NodeDetails / Nodes overflow "View on map" — fly to that node.
+    LaunchedEffect(focusNodeId, nodes) {
+        val id = focusNodeId ?: return@LaunchedEffect
+        val node = nodes.find { it.nodeId == id }
+            ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
+        if (node != null && hasValidPosition(node.latitude, node.longitude)) {
+            selectedMapNode = node
+            mapView.controller.animateTo(GeoPoint(node.latitude.toDouble(), node.longitude.toDouble()))
+            mapView.controller.setZoom(16.0)
+            hasCentered = true
+            onFocusNodeConsumed()
+        } else if (nodes.isNotEmpty()) {
+            onFocusNodeConsumed()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize().clip(androidx.compose.ui.graphics.RectangleShape)) {
         AndroidView(
             factory = { mapView },
@@ -3556,7 +3734,7 @@ fun MapViewCompose(
                             Text(node.name, color = mapPrimaryText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 buildString {
-                                    append(formatLastHeard(node.lastActive))
+                                    append(formatLastHeard(node.lastActive, appLanguage))
                                     if (distanceLabel != null) append("  ·  $distanceLabel")
                                 },
                                 color = TextMuted,
@@ -5841,25 +6019,37 @@ fun SettingsView(
             var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
             var otaFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
             var otaFileName by remember { mutableStateOf("") }
+            var otaPickError by remember { mutableStateOf<String?>(null) }
             var showOtaWarning by remember { mutableStateOf(false) }
+            val isHeltecNode = connectedNode?.model?.contains("Heltec", ignoreCase = true) == true
+            val isRakNode = connectedNode?.model?.contains("RAK", ignoreCase = true) == true
+            val otaSupported = isHeltecNode || isRakNode
             val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                 if (uri != null) {
                     try {
                         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
                         if (bytes != null && bytes.isNotEmpty()) {
-                            otaFileBytes = bytes
-                            otaFileUri = uri
-                            otaFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
-                            viewModel.resetOtaState()
+                            val err = isValidOtaPayload(bytes, name, isRakNode)
+                            if (err != null) {
+                                otaFileBytes = null
+                                otaFileUri = null
+                                otaFileName = ""
+                                otaPickError = err
+                                android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
+                            } else {
+                                otaFileBytes = bytes
+                                otaFileUri = uri
+                                otaFileName = name
+                                otaPickError = null
+                                viewModel.resetOtaState()
+                            }
                         }
                     } catch (e: Exception) {
                         android.widget.Toast.makeText(context, "Could not read file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
             }
-            val isHeltecNode = connectedNode?.model?.contains("Heltec", ignoreCase = true) == true
-            val isRakNode = connectedNode?.model?.contains("RAK", ignoreCase = true) == true
-            val otaSupported = isHeltecNode || isRakNode
 
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -5880,6 +6070,38 @@ fun SettingsView(
                         color = TextMuted,
                         fontSize = 12.sp
                     )
+                    val installedFw = connectedNode?.firmwareVersion.orEmpty()
+                    if (installedFw.isNotEmpty() && isFirmwareTooOld(installedFw)) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Firmware demasiado antiguo para esta app (mín. $MIN_COMPATIBLE_FW). Usa el flasher web por USB."
+                            else
+                                "Firmware too old for this app (need $MIN_COMPATIBLE_FW+). Use the web flasher over USB.",
+                            color = AccentAmber,
+                            fontSize = 12.sp
+                        )
+                        TextButton(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(WEB_FLASHER_URL)
+                                        )
+                                    )
+                                } catch (_: Exception) { }
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                if (appLanguage == "Spanish") "Abrir web flasher" else "Open web flasher",
+                                color = AccentCyan,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
 
                     // An active transfer ALWAYS owns this card. This must be the
@@ -5954,6 +6176,10 @@ fun SettingsView(
                                 },
                                 fontSize = 12.sp
                             )
+                        }
+                        if (otaPickError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(otaPickError!!, color = AccentRed, fontSize = 12.sp)
                         }
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(
@@ -6364,6 +6590,27 @@ fun SettingsView(
                 HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
                 
                 // Notifications item
+                val notificationsGranted = remember {
+                    android.os.Build.VERSION.SDK_INT < 33 ||
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            android.Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED
+                }
+                var notifPermGranted by remember { mutableStateOf(notificationsGranted) }
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME && android.os.Build.VERSION.SDK_INT >= 33) {
+                            notifPermGranted = ContextCompat.checkSelfPermission(
+                                context,
+                                android.Manifest.permission.POST_NOTIFICATIONS
+                            ) == PackageManager.PERMISSION_GRANTED
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -6393,6 +6640,52 @@ fun SettingsView(
                             uncheckedTrackColor = BorderDark
                         )
                     )
+                }
+                if (bgAlertsEnabled && !notifPermGranted && android.os.Build.VERSION.SDK_INT >= 33) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF422006))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Las notificaciones están bloqueadas. Actívalas en Ajustes del sistema para recibir alertas en segundo plano."
+                            else
+                                "Notification permission is blocked. Enable it in system Settings so background alerts can appear.",
+                            color = Color(0xFFFDE68A),
+                            fontSize = 12.sp
+                        )
+                        TextButton(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                                        ).apply {
+                                            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                        }
+                                    )
+                                } catch (_: Exception) {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                            android.net.Uri.parse("package:${context.packageName}")
+                                        )
+                                    )
+                                }
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                if (appLanguage == "Spanish") "Abrir ajustes de notificaciones" else "Open notification settings",
+                                color = AccentCyan,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
                 HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
 
@@ -7206,8 +7499,23 @@ fun ConnectionView(
                                     outdatedNodes.joinToString(", ") { "${it.name} (${it.firmwareVersion})" } +
                                     ". Update to $MIN_COMPATIBLE_FW or newer.",
                                 color = Color(0xFFFDE68A),
-                                fontSize = 11.sp
+                                fontSize = 11.sp,
+                                modifier = Modifier.weight(1f)
                             )
+                            TextButton(
+                                onClick = {
+                                    try {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(WEB_FLASHER_URL)
+                                            )
+                                        )
+                                    } catch (_: Exception) { }
+                                }
+                            ) {
+                                Text("Flasher", color = AccentCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
 
@@ -7482,7 +7790,8 @@ fun ConnectionView(
                 mutableFloatStateOf(toolsPrefs.getFloat("range_test_interval_sec", 5f).coerceIn(2f, 30f))
             }
 
-            LaunchedEffect(Unit) {
+            val preferredRangeTarget by viewModel.preferredRangeTestTargetId.collectAsStateWithLifecycle()
+            LaunchedEffect(preferredRangeTarget) {
                 viewModel.consumePreferredRangeTestTargetId()?.let { id ->
                     rangeTargets.find { it.nodeId == id }?.let { selectedRangeTargetNode = it }
                     toolsExpanded = true
@@ -8105,6 +8414,15 @@ fun ConnectionView(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(device.name, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                                 Text(device.mac, color = TextMuted, fontSize = 12.sp)
+                            }
+                            if (device.rssi > -127) {
+                                Text(
+                                    "${device.rssi} dBm",
+                                    color = if (device.rssi >= -70) AccentMint else if (device.rssi >= -85) AccentAmber else TextMuted,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
                             }
                             Box(
                                 modifier = Modifier
