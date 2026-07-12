@@ -1218,7 +1218,8 @@ fun NodesView(
     connectedNodeId: Long = 0L,
     traceRouteState: TraceRouteState = TraceRouteState(),
     onTraceRoute: (Long) -> Boolean = { false },
-    onDismissTrace: () -> Unit = {}
+    onDismissTrace: () -> Unit = {},
+    onRemoteConfig: ((MeshNode) -> Unit)? = null
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var detailNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -1281,126 +1282,34 @@ fun NodesView(
         )
     }
 
-    // Consolidated node detail: all facts about one node + actions in one place.
+    // Full-screen Meshtastic-style details (shared with Map).
     detailNode?.let { selected ->
-        // Re-resolve from the live list so the sheet updates as telemetry arrives.
         val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
-        val route = observedRoutes[node.nodeId]
-        val hasLiveSignal = route != null && route.lastRssi != 0f
-        val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
-        val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
-        val distStr = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
-            val km = calculateDistance(phoneLocation.latitude, phoneLocation.longitude, node.latitude.toDouble(), node.longitude.toDouble())
-            if (useImperialUnits) {
-                val mi = km * 0.621371
-                if (mi < 0.2) "${(mi * 5280).toInt()} ft" else "%.2f mi".format(mi)
-            } else if (km < 1.0) "${(km * 1000).toInt()} m" else "%.2f km".format(km)
-        } else null
-
-        @Composable
-        fun DetailRow(label: String, value: String) {
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(label, color = TextMuted, fontSize = 12.sp)
-                Text(value, color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        AlertDialog(
-            onDismissRequest = { detailNode = null },
-            containerColor = SurfaceDark,
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(node.name, color = TextLight, fontWeight = FontWeight.Bold)
-                    if (node.isCharging) {
-                        Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Default.Bolt, contentDescription = "Charging", tint = Color(0xFFFACC15), modifier = Modifier.size(16.dp))
-                    }
-                }
+        NodeDetailsScreen(
+            node = node,
+            observedRoutes = observedRoutes,
+            phoneLocation = phoneLocation,
+            appLanguage = appLanguage,
+            useImperialUnits = useImperialUnits,
+            connectedNodeId = connectedNodeId,
+            getTelemetryHistory = getTelemetryHistory,
+            onDismiss = { detailNode = null },
+            onMessage = {
+                detailNode = null
+                onNodeClick(node.nodeId)
             },
-            text = {
-                Column {
-                    DetailRow("Node ID", "0x${node.nodeId.toString(16).uppercase()}")
-                    DetailRow("Model", node.model.ifEmpty { "—" })
-                    DetailRow("Firmware", node.firmwareVersion.ifEmpty { "unknown" })
-                    DetailRow("Battery", "${node.battery}%${if (node.isCharging) " (charging)" else ""}")
-                    DetailRow("Last heard", formatLastHeard(node.lastActive))
-                    if (node.uptimeSeconds > 0) DetailRow("Uptime", formatUptime(node.uptimeSeconds))
-                    if (sigRssi != 0f) DetailRow("Signal", "${sigRssi.toInt()} dBm  •  ${"%.1f".format(sigSnr)} dB SNR")
-                    if (distStr != null) DetailRow("Distance", distStr)
-                    if (hasValidPosition(node.latitude, node.longitude)) {
-                        DetailRow("Position", "%.4f, %.4f".format(node.latitude, node.longitude))
-                    }
-
-                    // Battery history graph (solar monitoring): battery % over time,
-                    // green where the node reported charging.
-                    val history = remember(node.nodeId, node.lastActive) { getTelemetryHistory(node.nodeId) }
-                    if (history.size >= 2) {
-                        Spacer(Modifier.height(10.dp))
-                        val latestV = history.last().voltage
-                        Text(
-                            "Battery history" + if (latestV > 0f) "  (now ${"%.2f".format(latestV)} V)" else "",
-                            color = TextMuted, fontSize = 11.sp
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        androidx.compose.foundation.Canvas(
-                            modifier = Modifier.fillMaxWidth().height(70.dp)
-                                .clip(RoundedCornerShape(8.dp)).background(DarkBackground).padding(6.dp)
-                        ) {
-                            val n = history.size
-                            val stepX = if (n > 1) size.width / (n - 1) else size.width
-                            // battery is 0..100 -> y from bottom
-                            fun yFor(b: Int) = size.height - (b / 100f) * size.height
-                            for (i in 0 until n - 1) {
-                                val a = history[i]; val b = history[i + 1]
-                                drawLine(
-                                    color = if (b.isCharging) Color(0xFF34D399) else AccentCyan,
-                                    start = androidx.compose.ui.geometry.Offset(i * stepX, yFor(a.battery)),
-                                    end = androidx.compose.ui.geometry.Offset((i + 1) * stepX, yFor(b.battery)),
-                                    strokeWidth = 3f
-                                )
-                            }
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("${history.first().battery}%", color = TextMuted, fontSize = 9.sp)
-                            Text("${history.size} samples", color = TextMuted, fontSize = 9.sp)
-                            Text("${history.last().battery}%", color = TextMuted, fontSize = 9.sp)
-                        }
-                    }
-
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { detailNode = null; onNodeClick(node.nodeId) },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
-                            shape = RoundedCornerShape(8.dp)
-                        ) { Text("Message", color = SurfaceDark, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                        Button(
-                            onClick = { renamingNode = node; detailNode = null },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
-                            shape = RoundedCornerShape(8.dp)
-                        ) { Text("Rename", color = TextLight, fontSize = 12.sp) }
-                    }
-                    if (node.nodeId != connectedNodeId) {
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                if (onTraceRoute(node.nodeId)) detailNode = null
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            border = BorderStroke(1.dp, AccentMint),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(Icons.Default.AltRoute, contentDescription = null, tint = AccentMint, modifier = Modifier.size(17.dp))
-                            Spacer(Modifier.width(7.dp))
-                            Text("Trace Route", color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
+            onRename = {
+                renamingNode = node
+                detailNode = null
             },
-            confirmButton = {
-                TextButton(onClick = { detailNode = null }) { Text("Close", color = AccentCyan) }
+            onTraceRoute = {
+                if (onTraceRoute(node.nodeId)) detailNode = null
+            },
+            onRemoteConfig = onRemoteConfig?.let { cb ->
+                {
+                    detailNode = null
+                    cb(node)
+                }
             }
         )
     }
@@ -1815,6 +1724,8 @@ fun MapViewCompose(
 ) {
     var hasCentered by remember { mutableStateOf(false) }
     var selectedMapNode by remember { mutableStateOf<MeshNode?>(null) }
+    var detailsMapNode by remember { mutableStateOf<MeshNode?>(null) }
+    var renamingMapNode by remember { mutableStateOf<MeshNode?>(null) }
     var selectedPingLog by remember { mutableStateOf<com.example.aethermesh.data.RangeTestLog?>(null) }
     var showRemoteConfigDialog by remember { mutableStateOf<MeshNode?>(null) }
     val context = LocalContext.current
@@ -2508,11 +2419,25 @@ fun MapViewCompose(
         val activeMapNode = selectedMapNode?.let { sel ->
             nodes.find { it.nodeId == sel.nodeId }
         } ?: selectedMapNode
-        activeMapNode?.let { node ->
+        // Compact map callout — tap opens full Details (Meshtastic-style).
+        if (detailsMapNode == null) activeMapNode?.let { node ->
             val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
             val stale = isNodeStale(node.lastActive)
             val mapPrimaryText = if (stale) TextMuted else TextLight
-            val mapAccentText = if (stale) TextMuted else AccentCyan
+            val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
+                val km = calculateDistance(
+                    phoneLocation.latitude, phoneLocation.longitude,
+                    node.latitude.toDouble(), node.longitude.toDouble()
+                )
+                if (useImperialUnits) {
+                    val mi = km * 0.621371
+                    if (mi < 0.2) "${(mi * 5280).toInt()} ft" else "%.2f mi".format(mi)
+                } else if (km < 1.0) {
+                    "${(km * 1000).toInt()} m"
+                } else {
+                    "%.2f km".format(km)
+                }
+            } else null
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -2520,173 +2445,60 @@ fun MapViewCompose(
                     .fillMaxWidth()
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.92f)),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.95f)),
                     shape = RoundedCornerShape(16.dp),
                     border = BorderStroke(1.dp, BorderDark),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            detailsMapNode = node
+                            selectedMapNode = null
+                        }
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 44.dp, height = 30.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(getBadgeColor(node.name).copy(alpha = if (stale) 0.45f else 1f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(width = 44.dp, height = 30.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(getBadgeColor(node.name)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(nodeShortName, color = Color.Black, fontSize = if (nodeShortName.length > 2) 9.sp else 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(node.name, color = mapPrimaryText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0x203B82F6))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(nodeShortName, color = Color(0xFF93C5FD), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                    Text("0x${node.nodeId.toString(16).uppercase()}", color = TextMuted, fontSize = 11.sp)
-                                }
-                            }
-                            IconButton(
-                                onClick = { selectedMapNode = null },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted, modifier = Modifier.size(16.dp))
-                            }
+                            Text(
+                                nodeShortName,
+                                color = Color.Black,
+                                fontSize = if (nodeShortName.length > 2) 9.sp else 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                        
-                        Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = BorderDark)
-                        Spacer(modifier = Modifier.height(10.dp))
-                        
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(if (appLanguage == "Spanish") "Modelo" else "Model", color = TextMuted, fontSize = 9.sp)
-                                Text(node.model, color = mapPrimaryText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(if (appLanguage == "Spanish") "Batería" else "Battery", color = TextMuted, fontSize = 9.sp)
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.BatteryFull, contentDescription = null, tint = batteryLevelColor(node.battery), modifier = Modifier.size(12.dp))
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("${node.battery}%", color = mapPrimaryText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(if (appLanguage == "Spanish") "Último Activo" else "Last Active", color = TextMuted, fontSize = 9.sp)
-                                Text(
-                                    formatLastHeard(node.lastActive),
-                                    color = mapAccentText,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(if (appLanguage == "Spanish") "Ubicación" else "Location", color = TextMuted, fontSize = 9.sp)
-                                Text("Lat: %.5f, Lon: %.5f".format(node.latitude, node.longitude), color = TextLight, fontSize = 11.sp)
-                                if (node.positionPrecision > 0) {
-                                    Text(
-                                        text = formatPositionPrecision(node.positionPrecision, useImperialUnits, appLanguage) +
-                                            if (appLanguage == "Spanish") " (aproximada)" else " (approximate)",
-                                        color = Color(0xFFFBBF24),
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                            
-                            if (phoneLocation != null) {
-                                val distanceKm = calculateDistance(
-                                    phoneLocation.latitude, phoneLocation.longitude,
-                                    node.latitude.toDouble(), node.longitude.toDouble()
-                                )
-                                val bearing = calculateBearing(
-                                    phoneLocation.latitude, phoneLocation.longitude,
-                                    node.latitude.toDouble(), node.longitude.toDouble()
-                                )
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(if (appLanguage == "Spanish") "Distancia" else "Distance", color = TextMuted, fontSize = 9.sp)
-                                    val distStr = if (useImperialUnits) {
-                                        "%.2f mi %s".format(distanceKm * 0.621371, bearing)
-                                    } else {
-                                        "%.2f km %s".format(distanceKm, bearing)
-                                    }
-                                    Text(
-                                        text = distStr,
-                                        color = AccentMint,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        val isLocalNode = node.nodeId == viewModel.connectedNodeId
-                        if (isLocalNode) {
-                            Button(
-                                onClick = {
-                                    viewModel.selectDirectMessage(node.nodeId)
-                                    onNavigateToChats()
-                                    selectedMapNode = null
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(node.name, color = mapPrimaryText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                buildString {
+                                    append(formatLastHeard(node.lastActive))
+                                    if (distanceLabel != null) append("  ·  $distanceLabel")
                                 },
-                                modifier = Modifier.fillMaxWidth().height(36.dp),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
-                            ) {
-                                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(if (appLanguage == "Spanish") "Enviar Mensaje" else "Send Message", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        } else {
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Button(
-                                    onClick = {
-                                        viewModel.selectDirectMessage(node.nodeId)
-                                        onNavigateToChats()
-                                        selectedMapNode = null
-                                    },
-                                    modifier = Modifier.weight(1f).height(36.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
-                                ) {
-                                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (appLanguage == "Spanish") "Enviar" else "Send Msg", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Button(
-                                    onClick = {
-                                        showRemoteConfigDialog = node
-                                        selectedMapNode = null
-                                    },
-                                    modifier = Modifier.weight(1f).height(36.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceDark, contentColor = TextLight),
-                                    border = BorderStroke(1.dp, BorderDark)
-                                ) {
-                                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentMint)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (appLanguage == "Spanish") "Configurar" else "Remote Config", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
                         }
+                        IconButton(
+                            onClick = { selectedMapNode = null },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            contentDescription = if (appLanguage == "Spanish") "Detalles" else "Details",
+                            tint = AccentMint,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
                 }
             }
@@ -2830,6 +2642,106 @@ fun MapViewCompose(
                 }
             }
         }
+    }
+
+    detailsMapNode?.let { selected ->
+        val node = nodes.find { it.nodeId == selected.nodeId } ?: selected
+        NodeDetailsScreen(
+            node = node,
+            observedRoutes = observedRoutes,
+            phoneLocation = phoneLocation,
+            appLanguage = appLanguage,
+            useImperialUnits = useImperialUnits,
+            connectedNodeId = viewModel.connectedNodeId,
+            getTelemetryHistory = { viewModel.getTelemetryHistory(it) },
+            onDismiss = { detailsMapNode = null },
+            onMessage = {
+                viewModel.selectDirectMessage(node.nodeId)
+                detailsMapNode = null
+                onNavigateToChats()
+            },
+            onRename = {
+                renamingMapNode = node
+                detailsMapNode = null
+            },
+            onTraceRoute = {
+                if (viewModel.startTraceRoute(node.nodeId)) detailsMapNode = null
+            },
+            onRemoteConfig = if (node.nodeId != viewModel.connectedNodeId) {
+                {
+                    showRemoteConfigDialog = node
+                    detailsMapNode = null
+                }
+            } else null
+        )
+    }
+
+    renamingMapNode?.let { node ->
+        var longName by remember(node.nodeId) { mutableStateOf(node.name) }
+        var shortName by remember(node.nodeId) {
+            mutableStateOf(node.shortName.ifEmpty { getShortName(node.name, node.nodeId) })
+        }
+        AlertDialog(
+            onDismissRequest = { renamingMapNode = null },
+            title = { Text(t("Rename Node", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(t("Long Name (max 16 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextField(
+                        value = longName,
+                        onValueChange = { if (it.length <= 16) longName = it },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = DarkBackground,
+                            unfocusedContainerColor = DarkBackground,
+                            focusedTextColor = TextLight,
+                            unfocusedTextColor = TextLight,
+                            cursorColor = AccentCyan,
+                            focusedIndicatorColor = AccentCyan,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(t("Short Name (max 4 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextField(
+                        value = shortName,
+                        onValueChange = { if (it.length <= 4) shortName = it.uppercase() },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = DarkBackground,
+                            unfocusedContainerColor = DarkBackground,
+                            focusedTextColor = TextLight,
+                            unfocusedTextColor = TextLight,
+                            cursorColor = AccentCyan,
+                            focusedIndicatorColor = AccentCyan,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.updateNodeNameAndShortName(node.nodeId, longName.trim(), shortName.trim())
+                        renamingMapNode = null
+                    }
+                ) {
+                    Text(t("Save", appLanguage), color = AccentMint, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingMapNode = null }) {
+                    Text(t("Cancel", appLanguage), color = TextMuted)
+                }
+            },
+            containerColor = SurfaceDark
+        )
     }
 
     if (showRemoteConfigDialog != null) {
