@@ -1,6 +1,7 @@
 package com.example.aethermesh
 
 import android.content.Context
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +36,7 @@ import com.example.aethermesh.ui.main.AccentMint
 import com.example.aethermesh.ui.main.MainScreen
 import com.example.aethermesh.ui.main.MainScreenViewModel
 import com.example.aethermesh.ui.main.NodeDetailsScreen
+import com.example.aethermesh.ui.main.RangeTestDialog
 import com.example.aethermesh.ui.main.SurfaceDark
 import com.example.aethermesh.ui.main.TextLight
 import com.example.aethermesh.ui.main.TextMuted
@@ -47,30 +50,53 @@ fun MainNavigation() {
     val context = LocalContext.current
     val app = context.applicationContext as AetherMeshApplication
     val viewModel: MainScreenViewModel = viewModel { MainScreenViewModel(app.repository) }
+    val nodes by viewModel.nodes.collectAsStateWithLifecycle()
+    val pendingRangeTestId by viewModel.pendingRangeTestTargetId.collectAsStateWithLifecycle()
+    val prefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
+    val appLanguage = prefs.getString("app_language", "English") ?: "English"
 
-    NavDisplay(
-        backStack = backStack,
-        onBack = { backStack.removeLastOrNull() },
-        entryProvider =
-            entryProvider {
-                entry<Main> {
-                    MainScreen(
-                        onItemClick = { navKey -> backStack.add(navKey) },
-                        viewModel = viewModel,
-                        modifier = Modifier.safeDrawingPadding().padding(16.dp)
-                    )
-                }
-                entry<NodeDetails> { key ->
-                    androidx.compose.foundation.layout.Box(modifier = Modifier.safeDrawingPadding()) {
-                        NodeDetailsRoute(
-                            nodeId = key.nodeId,
+    Box(modifier = Modifier.fillMaxSize()) {
+        NavDisplay(
+            backStack = backStack,
+            onBack = { backStack.removeLastOrNull() },
+            entryProvider =
+                entryProvider {
+                    entry<Main> {
+                        MainScreen(
+                            onItemClick = { navKey -> backStack.add(navKey) },
                             viewModel = viewModel,
-                            onBack = { backStack.removeLastOrNull() }
+                            modifier = Modifier.safeDrawingPadding().padding(16.dp)
                         )
                     }
+                    entry<NodeDetails> { key ->
+                        Box(modifier = Modifier.safeDrawingPadding()) {
+                            NodeDetailsRoute(
+                                nodeId = key.nodeId,
+                                viewModel = viewModel,
+                                onBack = { backStack.removeLastOrNull() }
+                            )
+                        }
+                    }
+                },
+        )
+
+        pendingRangeTestId?.let { targetId ->
+            val target = nodes.find { it.nodeId == targetId }
+                ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (targetId and 0xFFFFFFFFL) }
+            if (target != null) {
+                RangeTestDialog(
+                    targetNode = target,
+                    viewModel = viewModel,
+                    appLanguage = appLanguage,
+                    onDismiss = { viewModel.dismissRangeTestDialog() }
+                )
+            } else {
+                LaunchedEffect(targetId) {
+                    viewModel.dismissRangeTestDialog()
                 }
-            },
-    )
+            }
+        }
+    }
 }
 
 @Composable
@@ -229,10 +255,7 @@ private fun NodeDetailsRoute(
             onBack()
         },
         onStartRangeTest = if (node.nodeId != viewModel.connectedNodeId) {
-            {
-                viewModel.requestOpenConnectionForRangeTest(node.nodeId)
-                onBack()
-            }
+            { viewModel.requestRangeTestDialog(node.nodeId) }
         } else null
     )
 }

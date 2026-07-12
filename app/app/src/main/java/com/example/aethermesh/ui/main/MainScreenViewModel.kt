@@ -104,27 +104,15 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return id
     }
 
-    private val _pendingOpenConnectionTab = MutableStateFlow(false)
-    val pendingOpenConnectionTab: StateFlow<Boolean> = _pendingOpenConnectionTab.asStateFlow()
+    private val _pendingRangeTestTargetId = MutableStateFlow<Long?>(null)
+    val pendingRangeTestTargetId: StateFlow<Long?> = _pendingRangeTestTargetId.asStateFlow()
 
-    private val _preferredRangeTestTargetId = MutableStateFlow<Long?>(null)
-    val preferredRangeTestTargetId: StateFlow<Long?> = _preferredRangeTestTargetId.asStateFlow()
-
-    fun requestOpenConnectionForRangeTest(targetId: Long) {
-        _preferredRangeTestTargetId.value = targetId
-        _pendingOpenConnectionTab.value = true
+    fun requestRangeTestDialog(targetId: Long) {
+        _pendingRangeTestTargetId.value = targetId
     }
 
-    fun consumePreferredRangeTestTargetId(): Long? {
-        val id = _preferredRangeTestTargetId.value ?: return null
-        _preferredRangeTestTargetId.value = null
-        return id
-    }
-
-    fun consumeOpenConnectionTab(): Boolean {
-        if (!_pendingOpenConnectionTab.value) return false
-        _pendingOpenConnectionTab.value = false
-        return true
+    fun dismissRangeTestDialog() {
+        _pendingRangeTestTargetId.value = null
     }
 
     /** Notification deep-link: open this chat after MainActivity resumes. */
