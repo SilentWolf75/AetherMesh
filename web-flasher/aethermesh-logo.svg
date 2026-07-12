@@ -2,13 +2,13 @@
   <title id="title">AetherMesh</title>
   <defs>
     <linearGradient id="brandBg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#070C14"/>
-      <stop offset="0.5" stop-color="#142136"/>
-      <stop offset="1" stop-color="#1A2D4A"/>
+      <stop offset="0" stop-color="#060B14"/>
+      <stop offset="0.5" stop-color="#0E1624"/>
+      <stop offset="1" stop-color="#152033"/>
     </linearGradient>
     <linearGradient id="brandPeak" x1="32" y1="34" x2="76" y2="76" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#00E5FF"/>
-      <stop offset="1" stop-color="#0072FF"/>
+      <stop offset="0" stop-color="#7AD4FF"/>
+      <stop offset="1" stop-color="#4DA3FF"/>
     </linearGradient>
     <clipPath id="brandClip">
       <rect width="108" height="108" rx="18"/>
@@ -19,13 +19,13 @@
     <path d="M18 0v108M36 0v108M54 0v108M72 0v108M90 0v108M0 18h108M0 36h108M0 54h108M0 72h108M0 90h108" fill="none" stroke="#FFFFFF" stroke-opacity="0.095" stroke-width="0.4"/>
     <path d="M0 0l108 108M108 0L0 108" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="0.3"/>
   </g>
-  <path d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#00E5FF" stroke-width="3.5" stroke-linecap="round"/>
-  <path d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#00B0FF" stroke-width="3" stroke-linecap="round"/>
+  <path d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#4DA3FF" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#7AD4FF" stroke-width="3" stroke-linecap="round"/>
   <path d="M32 76L54 34L76 76" fill="none" stroke="url(#brandPeak)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M40 62H68" fill="none" stroke="#00B0FF" stroke-width="4" stroke-linecap="round"/>
-  <path d="M54 34V62" fill="none" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M40 62H68" fill="none" stroke="#7AD4FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M54 34V62" fill="none" stroke="#4DA3FF" stroke-width="4" stroke-linecap="round"/>
   <circle cx="54" cy="34" r="5" fill="#FFFFFF"/>
-  <circle cx="32" cy="76" r="5" fill="#00E5FF"/>
-  <circle cx="76" cy="76" r="5" fill="#00E5FF"/>
+  <circle cx="32" cy="76" r="5" fill="#C8F547"/>
+  <circle cx="76" cy="76" r="5" fill="#4DA3FF"/>
   <circle cx="54" cy="62" r="4" fill="#FFFFFF"/>
 </svg>

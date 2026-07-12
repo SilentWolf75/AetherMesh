@@ -10,15 +10,17 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700;800&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #07111d;
-            --panel: #0d1b2d;
-            --panel-2: #10243a;
-            --line: #1f3a56;
-            --cyan: #18d3ff;
-            --mint: #49f0a4;
-            --amber: #ffd166;
-            --text: #f4f8fb;
-            --muted: #a5b6c9;
+            --bg: #060B14;
+            --panel: #0E1624;
+            --panel-2: #152033;
+            --line: #243044;
+            --cyan: #4DA3FF;
+            --steel: #7AD4FF;
+            --mint: #C8F547;
+            --amber: #FFB347;
+            --orange: #FF8C42;
+            --text: #E8F0FF;
+            --muted: #7E90A8;
         }
 
         * {
@@ -31,10 +33,12 @@
             color: var(--text);
             font-family: "Plus Jakarta Sans", Arial, sans-serif;
             background:
-                linear-gradient(rgba(31, 58, 86, 0.25) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(31, 58, 86, 0.25) 1px, transparent 1px),
-                linear-gradient(145deg, #07111d 0%, #0d1b2d 52%, #162033 100%);
-            background-size: 32px 32px, 32px 32px, auto;
+                radial-gradient(ellipse at 20% 0%, rgba(77, 163, 255, 0.14), transparent 45%),
+                radial-gradient(ellipse at 90% 10%, rgba(200, 245, 71, 0.08), transparent 40%),
+                linear-gradient(rgba(36, 48, 68, 0.22) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(36, 48, 68, 0.22) 1px, transparent 1px),
+                linear-gradient(165deg, #060B14 0%, #0E1624 55%, #04070C 100%);
+            background-size: auto, auto, 32px 32px, 32px 32px, auto;
         }
 
         main {
@@ -44,9 +48,11 @@
         }
 
         .shell {
-            border: 1px solid rgba(73, 240, 164, 0.2);
-            background: rgba(13, 27, 45, 0.92);
-            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+            border: 1px solid rgba(77, 163, 255, 0.22);
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(14, 22, 36, 0.92);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45), 0 0 40px rgba(77, 163, 255, 0.06);
         }
 
         .topbar {
@@ -56,6 +62,7 @@
             gap: 16px;
             padding: 20px 24px;
             border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, #152033 0%, #0E1624 100%);
         }
 
         .brand {
@@ -68,6 +75,7 @@
             width: 44px;
             height: 44px;
             flex: 0 0 44px;
+            filter: drop-shadow(0 0 10px rgba(77, 163, 255, 0.25));
         }
 
         .mark svg {
@@ -89,10 +97,22 @@
         }
 
         .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
             color: var(--mint);
             font-size: 13px;
             font-weight: 700;
             text-transform: uppercase;
+        }
+
+        .status::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--mint);
+            box-shadow: 0 0 10px rgba(200, 245, 71, 0.7);
         }
 
         .hero {
@@ -109,6 +129,10 @@
             font-size: clamp(42px, 7vw, 76px);
             line-height: 0.95;
             letter-spacing: 0;
+            background: linear-gradient(135deg, var(--text) 40%, var(--cyan) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
         .lead {
@@ -133,32 +157,76 @@
             min-height: 46px;
             padding: 0 18px;
             border: 1px solid var(--line);
+            border-radius: 12px;
             color: var(--text);
             text-decoration: none;
             font-weight: 800;
             background: var(--panel-2);
+            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .button:hover {
+            border-color: rgba(77, 163, 255, 0.45);
+            transform: translateY(-1px);
         }
 
         .button.primary {
-            border-color: rgba(73, 240, 164, 0.65);
-            color: #03120c;
-            background: var(--mint);
+            border-color: transparent;
+            color: #060B14;
+            background: linear-gradient(135deg, var(--mint) 0%, var(--cyan) 100%);
+            box-shadow: 0 8px 24px rgba(77, 163, 255, 0.25);
         }
 
         .device {
             min-height: 270px;
             border: 1px solid var(--line);
-            background: #07111d;
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at 50% 42%, rgba(77, 163, 255, 0.12), transparent 55%),
+                #060B14;
             position: relative;
             overflow: hidden;
+        }
+
+        .radar-ring {
+            position: absolute;
+            left: 50%;
+            top: 42%;
+            border: 1px solid rgba(77, 163, 255, 0.22);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        .radar-ring:nth-child(1) { width: 70px; height: 70px; }
+        .radar-ring:nth-child(2) { width: 120px; height: 120px; opacity: 0.8; }
+        .radar-ring:nth-child(3) { width: 180px; height: 180px; opacity: 0.55; }
+
+        .radar-sweep {
+            position: absolute;
+            left: 50%;
+            top: 42%;
+            width: 180px;
+            height: 180px;
+            transform: translate(-50%, -50%);
+            background: conic-gradient(from 0deg, transparent 0deg, rgba(77, 163, 255, 0.28) 50deg, transparent 70deg);
+            border-radius: 50%;
+            animation: sweep 4.5s linear infinite;
+            mask-image: radial-gradient(circle, transparent 18%, #000 19%);
+            -webkit-mask-image: radial-gradient(circle, transparent 18%, #000 19%);
+        }
+
+        @keyframes sweep {
+            to { transform: translate(-50%, -50%) rotate(360deg); }
         }
 
         .device::before {
             content: "";
             position: absolute;
             inset: 28px 46px;
-            border: 2px solid #26384d;
-            background: #111a25;
+            border: 2px solid #243044;
+            border-radius: 14px;
+            background: #0E1624;
         }
 
         .device::after {
@@ -168,10 +236,11 @@
             right: 72px;
             bottom: 44px;
             height: 58px;
-            border-top: 2px solid #39495d;
-            border-bottom: 2px solid #39495d;
+            border-top: 2px solid #243044;
+            border-bottom: 2px solid #243044;
+            border-radius: 4px;
             background:
-                repeating-linear-gradient(90deg, #0f1824 0 18px, #223044 18px 20px);
+                repeating-linear-gradient(90deg, #0E1624 0 18px, #1a2740 18px 20px);
         }
 
         .screen {
@@ -181,14 +250,18 @@
             top: 54px;
             height: 120px;
             border: 2px solid var(--cyan);
-            background: linear-gradient(180deg, #10243a, #081522);
+            border-radius: 8px;
+            background: linear-gradient(180deg, #152033, #060B14);
             padding: 16px;
+            box-shadow: inset 0 0 24px rgba(77, 163, 255, 0.12);
+            z-index: 1;
         }
 
         .screen span {
             display: block;
             height: 10px;
             margin-bottom: 12px;
+            border-radius: 4px;
             background: var(--mint);
         }
 
@@ -199,8 +272,21 @@
 
         .screen span:nth-child(3) {
             width: 48%;
-            background: var(--amber);
+            background: var(--steel);
         }
+
+        .node-dot {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            z-index: 2;
+            box-shadow: 0 0 10px currentColor;
+        }
+
+        .node-dot.a { left: 28%; top: 38%; background: var(--mint); color: var(--mint); }
+        .node-dot.b { left: 62%; top: 30%; background: var(--cyan); color: var(--cyan); }
+        .node-dot.c { left: 70%; top: 55%; background: var(--steel); color: var(--steel); }
 
         .supported {
             display: grid;
@@ -211,14 +297,21 @@
 
         .board {
             border: 1px solid var(--line);
-            background: rgba(16, 36, 58, 0.82);
+            border-radius: 12px;
+            background: rgba(21, 32, 51, 0.82);
             padding: 16px;
             min-height: 106px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .board:hover {
+            border-color: rgba(77, 163, 255, 0.4);
+            box-shadow: 0 0 20px rgba(77, 163, 255, 0.08);
         }
 
         .board span {
             display: block;
-            color: var(--muted);
+            color: var(--cyan);
             font-size: 12px;
             font-weight: 800;
             text-transform: uppercase;
@@ -284,26 +377,26 @@
                         <svg viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">
                             <defs>
                                 <linearGradient id="homeBrandBg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-                                    <stop offset="0" stop-color="#070C14"/>
-                                    <stop offset="0.5" stop-color="#142136"/>
-                                    <stop offset="1" stop-color="#1A2D4A"/>
+                                    <stop offset="0" stop-color="#060B14"/>
+                                    <stop offset="0.5" stop-color="#0E1624"/>
+                                    <stop offset="1" stop-color="#152033"/>
                                 </linearGradient>
                                 <linearGradient id="homeBrandPeak" x1="32" y1="34" x2="76" y2="76" gradientUnits="userSpaceOnUse">
-                                    <stop offset="0" stop-color="#00E5FF"/>
-                                    <stop offset="1" stop-color="#0072FF"/>
+                                    <stop offset="0" stop-color="#7AD4FF"/>
+                                    <stop offset="1" stop-color="#4DA3FF"/>
                                 </linearGradient>
                             </defs>
                             <rect width="108" height="108" rx="18" fill="url(#homeBrandBg)"/>
                             <path d="M18 0v108M36 0v108M54 0v108M72 0v108M90 0v108M0 18h108M0 36h108M0 54h108M0 72h108M0 90h108" fill="none" stroke="#FFFFFF" stroke-opacity="0.095" stroke-width="0.4"/>
                             <path d="M0 0l108 108M108 0L0 108" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="0.3"/>
-                            <path d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#00E5FF" stroke-width="3.5" stroke-linecap="round"/>
-                            <path d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#00B0FF" stroke-width="3" stroke-linecap="round"/>
+                            <path d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#4DA3FF" stroke-width="3.5" stroke-linecap="round"/>
+                            <path d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#7AD4FF" stroke-width="3" stroke-linecap="round"/>
                             <path d="M32 76L54 34L76 76" fill="none" stroke="url(#homeBrandPeak)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-                            <path d="M40 62H68" fill="none" stroke="#00B0FF" stroke-width="4" stroke-linecap="round"/>
-                            <path d="M54 34V62" fill="none" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
+                            <path d="M40 62H68" fill="none" stroke="#7AD4FF" stroke-width="4" stroke-linecap="round"/>
+                            <path d="M54 34V62" fill="none" stroke="#4DA3FF" stroke-width="4" stroke-linecap="round"/>
                             <circle cx="54" cy="34" r="5" fill="#FFFFFF"/>
-                            <circle cx="32" cy="76" r="5" fill="#00E5FF"/>
-                            <circle cx="76" cy="76" r="5" fill="#00E5FF"/>
+                            <circle cx="32" cy="76" r="5" fill="#C8F547"/>
+                            <circle cx="76" cy="76" r="5" fill="#4DA3FF"/>
                             <circle cx="54" cy="62" r="4" fill="#FFFFFF"/>
                         </svg>
                     </div>
@@ -327,6 +420,13 @@
                     </div>
                 </div>
                 <div class="device" aria-hidden="true">
+                    <div class="radar-ring"></div>
+                    <div class="radar-ring"></div>
+                    <div class="radar-ring"></div>
+                    <div class="radar-sweep"></div>
+                    <span class="node-dot a"></span>
+                    <span class="node-dot b"></span>
+                    <span class="node-dot c"></span>
                     <div class="screen">
                         <span></span>
                         <span></span>
