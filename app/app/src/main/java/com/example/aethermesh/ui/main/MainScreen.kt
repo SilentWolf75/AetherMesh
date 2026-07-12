@@ -1822,6 +1822,9 @@ fun MapViewCompose(
     val breadcrumbs = viewModel.breadcrumbs
     val mapPrefs = remember { context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE) }
     var darkMapTiles by remember { mutableStateOf(mapPrefs.getBoolean("dark_tiles", false)) }
+    var showRangeTestHistory by remember {
+        mutableStateOf(mapPrefs.getBoolean("show_range_test_history", false))
+    }
     var showLayersMenu by remember { mutableStateOf(false) }
     var mapGeneration by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -1968,7 +1971,7 @@ fun MapViewCompose(
     }
 
     // Update overlays reactively whenever nodes, rangeTestLogs, phoneLocation, or breadcrumbs size changes
-    LaunchedEffect(nodes, observedRoutes, traceRouteState, rangeTestLogs, phoneLocation, breadcrumbs.size) {
+    LaunchedEffect(nodes, observedRoutes, traceRouteState, rangeTestLogs, phoneLocation, breadcrumbs.size, showRangeTestHistory) {
         // Keep the long-lived overlays (location, compass, scale bar); rebuild the rest
         val persistentOverlays = mapView.overlays.filter {
             it is MyLocationNewOverlay || it is CompassOverlay || it is ScaleBarOverlay
@@ -2057,8 +2060,9 @@ fun MapViewCompose(
             }
         }
 
-        // 2. Draw Range Test trace path segments (color-coded by RSSI)
-        if (rangeTestLogs.isNotEmpty()) {
+        // 2. Optional range-test history (off by default). Map shows current
+        // node positions; ping pins cluttered the view after long tests.
+        if (showRangeTestHistory && rangeTestLogs.isNotEmpty()) {
             val validLogs = rangeTestLogs.filter { hasValidPosition(it.latitude, it.longitude) }
             val pathsByTarget = validLogs.groupBy { it.targetId }.values
             pathsByTarget.forEach { targetLogs ->
@@ -2123,6 +2127,8 @@ fun MapViewCompose(
                 }
                 mapView.overlays.add(marker)
             }
+        } else if (selectedPingLog != null) {
+            selectedPingLog = null
         }
 
         // 3. Draw custom initials-badge markers for each active node.
@@ -2427,6 +2433,25 @@ fun MapViewCompose(
                             onCheckedChange = {
                                 darkMapTiles = it
                                 mapPrefs.edit().putBoolean("dark_tiles", it).apply()
+                            },
+                            modifier = Modifier.scale(0.7f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Historial de rango" else "Range test history",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Switch(
+                            checked = showRangeTestHistory,
+                            onCheckedChange = {
+                                showRangeTestHistory = it
+                                mapPrefs.edit().putBoolean("show_range_test_history", it).apply()
                             },
                             modifier = Modifier.scale(0.7f)
                         )
