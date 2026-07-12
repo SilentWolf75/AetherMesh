@@ -30,6 +30,7 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "MainActivity"
         const val EXTRA_OPEN_CHANNEL = "extra_open_channel"
         const val EXTRA_OPEN_DM_PEER = "extra_open_dm_peer"
+        const val EXTRA_OPEN_NODE_ID = "extra_open_node_id"
     }
 
     override fun onResume() {
@@ -45,10 +46,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ingestChatDeepLink(intent)
+        ingestNotificationDeepLinks(intent)
     }
 
-    private fun ingestChatDeepLink(intent: Intent?) {
+    private fun ingestNotificationDeepLinks(intent: Intent?) {
         intent ?: return
         val channel = intent.getStringExtra(EXTRA_OPEN_CHANNEL)
         val hasDm = intent.hasExtra(EXTRA_OPEN_DM_PEER)
@@ -58,12 +59,19 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_OPEN_CHANNEL)
             intent.removeExtra(EXTRA_OPEN_DM_PEER)
         }
+        if (intent.hasExtra(EXTRA_OPEN_NODE_ID)) {
+            val nodeId = intent.getLongExtra(EXTRA_OPEN_NODE_ID, 0L)
+            if (nodeId != 0L) {
+                (application as AetherMeshApplication).queueNotificationNode(nodeId)
+            }
+            intent.removeExtra(EXTRA_OPEN_NODE_ID)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        ingestChatDeepLink(intent)
+        ingestNotificationDeepLinks(intent)
 
         // Request BLE and Location permissions at startup
         checkAndRequestPermissions()

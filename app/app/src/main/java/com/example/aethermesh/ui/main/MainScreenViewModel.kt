@@ -161,6 +161,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     }
 
     fun addBreadcrumb(lat: Double, lon: Double) {
+        val prefs = repository.appPrefs()
+        if (!prefs.getBoolean("enable_phone_gps_sharing", true)) return
         if (breadcrumbs.isEmpty()) {
             breadcrumbs.add(lat to lon)
         } else {
@@ -172,6 +174,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 }
             }
         }
+    }
+
+    fun clearBreadcrumbs() {
+        breadcrumbs.clear()
     }
 
     private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -188,6 +194,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     // BLE scanning results
     private val _scannedDevices = MutableStateFlow<List<BleDeviceItem>>(emptyList())
     val scannedDevices: StateFlow<List<BleDeviceItem>> = _scannedDevices.asStateFlow()
+
+    private val _scanBlockReason = MutableStateFlow(com.example.aethermesh.ble.BleScanBlockReason.None)
+    val scanBlockReason: StateFlow<com.example.aethermesh.ble.BleScanBlockReason> =
+        _scanBlockReason.asStateFlow()
 
     init {
         // Setup BLE device discovery callback
@@ -211,10 +221,17 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 }
             }
         }
+        repository.bleManager.onScanBlocked = { reason ->
+            _scanBlockReason.value = reason
+            if (reason != com.example.aethermesh.ble.BleScanBlockReason.None) {
+                _isScanning.value = false
+            }
+        }
     }
 
     fun startScanning() {
         _scannedDevices.value = emptyList()
+        _scanBlockReason.value = com.example.aethermesh.ble.BleScanBlockReason.None
         _isScanning.value = true
         repository.bleManager.startScan()
         // Auto stop scan after 12 seconds to conserve power
@@ -310,8 +327,12 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
             clipped.replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
         }
         if (nodeId == connectedNodeId) {
-            repository.updateNodeNameAndShortName(nodeId, clipped, short)
-            return true
+            val meshOk = repository.sendNameOnlyConfig(nodeId, clipped)
+            if (!meshOk) {
+                // Keep a local rename so the UI updates; caller can toast "phone only".
+                repository.updateNodeNameAndShortName(nodeId, clipped, short)
+            }
+            return meshOk
         }
         if (adminPassword.isNotBlank()) {
             return repository.sendNameOnlyConfig(nodeId, clipped, adminPassword)

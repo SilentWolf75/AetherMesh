@@ -22,6 +22,13 @@ enum class BleConnectionPhase {
     Reconnecting
 }
 
+enum class BleScanBlockReason {
+    None,
+    BluetoothOff,
+    PermissionDenied,
+    NoScanner
+}
+
 @SuppressLint("MissingPermission")
 class BleConnectionManager(private val context: Context) {
 
@@ -149,19 +156,32 @@ class BleConnectionManager(private val context: Context) {
     var onConnectionPhaseChanged: ((BleConnectionPhase, Int) -> Unit)? = null
     var onPacketReceived: ((ByteArray) -> Unit)? = null
     var onDeviceDiscovered: ((String, String, Int) -> Unit)? = null // Name, MAC, RSSI
+    var onScanBlocked: ((BleScanBlockReason) -> Unit)? = null
 
     // Scan for AetherMesh devices.
     // We scan WITHOUT a hardware ScanFilter (offloaded 128-bit-UUID filtering is unreliable
     // on many phones) and instead identify our nodes in the callback by the advertised
     // service UUID. This is also name-independent, so nodes with a custom name still appear.
     fun startScan() {
-        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) return
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            Log.w(TAG, "BLE scan skipped: Bluetooth off or unavailable.")
+            onScanBlocked?.invoke(BleScanBlockReason.BluetoothOff)
+            return
+        }
         if (!hasBleScanPermission()) {
             Log.w(TAG, "BLE scan skipped: BLUETOOTH_SCAN (or location) permission not granted.")
+            onScanBlocked?.invoke(BleScanBlockReason.PermissionDenied)
             return
         }
 
-        val scanner = bluetoothAdapter.bluetoothLeScanner ?: return
+        val scanner = bluetoothAdapter.bluetoothLeScanner
+        if (scanner == null) {
+            Log.w(TAG, "BLE scan skipped: no LE scanner.")
+            onScanBlocked?.invoke(BleScanBlockReason.NoScanner)
+            return
+        }
+
+        onScanBlocked?.invoke(BleScanBlockReason.None)
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)

@@ -202,6 +202,16 @@ fun isValidOtaPayload(bytes: ByteArray, fileName: String, isRakNode: Boolean): S
 
 const val WEB_FLASHER_URL = "https://silentwolf75.github.io/AetherMesh/"
 
+fun localizeChatPlaceholder(content: String, appLanguage: String): String {
+    if (appLanguage != "Spanish") return content
+    return when (content) {
+        "[Encrypted Message - No Key Configured]" -> "[Mensaje cifrado — sin clave configurada]"
+        "[Decryption Error - Invalid Message]" -> "[Error de descifrado — mensaje inválido]"
+        "[Decryption Error - Bad Key or Context]" -> "[Error de descifrado — clave o contexto incorrecto]"
+        else -> content
+    }
+}
+
 
 fun t(text: String, lang: String): String {
     if (lang != "Spanish") return text
@@ -436,6 +446,11 @@ fun MainScreen(
     LaunchedEffect(pendingNotifChat) {
         val link = app.consumeNotificationChat() ?: return@LaunchedEffect
         viewModel.requestChatDeepLink(link.channel, link.dmPeerId)
+    }
+    val pendingNotifNode by app.pendingNotificationNodeId.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingNotifNode) {
+        val id = app.consumeNotificationNode() ?: return@LaunchedEffect
+        onItemClick(com.example.aethermesh.NodeDetails(id))
     }
     DisposableEffect(context) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
@@ -712,6 +727,7 @@ fun MainScreen(
                 state = traceRouteState,
                 nodes = nodes,
                 connectedNodeId = viewModel.connectedNodeId,
+                appLanguage = appLanguage,
                 onOk = { viewModel.clearTraceRouteResult() },
                 onViewOnMap = {
                     viewModel.hideTraceRouteDialog()
@@ -1232,6 +1248,7 @@ fun ChatView(
                             "Direct Key (Node 0x${activeChatId.toString(16).uppercase()})"
                     },
                     initialPasscode = passcode ?: "",
+                    appLanguage = appLanguage,
                     onSave = { newKey ->
                         saveChatKey(chatIdentifier, newKey)
                         passcode = newKey.takeIf { it.isNotEmpty() }
@@ -1475,8 +1492,10 @@ fun PasscodeEntryDialog(
     title: String,
     initialPasscode: String,
     onSave: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    appLanguage: String = "English"
 ) {
+    val spanish = appLanguage == "Spanish"
     var keyState by remember { mutableStateOf(initialPasscode) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1484,17 +1503,22 @@ fun PasscodeEntryDialog(
             TextButton(
                 onClick = { onSave(keyState.trim()) }
             ) {
-                Text("Save", color = AccentMint)
+                Text(if (spanish) "Guardar" else "Save", color = AccentMint)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Cancelar" else "Cancel", color = TextMuted)
+            }
         },
         title = { Text(title, color = TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
         text = {
             Column {
                 Text(
-                    "All messages in this chat will be encrypted and decrypted using AES-256 with the key below. Keep this key secret and share it off-grid with other participants.",
+                    if (spanish)
+                        "Todos los mensajes de este chat se cifran y descifran con AES-256 usando la clave de abajo. Manténla en secreto y compártela fuera de banda con los demás."
+                    else
+                        "All messages in this chat will be encrypted and decrypted using AES-256 with the key below. Keep this key secret and share it off-grid with other participants.",
                     color = TextMuted,
                     fontSize = 12.sp
                 )
@@ -1503,7 +1527,12 @@ fun PasscodeEntryDialog(
                     value = keyState,
                     onValueChange = { keyState = it },
                     singleLine = true,
-                    placeholder = { Text("Enter passcode (e.g. secret123)", color = TextMuted) },
+                    placeholder = {
+                        Text(
+                            if (spanish) "Introduce la clave (p. ej. secreto123)" else "Enter passcode (e.g. secret123)",
+                            color = TextMuted
+                        )
+                    },
                     colors = aetherTextFieldColors(),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -1511,7 +1540,10 @@ fun PasscodeEntryDialog(
                 if (keyState.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Leave blank to disable encryption and clear key.",
+                        if (spanish)
+                            "Déjalo vacío para desactivar el cifrado y borrar la clave."
+                        else
+                            "Leave blank to disable encryption and clear key.",
                         color = Color(0xFFFCA5A5),
                         fontSize = 10.sp
                     )
@@ -1586,7 +1618,7 @@ fun MessageBubble(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
-                text = message.content,
+                text = localizeChatPlaceholder(message.content, appLanguage),
                 color = if (isMe) Color(0xFF061018) else TextLight,
                 fontSize = 15.sp
             )
@@ -1615,8 +1647,10 @@ fun TraceRouteResultDialog(
     nodes: List<MeshNode>,
     connectedNodeId: Long,
     onOk: () -> Unit,
-    onViewOnMap: () -> Unit
+    onViewOnMap: () -> Unit,
+    appLanguage: String = "English"
 ) {
+    val spanish = appLanguage == "Spanish"
     val snrOrange = Color(0xFFFF9800)
 
     fun displayName(id: Long): String {
@@ -1670,7 +1704,7 @@ fun TraceRouteResultDialog(
         }
         if (truncated) {
             Text(
-                "Path exceeded the 8-hop capture limit",
+                if (spanish) "La ruta superó el límite de 8 saltos" else "Path exceeded the 8-hop capture limit",
                 color = snrOrange,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 6.dp)
@@ -1700,21 +1734,29 @@ fun TraceRouteResultDialog(
                             trackColor = BorderDark
                         )
                         Spacer(Modifier.height(12.dp))
-                        Text("Tracing route…", color = TextMuted, fontSize = 13.sp)
+                        Text(
+                            if (spanish) "Trazando ruta…" else "Tracing route…",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
                     }
                     state.error != null -> {
-                        Text(state.error ?: "Trace failed", color = Color(0xFFF87171), fontWeight = FontWeight.SemiBold)
+                        Text(
+                            state.error ?: (if (spanish) "Traza fallida" else "Trace failed"),
+                            color = Color(0xFFF87171),
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                     else -> {
                         RoutePath(
-                            title = "Route traced toward destination:",
+                            title = if (spanish) "Ruta hacia el destino:" else "Route traced toward destination:",
                             startId = connectedNodeId,
                             hops = state.forward,
                             truncated = state.forwardTruncated
                         )
                         Spacer(Modifier.height(18.dp))
                         RoutePath(
-                            title = "Route traced back to us:",
+                            title = if (spanish) "Ruta de vuelta:" else "Route traced back to us:",
                             startId = state.targetId,
                             hops = state.returning,
                             truncated = state.returnTruncated
@@ -1722,7 +1764,7 @@ fun TraceRouteResultDialog(
                         state.durationSeconds?.let { secs ->
                             Spacer(Modifier.height(16.dp))
                             Text(
-                                "Duration: ${"%.1f".format(secs)} s",
+                                if (spanish) "Duración: ${"%.1f".format(secs)} s" else "Duration: ${"%.1f".format(secs)} s",
                                 color = TextLight,
                                 fontSize = 13.sp
                             )
@@ -1741,7 +1783,11 @@ fun TraceRouteResultDialog(
                         (state.forward.isNotEmpty() || state.returning.isNotEmpty())
                     ) {
                         TextButton(onClick = onViewOnMap) {
-                            Text("View on map", color = TextLight, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (spanish) "Ver en mapa" else "View on map",
+                                color = TextLight,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
                 }
@@ -1851,7 +1897,7 @@ fun NodesView(
                             shortName.trim(),
                             adminPassword
                         )
-                        if (!persisted && isRemote) {
+                        if (!persisted) {
                             android.widget.Toast.makeText(
                                 context,
                                 if (appLanguage == "Spanish")
@@ -3581,19 +3627,38 @@ fun MapViewCompose(
                     
                     Spacer(modifier = Modifier.height(8.dp))
                     
-                    // Export tracklog button
-                    Button(
-                        onClick = { exportBreadcrumbsToKml(context, breadcrumbs) },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentMint.copy(alpha = 0.2f), contentColor = AccentMint),
-                        shape = RoundedCornerShape(8.dp),
+                    // Export / clear tracklog
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = if (appLanguage == "Spanish") "Exportar KML" else "Export Track (.kml)",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Button(
+                            onClick = { exportBreadcrumbsToKml(context, breadcrumbs, appLanguage) },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentMint.copy(alpha = 0.2f), contentColor = AccentMint),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = if (appLanguage == "Spanish") "Exportar KML" else "Export Track (.kml)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Button(
+                            onClick = { viewModel.clearBreadcrumbs() },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentRed.copy(alpha = 0.15f), contentColor = AccentRed),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                            enabled = breadcrumbs.isNotEmpty()
+                        ) {
+                            Text(
+                                text = if (appLanguage == "Spanish") "Borrar rastro" else "Clear track",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -3617,7 +3682,11 @@ fun MapViewCompose(
                                 .background(Color(0xFFFF9800))
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Outgoing route", color = TextLight, fontSize = 12.sp)
+                        Text(
+                            if (appLanguage == "Spanish") "Ruta de ida" else "Outgoing route",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
                     }
                     if (traceRouteState.returning.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
@@ -3629,7 +3698,7 @@ fun MapViewCompose(
                                     .background(Color(0xFF64B5F6))
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Return route", color = TextLight, fontSize = 12.sp)
+                            Text(if (appLanguage == "Spanish") "Ruta de vuelta" else "Return route", color = TextLight, fontSize = 12.sp)
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -3638,7 +3707,7 @@ fun MapViewCompose(
                         contentPadding = PaddingValues(0.dp),
                         modifier = Modifier.padding(top = 2.dp)
                     ) {
-                        Text("Clear route", color = AccentMint, fontSize = 12.sp)
+                        Text(if (appLanguage == "Spanish") "Borrar ruta" else "Clear route", color = AccentMint, fontSize = 12.sp)
                     }
                 }
             }
@@ -4034,6 +4103,7 @@ fun MapViewCompose(
 
     if (showRemoteConfigDialog != null) {
         val node = showRemoteConfigDialog!!
+        val spanish = appLanguage == "Spanish"
         // Prefill from the last settings this phone pushed to that node (if any),
         // so re-opening the dialog doesn't silently revert the node to defaults.
         val remotePrefs = remember(node.nodeId) {
@@ -4049,16 +4119,110 @@ fun MapViewCompose(
         var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
         var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
         var remoteGpsEnabled by remember(node.nodeId) { mutableStateOf(remotePrefs.getInt("gps_mode", 0) == 0) }
+        var showRemoteRepeaterConfirm by remember(node.nodeId) { mutableStateOf(false) }
+
+        fun applyRemoteConfig() {
+            val success = viewModel.sendRemoteConfig(
+                nodeId = node.nodeId,
+                name = remoteName.trim(),
+                password = remotePassword.trim(),
+                sf = remoteSF,
+                bw = remoteBW,
+                txPower = remoteTxPower,
+                region = remoteRegion,
+                role = remoteRole,
+                telemetryInterval = remoteTelemetryInterval,
+                positionPrecision = remotePositionPrecision,
+                gpsMode = if (remoteGpsEnabled) 0 else 1
+            )
+            if (success) {
+                remotePrefs.edit().apply {
+                    putInt("lora_sf", remoteSF)
+                    putFloat("lora_bw", remoteBW)
+                    putInt("lora_tx_power", remoteTxPower)
+                    putInt("region", remoteRegion)
+                    putInt("node_role", remoteRole)
+                    putInt("telemetry_interval", remoteTelemetryInterval)
+                    putInt("position_precision", remotePositionPrecision)
+                    putInt("gps_mode", if (remoteGpsEnabled) 0 else 1)
+                    apply()
+                }
+                android.widget.Toast.makeText(
+                    context,
+                    if (spanish) "Configuración remota enviada" else "Remote config dispatched!",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                android.widget.Toast.makeText(
+                    context,
+                    if (spanish) "No se pudo enviar la configuración." else "Failed to dispatch config.",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+            showRemoteConfigDialog = null
+        }
+
+        if (showRemoteRepeaterConfirm) {
+            AlertDialog(
+                onDismissRequest = { showRemoteRepeaterConfirm = false },
+                title = {
+                    Text(
+                        t("Enable Repeater Mode?", appLanguage),
+                        color = TextLight,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        t(
+                            "WARNING: In Low-Power Repeater mode, the node turns off its BLE transceivers to maximize battery. You will lose connection immediately. To configure the node again, you must hold the hardware boot button on boot to trigger factory reset.",
+                            appLanguage
+                        ),
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showRemoteRepeaterConfirm = false
+                            applyRemoteConfig()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentRed, contentColor = TextLight)
+                    ) {
+                        Text(if (spanish) "Aplicar" else "Apply", color = TextLight)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRemoteRepeaterConfirm = false }) {
+                        Text(t("Cancel", appLanguage), color = TextMuted)
+                    }
+                },
+                containerColor = SurfaceDark
+            )
+        }
 
         AlertDialog(
             onDismissRequest = { showRemoteConfigDialog = null },
-            title = { Text("Remote Node Configuration", color = TextLight, fontWeight = FontWeight.Bold) },
+            title = {
+                Text(
+                    if (spanish) "Configuración remota" else "Remote Node Configuration",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Target: 0x${node.nodeId.toString(16).uppercase()}", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (spanish) "Objetivo: 0x${node.nodeId.toString(16).uppercase()}"
+                        else "Target: 0x${node.nodeId.toString(16).uppercase()}",
+                        color = AccentCyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Custom Name", color = TextMuted, fontSize = 11.sp)
+                    Text(if (spanish) "Nombre" else "Custom Name", color = TextMuted, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     TextField(
                         value = remoteName,
@@ -4071,7 +4235,11 @@ fun MapViewCompose(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Admin Password (Required)", color = TextMuted, fontSize = 11.sp)
+                    Text(
+                        if (spanish) "Contraseña de admin (obligatoria)" else "Admin Password (Required)",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     TextField(
                         value = remotePassword,
@@ -4085,7 +4253,7 @@ fun MapViewCompose(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Radio Profile", color = TextMuted, fontSize = 11.sp)
+                    Text(if (spanish) "Perfil de radio" else "Radio Profile", color = TextMuted, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     RadioProfileChips(remoteSF, remoteBW) { profile ->
                         remoteSF = profile.sf
@@ -4094,7 +4262,11 @@ fun MapViewCompose(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Telemetry Broadcast (Interval)", color = TextMuted, fontSize = 11.sp)
+                    Text(
+                        if (spanish) "Telemetría (intervalo)" else "Telemetry Broadcast (Interval)",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(30, 60, 120, 300).forEach { interval ->
@@ -4118,10 +4290,14 @@ fun MapViewCompose(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Node Role", color = TextMuted, fontSize = 11.sp)
+                    Text(if (spanish) "Rol del nodo" else "Node Role", color = TextMuted, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("Client" to 0, "Router" to 1, "Repeater" to 2).forEach { (label, value) ->
+                        listOf(
+                            (if (spanish) "Cliente" else "Client") to 0,
+                            (if (spanish) "Router" else "Router") to 1,
+                            (if (spanish) "Repetidor" else "Repeater") to 2
+                        ).forEach { (label, value) ->
                             val isSel = remoteRole == value
                             Box(
                                 modifier = Modifier
@@ -4142,7 +4318,11 @@ fun MapViewCompose(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Position Precision (privacy blur)", color = TextMuted, fontSize = 11.sp)
+                    Text(
+                        if (spanish) "Precisión de posición (privacidad)" else "Position Precision (privacy blur)",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(POSITION_PRECISION_STEPS) { meters ->
@@ -4172,9 +4352,9 @@ fun MapViewCompose(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                            Text("Node GPS", color = TextMuted, fontSize = 11.sp)
+                            Text(if (spanish) "GPS del nodo" else "Node GPS", color = TextMuted, fontSize = 11.sp)
                             Text(
-                                "Off saves ~25% battery",
+                                if (spanish) "Apagado ahorra ~25% de batería" else "Off saves ~25% battery",
                                 color = TextMuted,
                                 fontSize = 10.sp
                             )
@@ -4190,38 +4370,24 @@ fun MapViewCompose(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val success = viewModel.sendRemoteConfig(
-                            nodeId = node.nodeId,
-                            name = remoteName.trim(),
-                            password = remotePassword.trim(),
-                            sf = remoteSF,
-                            bw = remoteBW,
-                            txPower = remoteTxPower,
-                            region = remoteRegion,
-                            role = remoteRole,
-                            telemetryInterval = remoteTelemetryInterval,
-                            positionPrecision = remotePositionPrecision,
-                            gpsMode = if (remoteGpsEnabled) 0 else 1
-                        )
-                        if (success) {
-                            remotePrefs.edit()
-                                .putInt("position_precision", remotePositionPrecision)
-                                .putInt("gps_mode", if (remoteGpsEnabled) 0 else 1)
-                                .apply()
-                            android.widget.Toast.makeText(context, "Remote config dispatched!", android.widget.Toast.LENGTH_SHORT).show()
+                        if (remoteRole == 2) {
+                            showRemoteRepeaterConfirm = true
                         } else {
-                            android.widget.Toast.makeText(context, "Failed to dispatch config.", android.widget.Toast.LENGTH_SHORT).show()
+                            applyRemoteConfig()
                         }
-                        showRemoteConfigDialog = null
                     },
                     enabled = remotePassword.isNotEmpty()
                 ) {
-                    Text("Apply Settings", color = if (remotePassword.isNotEmpty()) AccentMint else TextMuted, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (spanish) "Aplicar" else "Apply Settings",
+                        color = if (remotePassword.isNotEmpty()) AccentMint else TextMuted,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showRemoteConfigDialog = null }) {
-                    Text("Cancel", color = TextMuted)
+                    Text(t("Cancel", appLanguage), color = TextMuted)
                 }
             },
             containerColor = SurfaceDark
@@ -4483,10 +4649,24 @@ fun SettingsView(
                     fixedLonInput = json.optDouble("fixed_longitude", fixedLonInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedAltInput = json.optInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0).toString()
                     
-                    android.widget.Toast.makeText(context, "Settings imported. Click Save to apply to device.", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(
+                        context,
+                        if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                            "Ajustes importados. Pulsa Guardar para aplicarlos al dispositivo."
+                        else
+                            "Settings imported. Click Save to apply to device.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
                 }
             } catch (e: Exception) {
-                android.widget.Toast.makeText(context, "Failed to import settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(
+                    context,
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Error al importar ajustes: ${e.message}"
+                    else
+                        "Failed to import settings: ${e.message}",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -4802,8 +4982,8 @@ fun SettingsView(
         }
 
         if (activeCategory == SettingsCategory.CHANNELS) {
-            val currentRegion = remember<Int>(viewModel.connectedNodeId) {
-                val nodeKey = java.lang.Long.toHexString(viewModel.connectedNodeId).uppercase()
+            val currentRegion = remember(viewModel.connectedNodeId) {
+                val nodeKey = viewModel.connectedNodeId
                 val nPrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
                 nPrefs.getInt("region", 0)
             }
@@ -7309,6 +7489,8 @@ fun ConnectionView(
 ) {
     val context = LocalContext.current
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val scanBlockReason by viewModel.scanBlockReason.collectAsStateWithLifecycle()
+    val spanish = appLanguage == "Spanish"
     val isRangeTestActive by viewModel.isRangeTestActive.collectAsStateWithLifecycle()
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
@@ -8259,7 +8441,7 @@ fun ConnectionView(
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
-                                Text("Clear Logs", color = Color(0xFFFCA5A5), fontSize = 12.sp)
+                                Text(t("Clear Logs", appLanguage), color = Color(0xFFFCA5A5), fontSize = 12.sp)
                             }
                         }
                     }
@@ -8281,9 +8463,9 @@ fun ConnectionView(
                 ) {
                     RadarGraphic(size = 128.dp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("No Node Connected", color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text(if (appLanguage == "Spanish") "Ningún nodo conectado" else "No Node Connected", color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "Scan for a WisBlock or Heltec node, then tap it to pair.",
+                        if (appLanguage == "Spanish") "Busca un nodo WisBlock o Heltec y tócalo para emparejar." else "Scan for a WisBlock or Heltec node, then tap it to pair.",
                         color = TextMuted,
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center
@@ -8333,7 +8515,7 @@ fun ConnectionView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             AetherSectionHeader(
-                title = "Bluetooth Devices",
+                title = if (appLanguage == "Spanish") "Dispositivos Bluetooth" else "Bluetooth Devices",
                 modifier = Modifier.weight(1f)
             )
             TextButton(
@@ -8357,6 +8539,58 @@ fun ConnectionView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        if (scanBlockReason != com.example.aethermesh.ble.BleScanBlockReason.None) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF422006))
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = when (scanBlockReason) {
+                        com.example.aethermesh.ble.BleScanBlockReason.BluetoothOff ->
+                            if (spanish) "Bluetooth está apagado. Actívalo para buscar nodos."
+                            else "Bluetooth is off. Turn it on to scan for nodes."
+                        com.example.aethermesh.ble.BleScanBlockReason.PermissionDenied ->
+                            if (spanish)
+                                "Falta permiso de Bluetooth (o ubicación). Concédelo en Ajustes de la app."
+                            else
+                                "Bluetooth (or location) permission is missing. Allow it in app Settings."
+                        com.example.aethermesh.ble.BleScanBlockReason.NoScanner ->
+                            if (spanish) "Este teléfono no ofrece un escáner BLE."
+                            else "This phone has no BLE scanner available."
+                        else -> ""
+                    },
+                    color = Color(0xFFFDE68A),
+                    fontSize = 12.sp
+                )
+                if (scanBlockReason == com.example.aethermesh.ble.BleScanBlockReason.PermissionDenied) {
+                    TextButton(
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        android.net.Uri.parse("package:${context.packageName}")
+                                    )
+                                )
+                            } catch (_: Exception) { }
+                        },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            if (spanish) "Abrir ajustes de la app" else "Open app settings",
+                            color = AccentCyan,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         // 4. Bluetooth Devices Scan List
         if (scannedDevices.isEmpty()) {
             Box(
@@ -8370,7 +8604,14 @@ fun ConnectionView(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = if (isScanning) "Searching for AetherMesh nodes..." else "No devices yet",
+                        text = when {
+                            scanBlockReason != com.example.aethermesh.ble.BleScanBlockReason.None ->
+                                if (spanish) "Escaneo bloqueado" else "Scan blocked"
+                            isScanning ->
+                                if (spanish) "Buscando nodos AetherMesh…" else "Searching for AetherMesh nodes..."
+                            else ->
+                                if (spanish) "Aún no hay dispositivos" else "No devices yet"
+                        },
                         color = TextLight,
                         textAlign = TextAlign.Center,
                         fontSize = 14.sp,
@@ -8378,7 +8619,17 @@ fun ConnectionView(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = if (isScanning) "Keep the node powered and nearby." else "Tap Scan above — or tap here — to search.",
+                        text = when {
+                            scanBlockReason != com.example.aethermesh.ble.BleScanBlockReason.None ->
+                                if (spanish) "Corrige el aviso de arriba e inténtalo de nuevo."
+                                else "Fix the issue above, then try Scan again."
+                            isScanning ->
+                                if (spanish) "Mantén el nodo encendido y cerca."
+                                else "Keep the node powered and nearby."
+                            else ->
+                                if (spanish) "Pulsa Escanear arriba — o aquí — para buscar."
+                                else "Tap Scan above — or tap here — to search."
+                        },
                         color = TextMuted,
                         textAlign = TextAlign.Center,
                         fontSize = 12.sp
@@ -8707,9 +8958,18 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>) {
     android.widget.Toast.makeText(context, "All messages exported to CSV and copied to clipboard!", android.widget.Toast.LENGTH_LONG).show()
 }
 
-fun exportBreadcrumbsToKml(context: Context, breadcrumbs: List<Pair<Double, Double>>) {
+fun exportBreadcrumbsToKml(
+    context: Context,
+    breadcrumbs: List<Pair<Double, Double>>,
+    appLanguage: String = "English"
+) {
+    val spanish = appLanguage == "Spanish"
     if (breadcrumbs.isEmpty()) {
-        android.widget.Toast.makeText(context, "No breadcrumbs to export yet.", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "Aún no hay rastro GPS para exportar." else "No breadcrumbs to export yet.",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
         return
     }
     try {
@@ -8728,8 +8988,17 @@ fun exportBreadcrumbsToKml(context: Context, breadcrumbs: List<Pair<Double, Doub
             putExtra(android.content.Intent.EXTRA_STREAM, uri)
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(android.content.Intent.createChooser(intent, "Share KML Tracklog"))
+        context.startActivity(
+            android.content.Intent.createChooser(
+                intent,
+                if (spanish) "Compartir rastro KML" else "Share KML Tracklog"
+            )
+        )
     } catch (e: java.lang.Exception) {
-        android.widget.Toast.makeText(context, "Export failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+        android.widget.Toast.makeText(
+            context,
+            if (spanish) "Error al exportar: ${e.localizedMessage}" else "Export failed: ${e.localizedMessage}",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
     }
 }

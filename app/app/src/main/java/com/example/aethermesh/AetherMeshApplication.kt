@@ -39,6 +39,20 @@ class AetherMeshApplication : Application() {
         return link
     }
 
+    private val _pendingNotificationNodeId = MutableStateFlow<Long?>(null)
+    val pendingNotificationNodeId: StateFlow<Long?> = _pendingNotificationNodeId.asStateFlow()
+
+    fun queueNotificationNode(nodeId: Long) {
+        if (nodeId == 0L) return
+        _pendingNotificationNodeId.value = nodeId
+    }
+
+    fun consumeNotificationNode(): Long? {
+        val id = _pendingNotificationNodeId.value ?: return null
+        _pendingNotificationNodeId.value = null
+        return id
+    }
+
     override fun onCreate() {
         super.onCreate()
         repository = AetherMeshRepository(applicationContext)

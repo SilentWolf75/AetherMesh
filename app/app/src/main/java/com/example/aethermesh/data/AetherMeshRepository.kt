@@ -109,6 +109,8 @@ class AetherMeshRepository(private val context: Context) {
     val bleManager = BleConnectionManager(context)
     private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
 
+    fun appPrefs(): android.content.SharedPreferences = prefs
+
     // Keystore-encrypted storage for secrets (node passwords, ECDH private key).
     // Falls back to a plain file only if the Keystore is unavailable on-device.
     private val securePrefs: android.content.SharedPreferences = try {
@@ -1588,6 +1590,7 @@ class AetherMeshRepository(private val context: Context) {
 
         val tapIntent = android.content.Intent(context, com.example.aethermesh.MainActivity::class.java).apply {
             flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(com.example.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
         }
         val pi = android.app.PendingIntent.getActivity(
             context, "batt$nodeId".hashCode(), tapIntent,
@@ -1666,13 +1669,8 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun refreshData() {
-        // Suppress displaying messages if the device is connected but not authenticated
-        if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
-            _messages.value = emptyList()
-            _nodes.value = emptyList()
-            return
-        }
-
+        // Keep directory / history visible while the password dialog is up.
+        // Send paths already require auth; wiping UI made Nodes/Map look empty.
         repositoryScope.launch(dbDispatcher) {
             val chatNodeId = _activeChatId.value
             val list = if (chatNodeId == null) {
