@@ -192,13 +192,6 @@ fun NodeDetailsScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 SectionCard(title = if (appLanguage == "Spanish") "Herramientas" else "Tools") {
-                    ToolRow(
-                        icon = Icons.Default.Person,
-                        label = if (appLanguage == "Spanish") "Info de usuario" else "User Info",
-                        subtitle = "$shortName  •  0x${node.nodeId.toString(16).uppercase()}",
-                        onClick = null
-                    )
-                    HorizontalDivider(color = BorderDark)
                     if (node.nodeId != connectedNodeId) {
                         ToolRow(
                             icon = Icons.Default.AltRoute,
@@ -209,24 +202,58 @@ fun NodeDetailsScreen(
                         )
                         HorizontalDivider(color = BorderDark)
                     }
-                    ToolRow(
-                        icon = Icons.Default.SignalCellularAlt,
-                        label = if (appLanguage == "Spanish") "Calidad de señal" else "Signal Quality",
-                        subtitle = if (sigRssi != 0f) {
-                            "${sigRssi.toInt()} dBm  •  ${"%.1f".format(sigSnr)} dB SNR"
-                        } else {
-                            if (appLanguage == "Spanish") "Sin medición reciente" else "No recent measurement"
-                        },
-                        onClick = null
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.SignalCellularAlt,
+                            contentDescription = null,
+                            tint = AccentMint,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (appLanguage == "Spanish") "Calidad de señal" else "Signal Quality",
+                                color = TextLight,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                            if (sigRssi != 0f) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                ) {
+                                    SignalBars(rssi = sigRssi)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "${sigRssi.toInt()} dBm  ·  ${"%.1f".format(sigSnr)} dB SNR",
+                                        color = TextMuted,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    if (appLanguage == "Spanish") "Sin medición reciente" else "No recent measurement",
+                                    color = TextMuted,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
                     HorizontalDivider(color = BorderDark)
                     ToolRow(
                         icon = Icons.Default.Memory,
                         label = if (appLanguage == "Spanish") "Métricas del dispositivo" else "Device Metrics",
                         subtitle = buildString {
                             append("${node.battery}%")
-                            if (node.voltage > 0f) append("  •  ${"%.2f".format(node.voltage)} V")
-                            if (node.isCharging) append(if (appLanguage == "Spanish") "  •  cargando" else "  •  charging")
+                            if (node.voltage > 0f) append("  ·  ${"%.2f".format(node.voltage)} V")
+                            if (node.isCharging) append(if (appLanguage == "Spanish") "  ·  cargando" else "  ·  charging")
+                            if (node.firmwareVersion.isNotEmpty()) append("  ·  fw ${node.firmwareVersion}")
                         },
                         onClick = null,
                         trailingBolt = node.isCharging
@@ -234,11 +261,28 @@ fun NodeDetailsScreen(
 
                     if (history.size >= 2) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            if (appLanguage == "Spanish") "Historial de batería" else "Battery history",
-                            color = TextMuted,
-                            fontSize = 11.sp
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (appLanguage == "Spanish") "Historial de batería" else "Battery history",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                            if (history.any { it.isCharging }) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Bolt, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(12.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        if (appLanguage == "Spanish") "incluye carga" else "includes charging",
+                                        color = TextMuted,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(6.dp))
                         BatteryHistorySparkline(history)
                     }

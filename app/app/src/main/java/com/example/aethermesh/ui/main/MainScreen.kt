@@ -543,7 +543,8 @@ fun MainScreen(
                             viewModel = viewModel,
                             isConnected = isConnected,
                             nodes = nodes,
-                            scannedDevices = scannedDevices
+                            scannedDevices = scannedDevices,
+                            appLanguage = appLanguage
                         )
                     }
                 }
@@ -2427,6 +2428,18 @@ fun MapViewCompose(
                     if (showRangeTestHistory) {
                         if (tracingLegend) Spacer(modifier = Modifier.height(6.dp))
                         Text("RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentMint))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("ACK", color = TextMuted, fontSize = 10.sp)
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentRed))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Timeout", color = TextMuted, fontSize = 10.sp)
+                        }
                     }
                 }
             }
@@ -2501,6 +2514,41 @@ fun MapViewCompose(
                                 },
                                 color = TextMuted,
                                 fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val route = observedRoutes[node.nodeId]
+                                val hasLiveSignal = route != null && route.lastRssi != 0f
+                                val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
+                                if (sigRssi != 0f) {
+                                    SignalBars(rssi = sigRssi)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("${sigRssi.toInt()} dBm", color = TextMuted, fontSize = 11.sp)
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Icon(
+                                    Icons.Default.BatteryFull,
+                                    contentDescription = null,
+                                    tint = batteryLevelColor(node.battery),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("${node.battery}%", color = TextMuted, fontSize = 11.sp)
+                                route?.hops?.takeIf { it > 0 }?.let { h ->
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        "$h ${if (h == 1) "hop" else "hops"}",
+                                        color = AccentCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            Text(
+                                if (appLanguage == "Spanish") "Toca para detalles" else "Tap for details",
+                                color = AccentMint.copy(alpha = 0.85f),
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(top = 2.dp)
                             )
                         }
                         IconButton(
@@ -3038,19 +3086,31 @@ fun DiagnosticsView(nodes: List<MeshNode>, messages: List<ChatMessage>) {
 }
 
 @Composable
-fun DiagnosticCard(title: String, value: String, color: Color, modifier: Modifier = Modifier) {
+fun DiagnosticCard(
+    title: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        colors = CardDefaults.cardColors(containerColor = if (compact) DarkBackground else SurfaceDark),
         shape = RoundedCornerShape(12.dp),
-        modifier = modifier
+        modifier = modifier,
+        border = if (compact) BorderStroke(1.dp, BorderDark) else null
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(if (compact) 10.dp else 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, color = TextMuted, fontSize = 12.sp)
+            Text(title, color = TextMuted, fontSize = if (compact) 10.sp else 12.sp)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(value, color = color, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text(
+                value,
+                color = color,
+                fontSize = if (compact) 16.sp else 28.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -6169,16 +6229,22 @@ fun ConnectionView(
     viewModel: MainScreenViewModel,
     isConnected: Boolean,
     nodes: List<MeshNode>,
-    scannedDevices: List<BleDeviceItem>
+    scannedDevices: List<BleDeviceItem>,
+    appLanguage: String = "English"
 ) {
     val context = LocalContext.current
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val isRangeTestActive by viewModel.isRangeTestActive.collectAsStateWithLifecycle()
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
     val displayName = connectedNode?.name ?: viewModel.connectedDeviceName ?: "Wolf Base"
     val shortName = getShortName(displayName, viewModel.connectedNodeId ?: 0L)
     val badgeColor = getBadgeColor(displayName)
     val batteryVal = connectedNode?.battery ?: 98
     var toolsExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isRangeTestActive) {
+        if (isRangeTestActive) toolsExpanded = true
+    }
     
     Column(
         modifier = Modifier
@@ -6186,7 +6252,7 @@ fun ConnectionView(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        AetherSectionHeader(title = "Connection")
+        AetherSectionHeader(title = t("Connection", appLanguage))
         Spacer(modifier = Modifier.height(16.dp))
 
         // 1. Connected Node Card
@@ -6198,7 +6264,6 @@ fun ConnectionView(
                 border = BorderStroke(1.dp, BorderDark)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    // PWR and RSSI row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -6218,12 +6283,11 @@ fun ConnectionView(
                                 Icon(
                                     imageVector = Icons.Default.Bolt,
                                     contentDescription = "Charging",
-                                    tint = Color(0xFFFACC15),
+                                    tint = AccentAmber,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
                         }
-                        // Pack voltage (real data - this used to be a hardcoded RSSI string)
                         if ((connectedNode?.voltage ?: 0f) > 0f) {
                             Text(
                                 "%.2f V".format(connectedNode!!.voltage),
@@ -6234,36 +6298,57 @@ fun ConnectionView(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Short Name Badge and Name/Info
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(width = 54.dp, height = 36.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(badgeColor),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(shortName, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
+                        NodeBadge(shortName = shortName, color = badgeColor)
                         Spacer(modifier = Modifier.width(12.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                             val fwVersion = connectedNode?.firmwareVersion?.takeIf { it.isNotEmpty() } ?: "unknown"
                             Text(
-                                "Firmware: $fwVersion",
+                                "${t("Firmware Version", appLanguage)}: $fwVersion",
                                 color = TextMuted,
                                 fontSize = 11.sp
                             )
                         }
                     }
 
-                    // Different builds across the mesh are normal (Meshtastic-style);
-                    // only warn when a recently-heard node runs a firmware BASE version
-                    // older than this app supports - that's a real compatibility break,
-                    // not cosmetic build drift.
+                    // Info strip — identity at a glance
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(DarkBackground)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("ID", color = TextMuted, fontSize = 10.sp)
+                            Text(
+                                "0x${viewModel.connectedNodeId.toString(16).uppercase()}",
+                                color = TextLight,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (appLanguage == "Spanish") "Modelo" else "Model", color = TextMuted, fontSize = 10.sp)
+                            Text(
+                                connectedNode?.model?.takeIf { it.isNotEmpty() } ?: "—",
+                                color = TextLight,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(if (appLanguage == "Spanish") "Enlace" else "Link", color = TextMuted, fontSize = 10.sp)
+                            Text("BLE", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
                     val outdatedNodes = nodes.filter {
                         !isNodeStale(it.lastActive) &&
                             it.firmwareVersion.isNotEmpty() &&
@@ -6279,7 +6364,7 @@ fun ConnectionView(
                                 .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFACC15), modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 "Firmware too old for this app on: " +
@@ -6293,28 +6378,35 @@ fun ConnectionView(
 
                     Spacer(modifier = Modifier.height(20.dp))
 
-                    // Disconnect button
                     Button(
                         onClick = { viewModel.disconnectDevice() },
                         modifier = Modifier.fillMaxWidth().height(44.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Disconnect", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(t("Disconnect", appLanguage), color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                 }
             }
 
             ExpandableSectionHeader(
-                title = "Tools",
+                title = if (appLanguage == "Spanish") "Herramientas" else "Tools",
                 expanded = toolsExpanded,
                 onToggle = { toolsExpanded = !toolsExpanded },
-                badge = if (toolsExpanded) null else "Range · Routing"
+                badge = when {
+                    isRangeTestActive -> t("ACTIVE", appLanguage)
+                    toolsExpanded -> null
+                    else -> if (appLanguage == "Spanish") "Rango · Enrutamiento" else "Range · Routing"
+                }
             )
             if (toolsExpanded) {
-            // 1.5 Mesh Routing Diagnostics Card (only visible when connected)
+            // Mesh health
             val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
             val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
+            AetherSectionHeader(
+                title = t("Mesh Routing Diagnostics", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                 shape = RoundedCornerShape(16.dp),
@@ -6322,17 +6414,7 @@ fun ConnectionView(
                 border = BorderStroke(1.dp, BorderDark)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Mesh Routing Diagnostics",
-                        color = TextLight,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     meshDiagnostics?.let { diagnostics ->
-                        // Delivery is mesh ACK success rate only. Range-test PINGs use
-                        // want_ack=false (scored via PONG), so this stays n/a during tests.
                         val deliveryAttempts = diagnostics.ackedPackets + diagnostics.ackTimeouts
                         val deliveryLabel = if (deliveryAttempts > 0) {
                             "${diagnostics.ackedPackets * 100 / deliveryAttempts}%"
@@ -6342,30 +6424,28 @@ fun ConnectionView(
                         val deliveryColor = when {
                             deliveryAttempts == 0L -> TextMuted
                             diagnostics.ackTimeouts == 0L -> AccentMint
-                            else -> Color(0xFFFACC15)
+                            else -> AccentAmber
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column {
-                                Text("TX / RX", color = TextMuted, fontSize = 10.sp)
-                                Text("${diagnostics.txPackets} / ${diagnostics.rxPackets}", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Delivery", color = TextMuted, fontSize = 10.sp)
-                                Text(deliveryLabel, color = deliveryColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("Drops / Busy", color = TextMuted, fontSize = 10.sp)
-                                Text("${diagnostics.queueDrops} / ${diagnostics.cadBusyEvents}", color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
+                            DiagnosticCard("TX / RX", "${diagnostics.txPackets} / ${diagnostics.rxPackets}", AccentCyan, Modifier.weight(1f), compact = true)
+                            DiagnosticCard(if (appLanguage == "Spanish") "Entrega" else "Delivery", deliveryLabel, deliveryColor, Modifier.weight(1f), compact = true)
                         }
                         Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            DiagnosticCard(if (appLanguage == "Spanish") "Caídas" else "Drops", "${diagnostics.queueDrops}", TextMuted, Modifier.weight(1f), compact = true)
+                            DiagnosticCard("CAD busy", "${diagnostics.cadBusyEvents}", TextMuted, Modifier.weight(1f), compact = true)
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            "Relayed ${diagnostics.relayedPackets}  Retries ${diagnostics.retries}  Airtime ${diagnostics.airtimeMs / 1000}s  Protocol V${diagnostics.protocolVersion}",
+                            "Relayed ${diagnostics.relayedPackets}  ·  Retries ${diagnostics.retries}  ·  Airtime ${diagnostics.airtimeMs / 1000}s  ·  V${diagnostics.protocolVersion}",
                             color = TextMuted,
-                            fontSize = 10.sp
+                            fontSize = 11.sp
                         )
                         TextButton(
                             onClick = { exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory()) },
@@ -6373,21 +6453,36 @@ fun ConnectionView(
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Export mesh health CSV", fontSize = 11.sp)
+                            Text(
+                                if (appLanguage == "Spanish") "Exportar salud mesh CSV" else "Export mesh health CSV",
+                                fontSize = 11.sp
+                            )
                         }
-                        HorizontalDivider(color = BorderDark)
-                        Spacer(modifier = Modifier.height(10.dp))
-                    }
+                        HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 8.dp))
+                    } ?: Text(
+                        if (appLanguage == "Spanish") "Esperando telemetría del mesh…" else "Waiting for mesh telemetry…",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
                     
                     if (observedRoutes.isEmpty()) {
                         Text(
-                            text = "No routing paths observed yet.\nPaths are dynamically built as nodes transmit.",
+                            text = t("No routing paths observed yet.\nPaths are dynamically built as nodes transmit.", appLanguage),
                             color = TextMuted,
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
                         )
                     } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(if (appLanguage == "Spanish") "Destino" else "Target", color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                            Text(t("Next Hop", appLanguage), color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                            Text(t("Hops", appLanguage), color = TextMuted, fontSize = 10.sp)
+                        }
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             observedRoutes.values.forEach { route ->
                                 val targetNode = nodes.find { it.nodeId == route.targetId || (it.nodeId and 0xFFFFL) == (route.targetId and 0xFFFFL) }
@@ -6404,13 +6499,9 @@ fun ConnectionView(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(targetName, color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                        Text(
-                                            text = "Next Hop: $nextHopName",
-                                            color = TextMuted,
-                                            fontSize = 11.sp
-                                        )
+                                        Text(nextHopName, color = TextMuted, fontSize = 11.sp)
                                     }
                                     Box(
                                         modifier = Modifier
@@ -6419,7 +6510,7 @@ fun ConnectionView(
                                             .padding(horizontal = 10.dp, vertical = 4.dp)
                                     ) {
                                         Text(
-                                            text = "${route.hops} Hop${if (route.hops > 1) "s" else ""}",
+                                            text = "${route.hops} ${if (route.hops == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
                                             color = AccentCyan,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold
@@ -6432,8 +6523,10 @@ fun ConnectionView(
                 }
             }
 
-            // 1.6 LoRa Range Test Card (only visible when connected)
-            val isRangeTestActive by viewModel.isRangeTestActive.collectAsStateWithLifecycle()
+            AetherSectionHeader(
+                title = t("Signal Range Testing", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
             val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
             var rangeTestTargetDropdownExpanded by remember { mutableStateOf(false) }
             var selectedRangeTargetNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -6606,52 +6699,113 @@ fun ConnectionView(
                         }
 
                         rangeTestLogs.lastOrNull { it.success }?.let { latest ->
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text(
-                                    "Reply ${latest.rssi.toInt()} dBm / ${"%.1f".format(latest.snr)} dB",
-                                    color = AccentCyan,
-                                    fontSize = 10.sp
-                                )
-                                if (latest.remoteRssi != null && latest.remoteSnr != null) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(DarkBackground)
+                                        .padding(10.dp)
+                                ) {
                                     Text(
-                                        "Ping ${latest.remoteRssi.toInt()} dBm / ${"%.1f".format(latest.remoteSnr)} dB",
-                                        color = AccentMint,
+                                        if (appLanguage == "Spanish") "Respuesta (aquí)" else "Reply (here)",
+                                        color = TextMuted,
                                         fontSize = 10.sp
                                     )
+                                    Text(
+                                        "${latest.rssi.toInt()} dBm",
+                                        color = AccentCyan,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text("%.1f dB SNR".format(latest.snr), color = TextMuted, fontSize = 11.sp)
+                                }
+                                if (latest.remoteRssi != null && latest.remoteSnr != null) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(DarkBackground)
+                                            .padding(10.dp)
+                                    ) {
+                                        Text(
+                                            if (appLanguage == "Spanish") "Ping (en destino)" else "Ping (at target)",
+                                            color = TextMuted,
+                                            fontSize = 10.sp
+                                        )
+                                        Text(
+                                            "${latest.remoteRssi.toInt()} dBm",
+                                            color = AccentMint,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text("%.1f dB SNR".format(latest.remoteSnr), color = TextMuted, fontSize = 11.sp)
+                                    }
                                 }
                             }
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Draw Mini Signal Chart using Canvas
-                        Text("Return Signal History (dBm)", color = TextMuted, fontSize = 11.sp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                t("RSSI Signal Level History (dBm)", appLanguage),
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(AccentMint))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("OK", color = TextMuted, fontSize = 10.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("✕", color = AccentRed, fontSize = 10.sp)
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("Miss", color = TextMuted, fontSize = 10.sp)
+                            }
+                        }
                         Spacer(modifier = Modifier.height(4.dp))
                         
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(80.dp)
+                                .height(96.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(DarkBackground)
-                                .padding(8.dp)
+                                .padding(start = 28.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
                         ) {
+                            // Y-axis labels
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .offset(x = (-26).dp)
+                                    .fillMaxHeight(),
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("-40", color = TextMuted, fontSize = 9.sp)
+                                Text("-90", color = TextMuted, fontSize = 9.sp)
+                                Text("-140", color = TextMuted, fontSize = 9.sp)
+                            }
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val width = size.width
                                 val height = size.height
                                 
-                                // Draw grid line at -100 dBm
-                                val thresholdY = height * ((-100f - (-40f)) / (-140f - (-40f)))
-                                drawLine(
-                                    color = Color(0xFF334155),
-                                    start = androidx.compose.ui.geometry.Offset(0f, thresholdY),
-                                    end = androidx.compose.ui.geometry.Offset(width, thresholdY),
-                                    strokeWidth = 1f
-                                )
+                                listOf(-40f, -90f, -140f).forEach { dbm ->
+                                    val y = height * ((dbm - (-40f)) / (-140f - (-40f)))
+                                    drawLine(
+                                        color = Color(0xFF334155),
+                                        start = androidx.compose.ui.geometry.Offset(0f, y),
+                                        end = androidx.compose.ui.geometry.Offset(width, y),
+                                        strokeWidth = 1f
+                                    )
+                                }
                                 
                                 if (rangeTestLogs.isNotEmpty()) {
                                     val points = rangeTestLogs.takeLast(15)
@@ -6662,7 +6816,6 @@ fun ConnectionView(
                                     
                                     points.forEachIndexed { index, log ->
                                         val x = index * stepX
-                                        // RSSI range: -40 (top) to -140 (bottom)
                                         val clampedRssi = log.rssi.coerceIn(-140f, -40f)
                                         val y = height * ((clampedRssi - (-40f)) / (-140f - (-40f)))
                                         
@@ -6681,7 +6834,6 @@ fun ConnectionView(
                                                 )
                                             }
                                         } else {
-                                            // Timeout red cross
                                             val sizeX = 4f
                                             val failY = height - 5f
                                             drawLine(
@@ -6717,7 +6869,7 @@ fun ConnectionView(
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
-                                Text("Stop Test", color = TextLight, fontSize = 12.sp)
+                                Text(t("Stop Test", appLanguage), color = TextLight, fontSize = 12.sp)
                             }
 
                             Button(
@@ -6727,7 +6879,7 @@ fun ConnectionView(
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
-                                Text("Export CSV", color = AccentCyan, fontSize = 12.sp)
+                                Text(t("Export CSV", appLanguage), color = AccentCyan, fontSize = 12.sp)
                             }
 
                             Button(
