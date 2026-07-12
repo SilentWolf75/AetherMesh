@@ -739,12 +739,13 @@ fun ChatView(
     onSelectChannel: (String) -> Unit,
     onSelectDirectMessage: (Long) -> Unit,
     onCreateChannel: (String) -> Unit,
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (String) -> Boolean,
     onRetryMessage: (ChatMessage) -> Unit,
     getChatKey: (String) -> String?,
     saveChatKey: (String, String) -> Unit
 ) {
     var textState by remember { mutableStateOf("") }
+    var sendError by remember { mutableStateOf<String?>(null) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
 
     if (showNewChannelDialog) {
@@ -1009,8 +1010,12 @@ fun ChatView(
                 IconButton(
                     onClick = {
                         if (textState.trim().isNotEmpty()) {
-                            onSendMessage(textState)
-                            textState = ""
+                            if (onSendMessage(textState)) {
+                                textState = ""
+                                sendError = null
+                            } else {
+                                sendError = "Message not sent. Check the node connection and authentication."
+                            }
                         }
                     },
                     modifier = Modifier
@@ -1024,6 +1029,14 @@ fun ChatView(
                         tint = DarkBackground
                     )
                 }
+            }
+            sendError?.let {
+                Text(
+                    text = it,
+                    color = AccentRed,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 5.dp, start = 4.dp)
+                )
             }
         }
     }
@@ -1480,6 +1493,7 @@ fun NodesView(
                         useImperialUnits = useImperialUnits,
                         onClick = { detailNode = node },
                         onRenameClick = { renamingNode = node },
+                        onTraceRoute = { onTraceRoute(node.nodeId) },
                         isConnectedNode = node.nodeId == connectedNodeId
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -1534,6 +1548,7 @@ fun NodeItem(
     useImperialUnits: Boolean,
     onClick: () -> Unit,
     onRenameClick: () -> Unit,
+    onTraceRoute: () -> Boolean = { false },
     isConnectedNode: Boolean = false
 ) {
     val shortName = getShortName(node.name, node.nodeId)
@@ -1677,6 +1692,20 @@ fun NodeItem(
             }
             Text("Lat: %.4f".format(node.latitude), color = secondaryText, fontSize = 10.sp)
             Text("Lon: %.4f".format(node.longitude), color = secondaryText, fontSize = 10.sp)
+        }
+
+        if (!isConnectedNode) {
+            IconButton(
+                onClick = { onTraceRoute() },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AltRoute,
+                    contentDescription = "Trace Route",
+                    tint = AccentMint,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
         }
     }
 }

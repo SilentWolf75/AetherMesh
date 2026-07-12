@@ -775,19 +775,7 @@ class AetherMeshRepository(private val context: Context) {
             boundedContent
         }
 
-        // Insert into local DB as sent by local user (store plaintext locally)
-        dbHelper.insertMessage(
-            senderId = localNodeId,
-            recipientId = recipientId,
-            content = boundedContent,
-            channel = if (recipientId == 0xFFFFFFFFL) boundedChannel else "",
-            packetId = generatedPacketId,
-            status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
-            isEncrypted = isEncrypted
-        )
-        refreshData()
-
-        // 2. Build protobuf packet
+        // Build the wire packet before mutating local chat history.
         val textBuilder = TextMessage.newBuilder()
             .setContent(contentToSend)
             .setChannel(if (recipientId == 0xFFFFFFFFL) boundedChannel else "")
@@ -803,8 +791,20 @@ class AetherMeshRepository(private val context: Context) {
             .setText(textBuilder)
             .build()
 
-        // 3. Write over BLE
-        return bleManager.sendPacket(packet.toByteArray())
+        // Commit the local bubble only after Android accepted the BLE write.
+        // Otherwise the composer retains the text and reports the failed handoff.
+        if (!bleManager.sendPacket(packet.toByteArray())) return false
+        dbHelper.insertMessage(
+            senderId = localNodeId,
+            recipientId = recipientId,
+            content = boundedContent,
+            channel = if (recipientId == 0xFFFFFFFFL) boundedChannel else "",
+            packetId = generatedPacketId,
+            status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
+            isEncrypted = isEncrypted
+        )
+        refreshData()
+        return true
     }
 
     fun retryMessage(message: ChatMessage): Boolean {

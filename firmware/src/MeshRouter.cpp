@@ -81,7 +81,11 @@ void MeshRouter::loop() {
             (int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
             bool urgent = isRangeTestTextPacket(pendingRebroadcasts[i].packet);
             if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
-                relayedPackets++;
+                if (pendingRebroadcasts[i].packet.sender_id == localNodeId) {
+                    retryPackets++;
+                } else {
+                    relayedPackets++;
+                }
                 pendingRebroadcasts[i].active = false;
                 Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
                               pendingRebroadcasts[i].packet.packet_id, pendingRebroadcasts[i].packet.sender_id);
@@ -458,7 +462,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
 
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
-                if (textCallback) {
+                // Higher retry_count is forwarded again for coverage, but it is
+                // still one logical chat message and must not be displayed twice.
+                if (!packetIdSeenBefore && textCallback) {
                     textCallback(packet.sender_id, packet.payload.text.content);
                 }
                 break;
@@ -861,8 +867,25 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
     // Range-test PINGs set want_ack=false and are scored via PONG replies.
     if (packet->want_ack) {
         trackForAck(*packet);
+        if (getRoute(packet->recipient_id) == nullptr) {
+            sendRouteRequest(packet->recipient_id);
+        }
     }
-    return serializeAndSend(packet, urgent);
+    bool sent = serializeAndSend(packet, urgent);
+
+    // Channel chat has no ACK by design. Give locally-originated broadcast text
+    // one spaced insurance transmission so a single CAD collision does not make
+    // the message disappear. Receivers suppress duplicate app/display delivery
+    // by (sender_id, packet_id) while still relaying the retry for coverage.
+    if (packet->recipient_id == 0xFFFFFFFFu &&
+        packet->which_payload == aethermesh_MeshPacket_text_tag &&
+        packet->retry_count == 0 && !isRangeTestTextPacket(*packet)) {
+        aethermesh_MeshPacket retry = *packet;
+        retry.retry_count = 1;
+        retry.prev_hop_id = localNodeId;
+        queueRebroadcast(retry, millis() + random(1800, 3200));
+    }
+    return sent;
 }
 
 void MeshRouter::maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, float rssi, float snr) {
