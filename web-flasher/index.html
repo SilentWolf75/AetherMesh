@@ -415,7 +415,7 @@
   }
 
   .hardware-card-image {
-    height: 116px;
+    height: 128px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -428,14 +428,18 @@
     transform: scale(1.04);
   }
 
-  .hardware-card-image svg {
+  .hardware-card-image svg,
+  .hardware-card-image img {
     max-width: 100%;
     max-height: 100%;
+    width: auto;
+    height: auto;
     filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
     transition: filter 0.3s ease;
   }
 
-  .hardware-card:hover .hardware-card-image svg {
+  .hardware-card:hover .hardware-card-image svg,
+  .hardware-card:hover .hardware-card-image img {
     filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
   }
 
@@ -1142,25 +1146,7 @@
               <span class="hardware-card-cpu">ESP32-S3</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="144" height="96" viewBox="0 0 144 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="18" y="27" width="111" height="45" rx="3" fill="#111318" stroke="#3a3f49" stroke-width="1.4"/>
-                <rect x="15" y="41" width="7" height="17" rx="1.5" fill="#e5e7eb" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="128" y="43" width="7" height="13" rx="1.5" fill="#1f2937" stroke="#475569" stroke-width="0.8"/>
-                <g fill="#d8b84c">
-                  <circle cx="29" cy="24" r="1.8"/><circle cx="38" cy="24" r="1.8"/><circle cx="47" cy="24" r="1.8"/><circle cx="56" cy="24" r="1.8"/><circle cx="65" cy="24" r="1.8"/><circle cx="74" cy="24" r="1.8"/><circle cx="83" cy="24" r="1.8"/><circle cx="92" cy="24" r="1.8"/><circle cx="101" cy="24" r="1.8"/><circle cx="110" cy="24" r="1.8"/><circle cx="119" cy="24" r="1.8"/>
-                  <circle cx="29" cy="75" r="1.8"/><circle cx="38" cy="75" r="1.8"/><circle cx="47" cy="75" r="1.8"/><circle cx="56" cy="75" r="1.8"/><circle cx="65" cy="75" r="1.8"/><circle cx="74" cy="75" r="1.8"/><circle cx="83" cy="75" r="1.8"/><circle cx="92" cy="75" r="1.8"/><circle cx="101" cy="75" r="1.8"/><circle cx="110" cy="75" r="1.8"/><circle cx="119" cy="75" r="1.8"/>
-                </g>
-                <rect x="52" y="33" width="61" height="31" rx="1.5" fill="#05070a" stroke="#697386" stroke-width="1.2"/>
-                <rect x="56" y="37" width="53" height="23" rx="0.8" fill="#1f1f1f"/>
-                <rect x="25" y="34" width="18" height="26" rx="1.5" fill="#222832" stroke="#4b5563" stroke-width="0.7"/>
-                <rect x="28" y="37" width="5" height="6" rx="0.7" fill="#d1d5db"/>
-                <rect x="35" y="37" width="5" height="6" rx="0.7" fill="#6b7280"/>
-                <circle cx="34" cy="52" r="4" fill="#d8b84c" stroke="#f8fafc" stroke-width="1"/>
-                <rect x="23" y="61" width="15" height="5" rx="0.7" fill="#d1d5db"/>
-                <circle cx="41" cy="31" r="2.2" fill="#cbd5e1"/><circle cx="122" cy="31" r="2.2" fill="#cbd5e1"/><circle cx="122" cy="67" r="2.2" fill="#cbd5e1"/>
-                <rect x="116" y="42" width="7" height="8" rx="1" fill="#374151"/>
-                <circle cx="120" cy="59" r="1.8" fill="#ef4444"/>
-              </svg>
+              <img src="./devices/heltec-v4.svg" alt="Heltec WiFi LoRa 32 V4" width="160" height="100" loading="lazy">
             </div>
             <span class="hardware-card-name">WiFi LoRa 32 V4</span>
           </div>
@@ -1172,22 +1158,7 @@
               <span class="hardware-card-cpu">ESP32-S3</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="144" height="96" viewBox="0 0 144 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M29 31h76c5 0 9 4 9 9v22c0 4-3 7-7 7H30c-5 0-8-3-8-8v-6h-9V42h9v-4c0-4 3-7 7-7Z" fill="#f2f6fa" stroke="#cbd5e1" stroke-width="1.4"/>
-                <path d="M70 30h38c5 0 9 4 9 9v24c0 4-3 7-7 7H73c-3 0-5-2-5-5V35c0-3 1-5 2-5Z" fill="#0f9b8d"/>
-                <path d="M103 22c9 0 13 6 13 14v31" stroke="#f8fafc" stroke-width="5" stroke-linecap="round"/>
-                <path d="M103 24c7 0 10 5 10 12v29" stroke="#0f9b8d" stroke-width="3" stroke-linecap="round"/>
-                <rect x="11" y="44" width="10" height="14" rx="2" fill="#d1d5db" stroke="#8b95a1" stroke-width="1"/>
-                <rect x="54" y="43" width="46" height="25" rx="1.5" fill="#0b1415" stroke="#12564f" stroke-width="1"/>
-                <rect x="57" y="46" width="40" height="19" rx="0.8" fill="#1e1e1e"/>
-                <path d="M23 61c7-6 6-13 0-17m10 24V55c0-4 4-7 8-5l8 5v12" stroke="#94a3b8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-                <g fill="#cbd5e1">
-                  <circle cx="37" cy="38" r="2.5"/><circle cx="50" cy="38" r="2.5"/><circle cx="63" cy="38" r="2.5"/>
-                  <circle cx="37" cy="75" r="2.2"/><circle cx="105" cy="75" r="2.2"/>
-                </g>
-                <circle cx="46" cy="40" r="4" fill="#d8b84c" stroke="#f8fafc" stroke-width="1"/>
-                <rect x="118" y="47" width="6" height="20" rx="2" fill="#e5e7eb" stroke="#64748b" stroke-width="0.7"/>
-              </svg>
+              <img src="./devices/heltec-v3.svg" alt="Heltec WiFi LoRa 32 V3" width="160" height="100" loading="lazy">
             </div>
             <span class="hardware-card-name">WiFi LoRa 32 V3</span>
           </div>
@@ -1199,24 +1170,7 @@
               <span class="hardware-card-cpu">nRF52840</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="112" height="112" viewBox="0 0 112 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="37" y="7" width="38" height="96" rx="2.5" fill="#101318" stroke="#3b4250" stroke-width="1.4"/>
-                <rect x="43" y="58" width="25" height="39" rx="3" fill="#e5e7eb" stroke="#9ca3af" stroke-width="1.2"/>
-                <path d="M47 66v22m6-26v30m6-30v30m6-24v16" stroke="#c0c6cf" stroke-width="2" stroke-linecap="round"/>
-                <rect x="48" y="82" width="17" height="10" rx="1.5" fill="#1f2937"/>
-                <rect x="42" y="22" width="28" height="34" rx="2" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="45" y="27" width="22" height="17" rx="1.5" fill="#0f766e" stroke="#059669" stroke-width="0.8"/>
-                <text x="50" y="40" fill="#0f172a" font-family="Arial, sans-serif" font-size="7" font-weight="700">RAK</text>
-                <rect x="42" y="48" width="28" height="8" rx="1" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="0.6"/>
-                <g fill="#d8b84c">
-                  <circle cx="39" cy="12" r="4"/><circle cx="73" cy="12" r="4"/><circle cx="39" cy="100" r="4"/><circle cx="73" cy="100" r="4"/>
-                  <circle cx="33" cy="27" r="1.7"/><circle cx="33" cy="36" r="1.7"/><circle cx="33" cy="45" r="1.7"/><circle cx="33" cy="54" r="1.7"/><circle cx="33" cy="63" r="1.7"/><circle cx="33" cy="72" r="1.7"/><circle cx="33" cy="81" r="1.7"/>
-                  <circle cx="79" cy="27" r="1.7"/><circle cx="79" cy="36" r="1.7"/><circle cx="79" cy="45" r="1.7"/><circle cx="79" cy="54" r="1.7"/><circle cx="79" cy="63" r="1.7"/><circle cx="79" cy="72" r="1.7"/><circle cx="79" cy="81" r="1.7"/>
-                </g>
-                <circle cx="39" cy="12" r="2" fill="#f8fafc"/><circle cx="73" cy="12" r="2" fill="#f8fafc"/><circle cx="39" cy="100" r="2" fill="#f8fafc"/><circle cx="73" cy="100" r="2" fill="#f8fafc"/>
-                <rect x="38" y="40" width="5" height="9" rx="1" fill="#d1d5db"/>
-                <rect x="70" y="38" width="5" height="13" rx="1" fill="#d1d5db"/>
-              </svg>
+              <img src="./devices/rak4631.svg" alt="RAK WisBlock 4631" width="120" height="120" loading="lazy">
             </div>
             <span class="hardware-card-name">WisBlock 4631</span>
           </div>
@@ -1228,24 +1182,7 @@
               <span class="hardware-card-cpu">nRF52840</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="112" height="112" viewBox="0 0 112 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="34" y="8" width="44" height="96" rx="3" fill="#101318" stroke="#3b4250" stroke-width="1.4"/>
-                <rect x="41" y="20" width="30" height="30" rx="2" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="44" y="25" width="24" height="14" rx="1.5" fill="#0f766e" stroke="#059669" stroke-width="0.8"/>
-                <text x="49" y="36" fill="#0f172a" font-family="Arial, sans-serif" font-size="7" font-weight="700">RAK</text>
-                <rect x="39" y="58" width="34" height="36" rx="3" fill="#e5e7eb" stroke="#9ca3af" stroke-width="1.2"/>
-                <path d="M45 67v18m7-22v25m7-25v25m7-19v14" stroke="#c0c6cf" stroke-width="2" stroke-linecap="round"/>
-                <rect x="47" y="79" width="19" height="11" rx="1.5" fill="#1f2937"/>
-                <rect x="71" y="53" width="15" height="36" rx="2" fill="#c7a54b" stroke="#facc15" stroke-width="1"/>
-                <rect x="74" y="57" width="9" height="28" rx="1" fill="#2d2412" stroke="#9f7b21" stroke-width="0.8"/>
-                <text x="74" y="52" fill="#ffd166" font-family="Arial, sans-serif" font-size="8" font-weight="700">1W</text>
-                <g fill="#d8b84c">
-                  <circle cx="36" cy="13" r="4"/><circle cx="76" cy="13" r="4"/><circle cx="36" cy="99" r="4"/><circle cx="76" cy="99" r="4"/>
-                  <circle cx="30" cy="28" r="1.7"/><circle cx="30" cy="38" r="1.7"/><circle cx="30" cy="48" r="1.7"/><circle cx="30" cy="58" r="1.7"/><circle cx="30" cy="68" r="1.7"/><circle cx="30" cy="78" r="1.7"/>
-                  <circle cx="82" cy="28" r="1.7"/><circle cx="82" cy="38" r="1.7"/><circle cx="82" cy="48" r="1.7"/><circle cx="82" cy="58" r="1.7"/><circle cx="82" cy="68" r="1.7"/><circle cx="82" cy="78" r="1.7"/>
-                </g>
-                <circle cx="36" cy="13" r="2" fill="#f8fafc"/><circle cx="76" cy="13" r="2" fill="#f8fafc"/><circle cx="36" cy="99" r="2" fill="#f8fafc"/><circle cx="76" cy="99" r="2" fill="#f8fafc"/>
-              </svg>
+              <img src="./devices/rak3401.svg" alt="RAK3401 1W" width="120" height="120" loading="lazy">
             </div>
             <span class="hardware-card-name">RAK3401 1W</span>
           </div>
@@ -1257,20 +1194,7 @@
               <span class="hardware-card-cpu">nRF52840</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="112" height="112" viewBox="0 0 112 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="37" y="7" width="38" height="96" rx="2.5" fill="#101318" stroke="#3b4250" stroke-width="1.4"/>
-                <rect x="42" y="19" width="28" height="28" rx="2" fill="#e5e7eb" stroke="#9ca3af" stroke-width="1.2"/>
-                <rect x="46" y="23" width="20" height="16" rx="1.5" fill="#14222f" stroke="#38bdf8" stroke-width="0.8"/>
-                <path d="M49 34l4-5 4 3 6-7" stroke="#22d3ee" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                <rect x="43" y="56" width="26" height="37" rx="3" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="47" y="61" width="18" height="13" rx="1.5" fill="#0f766e" stroke="#059669" stroke-width="0.8"/>
-                <text x="51" y="71" fill="#0f172a" font-family="Arial, sans-serif" font-size="6" font-weight="700">RAK</text>
-                <g fill="#d8b84c">
-                  <circle cx="39" cy="12" r="4"/><circle cx="73" cy="12" r="4"/><circle cx="39" cy="100" r="4"/><circle cx="73" cy="100" r="4"/>
-                  <circle cx="33" cy="28" r="1.7"/><circle cx="33" cy="39" r="1.7"/><circle cx="33" cy="50" r="1.7"/><circle cx="33" cy="61" r="1.7"/><circle cx="33" cy="72" r="1.7"/><circle cx="33" cy="83" r="1.7"/>
-                  <circle cx="79" cy="28" r="1.7"/><circle cx="79" cy="39" r="1.7"/><circle cx="79" cy="50" r="1.7"/><circle cx="79" cy="61" r="1.7"/><circle cx="79" cy="72" r="1.7"/><circle cx="79" cy="83" r="1.7"/>
-                </g>
-              </svg>
+              <img src="./devices/rak19026.svg" alt="RAK19026" width="120" height="120" loading="lazy">
             </div>
             <span class="hardware-card-name">RAK19026</span>
           </div>
@@ -1282,20 +1206,7 @@
               <span class="hardware-card-cpu">nRF52840</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="112" height="112" viewBox="0 0 112 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="54" y="5" width="9" height="39" rx="2" fill="#111" stroke="#050505" stroke-width="1"/>
-                <rect x="53" y="40" width="11" height="7" rx="1" fill="#3f3f46"/>
-                <rect x="33" y="48" width="49" height="49" rx="9" fill="#eef2f7" stroke="#cbd5e1" stroke-width="2"/>
-                <rect x="38" y="53" width="39" height="39" rx="5" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="48" y="41" width="28" height="13" rx="2" fill="#111827" stroke="#374151" stroke-width="0.9"/>
-                <text x="53" y="50" fill="#4DA3FF" font-family="Arial, sans-serif" font-size="5" font-weight="700">LILYGO</text>
-                <rect x="48" y="62" width="22" height="22" rx="2" fill="#c4c4c0" stroke="#94a3b8" stroke-width="0.8"/>
-                <g fill="#94a3b8">
-                  <circle cx="39" cy="58" r="1.3"/><circle cx="76" cy="58" r="1.3"/><circle cx="39" cy="88" r="1.3"/><circle cx="76" cy="88" r="1.3"/>
-                </g>
-                <path d="M36 66h5m-5 6h5m-5 6h5" stroke="#cbd5e1" stroke-width="1" stroke-linecap="round"/>
-                <circle cx="79" cy="51" r="2.4" fill="#d8b84c"/>
-              </svg>
+              <img src="./devices/t-echo.svg" alt="LILYGO T-Echo" width="120" height="120" loading="lazy">
             </div>
             <span class="hardware-card-name">T-Echo</span>
           </div>
@@ -1307,22 +1218,7 @@
               <span class="hardware-card-cpu">ESP32-S3</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="112" height="112" viewBox="0 0 112 112" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="72" y="4" width="6" height="18" rx="1.5" fill="#151515"/>
-                <rect x="31" y="13" width="52" height="88" rx="12" fill="#111827" stroke="#0a0f18" stroke-width="2"/>
-                <rect x="35" y="18" width="44" height="11" rx="6" fill="#151b26" stroke="#2b3444" stroke-width="0.7"/>
-                <text x="49" y="25" fill="#d1d5db" font-family="Arial, sans-serif" font-size="5" font-weight="700">LILYGO</text>
-                <rect x="36" y="31" width="42" height="34" rx="1.5" fill="#0b0f14" stroke="#334155" stroke-width="1"/>
-                <rect x="39" y="35" width="36" height="26" rx="0.8" fill="#2f302f"/>
-                <circle cx="55" cy="72" r="5.5" fill="#e5e7eb" stroke="#64748b" stroke-width="1.2"/>
-                <path d="M30 73h13l6 5m32-5H68l-6 5" stroke="#4b5563" stroke-width="1.2" stroke-linecap="round"/>
-                <g fill="#d1d5db">
-                  <rect x="36" y="80" width="5" height="4" rx="0.8"/><rect x="43" y="80" width="5" height="4" rx="0.8"/><rect x="50" y="80" width="5" height="4" rx="0.8"/><rect x="57" y="80" width="5" height="4" rx="0.8"/><rect x="64" y="80" width="5" height="4" rx="0.8"/><rect x="71" y="80" width="5" height="4" rx="0.8"/>
-                  <rect x="37" y="86" width="5" height="4" rx="0.8"/><rect x="44" y="86" width="5" height="4" rx="0.8"/><rect x="51" y="86" width="5" height="4" rx="0.8"/><rect x="58" y="86" width="5" height="4" rx="0.8"/><rect x="65" y="86" width="5" height="4" rx="0.8"/><rect x="72" y="86" width="5" height="4" rx="0.8"/>
-                  <rect x="39" y="92" width="5" height="4" rx="0.8"/><rect x="46" y="92" width="5" height="4" rx="0.8"/><rect x="53" y="92" width="13" height="4" rx="0.8"/><rect x="69" y="92" width="5" height="4" rx="0.8"/>
-                </g>
-                <rect x="36" y="98" width="40" height="1.5" rx="0.7" fill="#374151"/>
-              </svg>
+              <img src="./devices/t-deck.svg" alt="LILYGO T-Deck" width="120" height="120" loading="lazy">
             </div>
             <span class="hardware-card-name">T-Deck</span>
           </div>
@@ -1334,22 +1230,7 @@
               <span class="hardware-card-cpu">ESP32-S3</span>
             </div>
             <div class="hardware-card-image">
-              <svg width="144" height="96" viewBox="0 0 144 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="12" y="12" width="120" height="72" rx="6" fill="#1f2937" stroke="#475569" stroke-width="2"/>
-                <rect x="18" y="18" width="108" height="60" rx="2" fill="#0f172a" stroke="#94a3b8" stroke-width="1"/>
-                <rect x="22" y="22" width="100" height="52" rx="1" fill="#17324a"/>
-                <rect x="25" y="25" width="94" height="46" fill="#183b52"/>
-                <path d="M27 67h90M32 29v38M44 29v38M56 29v38M68 29v38M80 29v38M92 29v38M104 29v38" stroke="#2dd4bf" stroke-opacity="0.18" stroke-width="1"/>
-                <rect x="38" y="34" width="44" height="22" rx="2" fill="#0b1220" stroke="#4DA3FF" stroke-width="1.4"/>
-                <path d="M45 48l10-8 9 6 11-11" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <rect x="88" y="34" width="22" height="22" rx="2" fill="#111827" stroke="#facc15" stroke-width="1"/>
-                <path d="M99 39v12m-6-6h12" stroke="#facc15" stroke-width="2" stroke-linecap="round"/>
-                <rect x="49" y="82" width="46" height="4" rx="2" fill="#334155"/>
-                <rect x="29" y="6" width="18" height="9" rx="2" fill="#2dd4bf" stroke="#0f766e" stroke-width="1"/>
-                <rect x="97" y="6" width="18" height="9" rx="2" fill="#2dd4bf" stroke="#0f766e" stroke-width="1"/>
-                <circle cx="20" cy="20" r="2" fill="#cbd5e1"/><circle cx="124" cy="20" r="2" fill="#cbd5e1"/>
-                <circle cx="20" cy="76" r="2" fill="#cbd5e1"/><circle cx="124" cy="76" r="2" fill="#cbd5e1"/>
-              </svg>
+              <img src="./devices/crowpanel-35.svg" alt="Elecrow CrowPanel 3.5" width="160" height="100" loading="lazy">
             </div>
             <span class="hardware-card-name">CrowPanel 3.5</span>
           </div>

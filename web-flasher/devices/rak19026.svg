@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none" role="img" aria-label="RAK19026">
+  <defs>
+    <linearGradient id="r19pcb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161a20"/>
+      <stop offset="1" stop-color="#0b0d11"/>
+    </linearGradient>
+  </defs>
+  <!-- Baseboard silhouette -->
+  <rect x="36" y="8" width="48" height="104" rx="3" fill="url(#r19pcb)" stroke="#3b4250" stroke-width="1.3"/>
+  <g fill="#d4af37">
+    <circle cx="40" cy="12" r="3.4"/><circle cx="80" cy="12" r="3.4"/>
+    <circle cx="40" cy="108" r="3.4"/><circle cx="80" cy="108" r="3.4"/>
+    <circle cx="32" cy="28" r="1.5"/><circle cx="32" cy="40" r="1.5"/><circle cx="32" cy="52" r="1.5"/>
+    <circle cx="32" cy="64" r="1.5"/><circle cx="32" cy="76" r="1.5"/><circle cx="32" cy="88" r="1.5"/>
+    <circle cx="88" cy="28" r="1.5"/><circle cx="88" cy="40" r="1.5"/><circle cx="88" cy="52" r="1.5"/>
+    <circle cx="88" cy="64" r="1.5"/><circle cx="88" cy="76" r="1.5"/><circle cx="88" cy="88" r="1.5"/>
+  </g>
+  <!-- GNSS / sensor module tile -->
+  <rect x="42" y="20" width="36" height="30" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+  <rect x="46" y="24" width="28" height="18" rx="1.4" fill="#0f172a" stroke="#38bdf8" stroke-width="0.9"/>
+  <path d="M50 36l5-6 5 4 8-9" stroke="#22d3ee" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="48" y="46" fill="#64748b" font-family="Arial, sans-serif" font-size="4.5" font-weight="700">GNSS</text>
+  <!-- Core slot -->
+  <rect x="42" y="56" width="36" height="42" rx="2.5" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <rect x="46" y="61" width="28" height="16" rx="1.4" fill="#0f766e"/>
+  <text x="50" y="72" fill="#ecfdf5" font-family="Arial, sans-serif" font-size="7" font-weight="800">RAK</text>
+  <rect x="48" y="82" width="24" height="10" rx="1.2" fill="#1e293b"/>
+  <text x="49" y="89" fill="#7AD4FF" font-family="Arial, sans-serif" font-size="5" font-weight="700">19026</text>
+</svg>

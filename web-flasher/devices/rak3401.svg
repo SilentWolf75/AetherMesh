@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none" role="img" aria-label="RAK3401 1W">
+  <defs>
+    <linearGradient id="r34pcb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161a20"/>
+      <stop offset="1" stop-color="#0b0d11"/>
+    </linearGradient>
+    <linearGradient id="paGold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5d76e"/>
+      <stop offset="1" stop-color="#b8860b"/>
+    </linearGradient>
+  </defs>
+  <rect x="34" y="10" width="52" height="100" rx="3" fill="url(#r34pcb)" stroke="#3b4250" stroke-width="1.3"/>
+  <g fill="#d4af37">
+    <circle cx="38" cy="14" r="3.6"/><circle cx="82" cy="14" r="3.6"/>
+    <circle cx="38" cy="106" r="3.6"/><circle cx="82" cy="106" r="3.6"/>
+    <circle cx="30" cy="30" r="1.6"/><circle cx="30" cy="40" r="1.6"/><circle cx="30" cy="50" r="1.6"/>
+    <circle cx="30" cy="60" r="1.6"/><circle cx="30" cy="70" r="1.6"/><circle cx="30" cy="80" r="1.6"/><circle cx="30" cy="90" r="1.6"/>
+    <circle cx="90" cy="30" r="1.6"/><circle cx="90" cy="40" r="1.6"/><circle cx="90" cy="50" r="1.6"/>
+    <circle cx="90" cy="60" r="1.6"/><circle cx="90" cy="70" r="1.6"/><circle cx="90" cy="80" r="1.6"/><circle cx="90" cy="90" r="1.6"/>
+  </g>
+  <g fill="#f8fafc">
+    <circle cx="38" cy="14" r="1.6"/><circle cx="82" cy="14" r="1.6"/>
+    <circle cx="38" cy="106" r="1.6"/><circle cx="82" cy="106" r="1.6"/>
+  </g>
+  <!-- Core label -->
+  <rect x="42" y="22" width="36" height="28" rx="2" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1"/>
+  <rect x="46" y="26" width="28" height="14" rx="1.2" fill="#0f766e"/>
+  <text x="50" y="36" fill="#ecfdf5" font-family="Arial, sans-serif" font-size="7" font-weight="800">RAK</text>
+  <text x="47" y="46" fill="#334155" font-family="Arial, sans-serif" font-size="5" font-weight="700">3401</text>
+  <!-- 1W PA module with gold heatsink look -->
+  <rect x="72" y="54" width="22" height="40" rx="2" fill="url(#paGold)" stroke="#fde68a" stroke-width="1"/>
+  <rect x="76" y="58" width="14" height="32" rx="1.2" fill="#2a2110" stroke="#a16207" stroke-width="0.8"/>
+  <path d="M79 62h8M79 68h8M79 74h8M79 80h8M79 86h8" stroke="#c9a227" stroke-width="1.2" stroke-linecap="round"/>
+  <text x="44" y="58" fill="#FFB347" font-family="Arial, sans-serif" font-size="9" font-weight="800">1W</text>
+  <!-- Shield / connector -->
+  <rect x="40" y="62" width="28" height="36" rx="2.5" fill="#e8ebf0" stroke="#9ca3af" stroke-width="1"/>
+  <path d="M46 70v20M52 66v28M58 66v28" stroke="#aeb6c2" stroke-width="2" stroke-linecap="round"/>
+</svg>
