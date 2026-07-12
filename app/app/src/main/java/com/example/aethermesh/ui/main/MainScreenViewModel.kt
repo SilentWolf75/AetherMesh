@@ -24,6 +24,9 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     }
 
     val isBleConnected: StateFlow<Boolean> = repository.isBleConnected
+    val bleConnectionPhase = repository.bleConnectionPhase
+    val bleReconnectAttempt = repository.bleReconnectAttempt
+    val bleReconnectGaveUp = repository.bleReconnectGaveUp
     val messages: StateFlow<List<ChatMessage>> = repository.messages
     val nodes: StateFlow<List<MeshNode>> = repository.nodes
     val channels: StateFlow<List<String>> = repository.channels
@@ -39,6 +42,9 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     val connectedDeviceName: String?
         get() = repository.bleManager.connectedDeviceName
+
+    val connectedDeviceAddress: String?
+        get() = repository.bleManager.getConnectedDeviceAddress()
 
     val connectedNodeId: Long
         get() = repository.bleManager.connectedNodeId
@@ -129,6 +135,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         repository.bleManager.disconnect()
     }
 
+    fun retryBleConnection() {
+        repository.bleManager.retryAfterGaveUp()
+    }
+
     fun sendMessage(content: String, recipientId: Long = repository.activeChatId.value ?: 0xFFFFFFFFL): Boolean {
         val targetChannel = if (recipientId == 0xFFFFFFFFL) repository.selectedChannel.value else ""
         return repository.sendMessage(recipientId, content, targetChannel)
@@ -212,6 +222,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     fun clearTraceRouteResult() = repository.clearTraceRouteResult()
 
+    fun hideTraceRouteDialog() = repository.hideTraceRouteDialog()
+
     fun sendRemoteConfig(
         nodeId: Long,
         name: String,
@@ -250,6 +262,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun lastPhoneFix() = repository.lastPhoneFix()
 
     fun getTelemetryHistory(nodeId: Long) = repository.getTelemetryHistory(nodeId)
+
+    fun getChannelInboxPreviews() = repository.getChannelInboxPreviews()
+
+    fun getDmInboxPreviews(localNodeId: Long) = repository.getDmInboxPreviews(localNodeId)
 
     fun sendAuthRequest(password: String): Boolean {
         return repository.sendAuthRequest(password)

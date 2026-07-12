@@ -3,6 +3,8 @@ package com.example.aethermesh.ui.main
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -11,8 +13,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Canvas
@@ -21,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import org.osmdroid.tileprovider.tilesource.XYTileSource
 import com.example.aethermesh.ui.components.AnimatedAetherMeshLogo
 import com.example.aethermesh.ui.components.AetherSectionHeader
 import com.example.aethermesh.ui.components.BatteryArcGauge
@@ -93,6 +99,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.DashPathEffect
 import android.graphics.drawable.BitmapDrawable
+import org.osmdroid.views.overlay.infowindow.InfoWindow
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.text.SimpleDateFormat
@@ -330,11 +337,15 @@ fun MainScreen(
     val viewModel: MainScreenViewModel = viewModel { MainScreenViewModel(app.repository) }
 
     val isConnected by viewModel.isBleConnected.collectAsStateWithLifecycle()
+    val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
+    val bleReconnectAttempt by viewModel.bleReconnectAttempt.collectAsStateWithLifecycle()
+    val bleReconnectGaveUp by viewModel.bleReconnectGaveUp.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
     val scannedDevices by viewModel.scannedDevices.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(TabItem.CHATS) }
+    var fitTraceRouteToken by remember { mutableIntStateOf(0) }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
@@ -457,6 +468,8 @@ fun MainScreen(
             HeaderBar(
                 title = headerTitle,
                 isConnected = isConnected,
+                connectionPhase = blePhase,
+                reconnectAttempt = bleReconnectAttempt,
                 connectedNodeName = connectedNodeName
             )
 
@@ -467,11 +480,33 @@ fun MainScreen(
                     .fillMaxWidth()
             ) {
                 if (!isConnected && activeTab != TabItem.CONNECTION) {
+                    val bannerText = when {
+                        bleReconnectGaveUp -> if (appLanguage == "Spanish")
+                            "Reconexión agotada. Toque para escanear de nuevo."
+                        else
+                            "Reconnect gave up. Tap to scan again."
+                        blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+                            blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting ->
+                            if (appLanguage == "Spanish")
+                                "Reconectando (intento $bleReconnectAttempt)…"
+                            else
+                                "Reconnecting (attempt $bleReconnectAttempt)…"
+                        else -> if (appLanguage == "Spanish")
+                            "Desconectado. Toque para volver a conectar."
+                        else
+                            "Disconnected from node. Tap to reconnect."
+                    }
+                    val bannerColor = when {
+                        bleReconnectGaveUp -> AccentRed
+                        blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+                            blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting -> AccentAmber
+                        else -> AccentRed
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(SurfaceDark)
-                            .border(BorderStroke(1.dp, AccentRed.copy(alpha = 0.35f)))
+                            .border(BorderStroke(1.dp, bannerColor.copy(alpha = 0.35f)))
                             .clickable { activeTab = TabItem.CONNECTION }
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.Center,
@@ -480,12 +515,12 @@ fun MainScreen(
                         Icon(
                             imageVector = Icons.Default.Warning,
                             contentDescription = "Disconnected",
-                            tint = AccentRed,
+                            tint = bannerColor,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (appLanguage == "Spanish") "Desconectado. Toque para volver a conectar." else "Disconnected from node. Tap to reconnect.",
+                            text = bannerText,
                             color = TextLight,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -513,7 +548,9 @@ fun MainScreen(
                             onSendMessage = { viewModel.sendMessage(it) },
                             onRetryMessage = { viewModel.retryMessage(it) },
                             getChatKey = { viewModel.getChatKey(it) },
-                            saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) }
+                            saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) },
+                            channelPreviews = viewModel.getChannelInboxPreviews(),
+                            dmPreviews = viewModel.getDmInboxPreviews(viewModel.connectedNodeId)
                         )
                         TabItem.NODES -> NodesView(
                             nodes = nodes,
@@ -530,9 +567,7 @@ fun MainScreen(
                             },
                             getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
                             connectedNodeId = viewModel.connectedNodeId,
-                            traceRouteState = traceRouteState,
-                            onTraceRoute = { viewModel.startTraceRoute(it) },
-                            onDismissTrace = { viewModel.clearTraceRouteResult() }
+                            onTraceRoute = { viewModel.startTraceRoute(it) }
                         )
                         TabItem.MAP -> MapViewCompose(
                             nodes = nodes,
@@ -548,7 +583,8 @@ fun MainScreen(
                                     viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
                                 }
                             },
-                            onNavigateToChats = { activeTab = TabItem.CHATS }
+                            onNavigateToChats = { activeTab = TabItem.CHATS },
+                            fitTraceRouteToken = fitTraceRouteToken
                         )
                         TabItem.SETTINGS -> SettingsView(
                             viewModel = viewModel,
@@ -570,6 +606,25 @@ fun MainScreen(
                 selectedTab = activeTab,
                 onTabSelected = { activeTab = it },
                 appLanguage = appLanguage
+            )
+        }
+
+        if (traceRouteState.showDialog &&
+            (traceRouteState.active ||
+                traceRouteState.forward.isNotEmpty() ||
+                traceRouteState.returning.isNotEmpty() ||
+                traceRouteState.error != null)
+        ) {
+            TraceRouteResultDialog(
+                state = traceRouteState,
+                nodes = nodes,
+                connectedNodeId = viewModel.connectedNodeId,
+                onOk = { viewModel.clearTraceRouteResult() },
+                onViewOnMap = {
+                    viewModel.hideTraceRouteDialog()
+                    activeTab = TabItem.MAP
+                    fitTraceRouteToken++
+                }
             )
         }
 
@@ -671,8 +726,28 @@ fun MainScreen(
 fun HeaderBar(
     title: String,
     isConnected: Boolean,
+    connectionPhase: com.example.aethermesh.ble.BleConnectionPhase =
+        com.example.aethermesh.ble.BleConnectionPhase.Disconnected,
+    reconnectAttempt: Int = 0,
     connectedNodeName: String?
 ) {
+    val statusLabel = when {
+        isConnected -> "LINK UP"
+        connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ->
+            "RECONNECT $reconnectAttempt"
+        connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting ->
+            "CONNECTING"
+        else -> "OFFLINE"
+    }
+    val statusColor = when {
+        isConnected -> AccentMint
+        connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+            connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting -> AccentAmber
+        else -> AccentRed
+    }
+    val pulseActive = isConnected ||
+        connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+        connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -698,11 +773,11 @@ fun HeaderBar(
                         letterSpacing = 1.4.sp
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        PulseDot(active = isConnected)
+                        PulseDot(active = pulseActive)
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            if (isConnected) "LINK UP" else "OFFLINE",
-                            color = if (isConnected) AccentMint else AccentRed,
+                            statusLabel,
+                            color = statusColor,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.8.sp
@@ -761,12 +836,25 @@ fun ChatView(
     onSendMessage: (String) -> Boolean,
     onRetryMessage: (ChatMessage) -> Unit,
     getChatKey: (String) -> String?,
-    saveChatKey: (String, String) -> Unit
+    saveChatKey: (String, String) -> Unit,
+    channelPreviews: Map<String, com.example.aethermesh.data.ChatInboxPreview> = emptyMap(),
+    dmPreviews: Map<Long, com.example.aethermesh.data.ChatInboxPreview> = emptyMap()
 ) {
     var textState by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf<String?>(null) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
     var inThread by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+
+    fun formatInboxTime(ts: Long): String {
+        if (ts <= 0L) return ""
+        return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    }
+
+    fun previewSnippet(raw: String): String {
+        val trimmed = raw.trim().replace('\n', ' ')
+        return if (trimmed.length <= 48) trimmed else trimmed.take(45) + "…"
+    }
 
     // Opening a DM from Nodes (or similar) should land in the thread.
     LaunchedEffect(activeChatId) {
@@ -807,6 +895,7 @@ fun ChatView(
                     Spacer(modifier = Modifier.height(6.dp))
                 }
                 items(channels) { channel ->
+                    val preview = channelPreviews[channel]
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -831,7 +920,16 @@ fun ChatView(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(channel, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Channel chat", color = TextMuted, fontSize = 12.sp)
+                            Text(
+                                preview?.let { previewSnippet(it.snippet) } ?: "Channel chat",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                        }
+                        if (preview != null && preview.timestamp > 0L) {
+                            Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
                         }
                         Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
                     }
@@ -860,6 +958,7 @@ fun ChatView(
                     items(dmNodes) { node ->
                         val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
                         val stale = isNodeStale(node.lastActive)
+                        val preview = dmPreviews[node.nodeId]
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -877,10 +976,19 @@ fun ChatView(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(node.name, color = if (stale) TextMuted else TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    if (stale) "Last heard ${formatLastHeard(node.lastActive)}" else "Direct message",
+                                    when {
+                                        preview != null -> previewSnippet(preview.snippet)
+                                        stale -> "Last heard ${formatLastHeard(node.lastActive)}"
+                                        else -> "Direct message"
+                                    },
                                     color = TextMuted,
-                                    fontSize = 12.sp
+                                    fontSize = 12.sp,
+                                    maxLines = 1
                                 )
+                            }
+                            if (preview != null && preview.timestamp > 0L) {
+                                Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
                             }
                             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
                         }
@@ -897,6 +1005,19 @@ fun ChatView(
     } else {
         selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"
     }
+    val isChannelThread = activeChatId == null
+
+    // Keep the thread pinned to the latest message on open / send.
+    LaunchedEffect(activeChatId, selectedChannel, inThread) {
+        if (inThread && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
+        }
+    }
+    LaunchedEffect(messages.size) {
+        if (inThread && messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -906,7 +1027,7 @@ fun ChatView(
             Column(modifier = Modifier.weight(1f)) {
                 Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    if (activeChatId == null) "Channel" else "Direct message",
+                    if (isChannelThread) "Channel" else "Direct message",
                     color = TextMuted,
                     fontSize = 12.sp
                 )
@@ -977,14 +1098,26 @@ fun ChatView(
             }
         } else {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 reverseLayout = false
             ) {
-                items(messages) { message ->
+                items(messages, key = { it.id }) { message ->
+                    val senderNode = nodes.find { it.nodeId == message.senderId }
+                    val senderLabel = when {
+                        !isChannelThread -> null
+                        localNodeId != 0L && message.senderId == localNodeId -> null
+                        senderNode != null -> senderNode.shortName.ifEmpty {
+                            getShortName(senderNode.name, senderNode.nodeId)
+                        }
+                        message.senderId != 0L -> getShortName("", message.senderId)
+                        else -> null
+                    }
                     MessageBubble(
                         message = message,
                         localNodeId = localNodeId,
-                        onRetryMessage = onRetryMessage
+                        onRetryMessage = onRetryMessage,
+                        senderLabel = senderLabel
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
@@ -1138,7 +1271,12 @@ fun NewChannelDialog(
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (ChatMessage) -> Unit) {
+fun MessageBubble(
+    message: ChatMessage,
+    localNodeId: Long,
+    onRetryMessage: (ChatMessage) -> Unit,
+    senderLabel: String? = null
+) {
     val isMe = localNodeId != 0L && message.senderId == localNodeId
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
     val statusIcon = when (message.status) {
@@ -1160,6 +1298,15 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
     ) {
+        if (!senderLabel.isNullOrBlank() && !isMe) {
+            Text(
+                senderLabel,
+                color = AccentCyan,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 4.dp, bottom = 3.dp)
+            )
+        }
         Box(
             modifier = Modifier
                 .clip(
@@ -1202,6 +1349,151 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
 }
 
 @Composable
+fun TraceRouteResultDialog(
+    state: TraceRouteState,
+    nodes: List<MeshNode>,
+    connectedNodeId: Long,
+    onOk: () -> Unit,
+    onViewOnMap: () -> Unit
+) {
+    val snrOrange = Color(0xFFFF9800)
+
+    fun displayName(id: Long): String {
+        val node = nodes.find { it.nodeId == id }
+        val longName = node?.name?.takeIf { it.isNotBlank() }
+            ?: "0x${id.toString(16).uppercase()}"
+        val short = node?.shortName?.takeIf { it.isNotBlank() }
+            ?: getShortName(longName, id)
+        return "$longName ($short)"
+    }
+
+    @Composable
+    fun HopSnr(snr: Float, rssi: Int) {
+        val unknown = snr == 0f && rssi == 0
+        Text(
+            text = if (unknown) "? dB" else "%.2f dB".format(snr),
+            color = if (unknown) TextMuted else snrOrange,
+            fontSize = 13.sp,
+            fontWeight = if (unknown) FontWeight.Normal else FontWeight.SemiBold
+        )
+    }
+
+    @Composable
+    fun RoutePath(
+        title: String,
+        startId: Long,
+        hops: List<com.example.aethermesh.data.TraceHop>,
+        truncated: Boolean
+    ) {
+        Text(title, color = TextMuted, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("■", color = TextLight, fontSize = 11.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(displayName(startId), color = TextLight, fontSize = 14.sp)
+        }
+        hops.forEach { hop ->
+            Row(
+                modifier = Modifier.padding(start = 2.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("⇊", color = TextMuted, fontSize = 16.sp)
+                Spacer(Modifier.width(10.dp))
+                HopSnr(hop.snr, hop.rssi)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("■", color = TextLight, fontSize = 11.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(displayName(hop.nodeId), color = TextLight, fontSize = 14.sp)
+            }
+        }
+        if (truncated) {
+            Text(
+                "Path exceeded the 8-hop capture limit",
+                color = snrOrange,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!state.active) onOk() },
+        containerColor = Color(0xFF2A2F38),
+        title = {
+            Text(
+                "Traceroute",
+                color = TextLight,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                when {
+                    state.active -> {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = AccentMint,
+                            trackColor = BorderDark
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("Tracing route…", color = TextMuted, fontSize = 13.sp)
+                    }
+                    state.error != null -> {
+                        Text(state.error ?: "Trace failed", color = Color(0xFFF87171), fontWeight = FontWeight.SemiBold)
+                    }
+                    else -> {
+                        RoutePath(
+                            title = "Route traced toward destination:",
+                            startId = connectedNodeId,
+                            hops = state.forward,
+                            truncated = state.forwardTruncated
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        RoutePath(
+                            title = "Route traced back to us:",
+                            startId = state.targetId,
+                            hops = state.returning,
+                            truncated = state.returnTruncated
+                        )
+                        state.durationSeconds?.let { secs ->
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                "Duration: ${"%.1f".format(secs)} s",
+                                color = TextLight,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (!state.active) {
+                Row {
+                    TextButton(onClick = onOk) {
+                        Text("OK", color = TextLight, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (state.error == null &&
+                        (state.forward.isNotEmpty() || state.returning.isNotEmpty())
+                    ) {
+                        TextButton(onClick = onViewOnMap) {
+                            Text("View on map", color = TextLight, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+private enum class NodesSort {
+    LAST_HEARD, SIGNAL, NAME, DISTANCE
+}
+
+@Composable
 fun NodesView(
     nodes: List<MeshNode>,
     observedRoutes: Map<Long, com.example.aethermesh.data.RouteHopInfo>,
@@ -1212,71 +1504,14 @@ fun NodesView(
     onRenameNode: (Long, String, String, String) -> Boolean,
     getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
     connectedNodeId: Long = 0L,
-    traceRouteState: TraceRouteState = TraceRouteState(),
     onTraceRoute: (Long) -> Boolean = { false },
-    onDismissTrace: () -> Unit = {},
     onRemoteConfig: ((MeshNode) -> Unit)? = null
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var detailNode by remember { mutableStateOf<MeshNode?>(null) }
-
-    if (traceRouteState.visible && (traceRouteState.active || traceRouteState.forward.isNotEmpty() || traceRouteState.error != null)) {
-        val target = nodes.find { it.nodeId == traceRouteState.targetId }
-        val local = nodes.find { it.nodeId == connectedNodeId }
-        fun nodeLabel(id: Long): String = nodes.find { it.nodeId == id }?.name
-            ?: "0x${id.toString(16).uppercase()}"
-
-        AlertDialog(
-            onDismissRequest = { if (!traceRouteState.active) onDismissTrace() },
-            containerColor = SurfaceDark,
-            title = { Text("Route to ${target?.name ?: nodeLabel(traceRouteState.targetId)}", color = TextLight) },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                    if (traceRouteState.active) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = AccentCyan)
-                        Spacer(Modifier.height(12.dp))
-                        Text("Tracing the live forward and return paths...", color = TextMuted, fontSize = 13.sp)
-                    } else if (traceRouteState.error != null) {
-                        Text(traceRouteState.error ?: "Trace failed", color = Color(0xFFF87171), fontWeight = FontWeight.SemiBold)
-                    } else {
-                        @Composable
-                        fun PathSection(title: String, startName: String, hops: List<com.example.aethermesh.data.TraceHop>, truncated: Boolean) {
-                            Text(title, color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(startName, color = TextLight, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp))
-                            hops.forEach { hop ->
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = TextMuted, modifier = Modifier.size(15.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(nodeLabel(hop.nodeId), color = TextLight, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                                    Text("${hop.rssi} dBm  ${"%.1f".format(hop.snr)} dB", color = TextMuted, fontSize = 11.sp)
-                                }
-                            }
-                            if (truncated) Text("Path exceeded the 8-hop capture limit", color = Color(0xFFFBBF24), fontSize = 11.sp)
-                        }
-
-                        PathSection(
-                            "Forward (${traceRouteState.forward.size} hop${if (traceRouteState.forward.size == 1) "" else "s"})",
-                            local?.name ?: nodeLabel(connectedNodeId),
-                            traceRouteState.forward,
-                            traceRouteState.forwardTruncated
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        PathSection(
-                            "Return (${traceRouteState.returning.size} hop${if (traceRouteState.returning.size == 1) "" else "s"})",
-                            target?.name ?: nodeLabel(traceRouteState.targetId),
-                            traceRouteState.returning,
-                            traceRouteState.returnTruncated
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                if (!traceRouteState.active) {
-                    TextButton(onClick = onDismissTrace) { Text("Close", color = AccentCyan) }
-                }
-            }
-        )
-    }
+    var searchQuery by remember { mutableStateOf("") }
+    var sortBy by remember { mutableStateOf(NodesSort.LAST_HEARD) }
+    var sortMenuExpanded by remember { mutableStateOf(false) }
 
     // Full-screen Meshtastic-style details (shared with Map).
     detailNode?.let { selected ->
@@ -1324,7 +1559,7 @@ fun NodesView(
             text = {
                 Column {
                     Text(t("Long Name (max 16 chars)", appLanguage), color = TextMuted, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(Modifier.height(4.dp))
                     TextField(
                         value = longName,
                         onValueChange = { if (it.length <= 16) longName = it },
@@ -1410,41 +1645,159 @@ fun NodesView(
         )
     }
 
-    val displayNodes = nodes.filter { it.nodeId != connectedNodeId }
-    val activeNodes = displayNodes.filter { !isNodeStale(it.lastActive) }
-    val staleNodes = displayNodes.filter { isNodeStale(it.lastActive) }
+    val connectedNode = nodes.find { it.nodeId == connectedNodeId }
+    val query = searchQuery.trim()
+    fun matchesQuery(node: MeshNode): Boolean {
+        if (query.isEmpty()) return true
+        val q = query.lowercase()
+        val idHex = "0x${node.nodeId.toString(16).lowercase()}"
+        return node.name.lowercase().contains(q) ||
+            node.shortName.lowercase().contains(q) ||
+            idHex.contains(q) ||
+            node.nodeId.toString().contains(q)
+    }
+
+    fun signalOf(node: MeshNode): Float {
+        val route = observedRoutes[node.nodeId]
+        return if (route != null && route.lastRssi != 0f) route.lastRssi else node.rssi
+    }
+
+    fun distanceKmOf(node: MeshNode): Double? {
+        if (phoneLocation == null || !hasValidPosition(node.latitude, node.longitude)) return null
+        return calculateDistance(
+            phoneLocation.latitude, phoneLocation.longitude,
+            node.latitude.toDouble(), node.longitude.toDouble()
+        )
+    }
+
+    fun sortNodes(list: List<MeshNode>): List<MeshNode> = when (sortBy) {
+        NodesSort.LAST_HEARD -> list.sortedByDescending { it.lastActive }
+        NodesSort.SIGNAL -> list.sortedByDescending { signalOf(it) }
+        NodesSort.NAME -> list.sortedBy { it.name.lowercase() }
+        NodesSort.DISTANCE -> list.sortedWith(
+            compareBy<MeshNode> { distanceKmOf(it) == null }
+                .thenBy { distanceKmOf(it) ?: Double.MAX_VALUE }
+        )
+    }
+
+    val remoteNodes = nodes.filter { it.nodeId != connectedNodeId && matchesQuery(it) }
+    val activeNodes = sortNodes(remoteNodes.filter { !isNodeStale(it.lastActive) })
+    val staleNodes = sortNodes(remoteNodes.filter { isNodeStale(it.lastActive) })
+    val showSelf = connectedNode != null && matchesQuery(connectedNode)
+    val hasAny = showSelf || remoteNodes.isNotEmpty()
+
+    val sortLabels = mapOf(
+        NodesSort.LAST_HEARD to if (appLanguage == "Spanish") "Último oído" else "Last heard",
+        NodesSort.SIGNAL to if (appLanguage == "Spanish") "Señal" else "Signal",
+        NodesSort.NAME to if (appLanguage == "Spanish") "Nombre" else "Name",
+        NodesSort.DISTANCE to if (appLanguage == "Spanish") "Distancia" else "Distance"
+    )
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        AetherSectionHeader(
-            title = t("Active Nodes", appLanguage),
-            trailing = "${activeNodes.size}",
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            singleLine = true,
+            placeholder = {
+                Text(
+                    if (appLanguage == "Spanish") "Buscar nodos…" else "Search nodes…",
+                    color = TextMuted
+                )
+            },
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted)
+            },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(Icons.Default.Close, contentDescription = "Clear", tint = TextMuted)
+                    }
+                }
+            },
+            colors = aetherTextFieldColors(),
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AetherSectionHeader(
+                title = t("Active Nodes", appLanguage),
+                trailing = "${activeNodes.size + if (showSelf && connectedNode != null && !isNodeStale(connectedNode.lastActive)) 1 else 0}",
+                modifier = Modifier.weight(1f)
+            )
+            Box {
+                TextButton(onClick = { sortMenuExpanded = true }) {
+                    Text(sortLabels[sortBy] ?: "Sort", color = AccentCyan, fontSize = 12.sp)
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(
+                    expanded = sortMenuExpanded,
+                    onDismissRequest = { sortMenuExpanded = false },
+                    modifier = Modifier.background(SurfaceDark)
+                ) {
+                    NodesSort.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(sortLabels[option] ?: option.name, color = TextLight) },
+                            onClick = {
+                                sortBy = option
+                                sortMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (displayNodes.isEmpty()) {
+        if (!hasAny) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
                     RadarGraphic(size = 110.dp, sweep = AccentSteel, ring = AccentCyan)
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        t("No nodes discovered yet. Waiting for telemetry...", appLanguage),
+                        if (query.isNotEmpty()) {
+                            if (appLanguage == "Spanish") "Ningún nodo coincide con la búsqueda."
+                            else "No nodes match your search."
+                        } else {
+                            t("No nodes discovered yet. Waiting for telemetry...", appLanguage)
+                        },
                         color = TextMuted,
                         textAlign = TextAlign.Center,
                         fontSize = 14.sp
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Connect a radio on the Connection tab — nearby nodes appear here as they advertise.",
-                        color = TextMuted.copy(alpha = 0.8f),
-                        textAlign = TextAlign.Center,
-                        fontSize = 12.sp
-                    )
+                    if (query.isEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Connect a radio on the Connection tab — nearby nodes appear here as they advertise.",
+                            color = TextMuted.copy(alpha = 0.8f),
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(activeNodes) { node ->
+                if (showSelf && connectedNode != null) {
+                    item {
+                        NodeItem(
+                            node = connectedNode,
+                            observedRoutes = observedRoutes,
+                            phoneLocation = phoneLocation,
+                            appLanguage = appLanguage,
+                            useImperialUnits = useImperialUnits,
+                            onClick = { detailNode = connectedNode },
+                            onRenameClick = { renamingNode = connectedNode },
+                            onTraceRoute = { false },
+                            isConnectedNode = true
+                        )
+                    }
+                }
+                items(activeNodes, key = { it.nodeId }) { node ->
                     NodeItem(
                         node = node,
                         observedRoutes = observedRoutes,
@@ -1454,7 +1807,7 @@ fun NodesView(
                         onClick = { detailNode = node },
                         onRenameClick = { renamingNode = node },
                         onTraceRoute = { onTraceRoute(node.nodeId) },
-                        isConnectedNode = node.nodeId == connectedNodeId
+                        isConnectedNode = false
                     )
                 }
                 if (staleNodes.isNotEmpty()) {
@@ -1467,7 +1820,7 @@ fun NodesView(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
-                    items(staleNodes) { node ->
+                    items(staleNodes, key = { it.nodeId }) { node ->
                         NodeItem(
                             node = node,
                             observedRoutes = observedRoutes,
@@ -1477,7 +1830,7 @@ fun NodesView(
                             onClick = { detailNode = node },
                             onRenameClick = { renamingNode = node },
                             onTraceRoute = { onTraceRoute(node.nodeId) },
-                            isConnectedNode = node.nodeId == connectedNodeId
+                            isConnectedNode = false
                         )
                     }
                 }
@@ -1522,6 +1875,7 @@ fun SignalBars(rssi: Float) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NodeItem(
     node: MeshNode,
@@ -1538,10 +1892,12 @@ fun NodeItem(
     val badgeColor = getBadgeColor(node.name)
     val stale = isNodeStale(node.lastActive)
     val primaryText = if (stale) TextMuted else TextLight
+    var menuExpanded by remember { mutableStateOf(false) }
 
     val route = observedRoutes[node.nodeId]
     val hasLiveSignal = route != null && route.lastRssi != 0f
     val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
+    val hops = route?.hops?.takeIf { it > 0 }
 
     val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
         val distanceKm = calculateDistance(
@@ -1563,7 +1919,10 @@ fun NodeItem(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (stale) SurfaceDark.copy(alpha = 0.55f) else SurfaceDark)
-            .clickable { onClick() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuExpanded = true }
+            )
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1577,13 +1936,26 @@ fun NodeItem(
                     Text("  ·  ", color = TextMuted, fontSize = 12.sp)
                     Text(distanceLabel, color = if (stale) TextMuted else AccentMint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
+                if (hops != null && !isConnectedNode) {
+                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
+                    Text(
+                        "$hops ${if (hops == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
+                        color = if (stale) TextMuted else AccentSteel,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
             if (isConnectedNode) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("This device (BLE)", color = TextMuted, fontSize = 11.sp)
+                    Text(
+                        if (appLanguage == "Spanish") "Este dispositivo (BLE)" else "This device (BLE)",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
                 }
             } else if (sigRssi != 0f) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -1613,8 +1985,266 @@ fun NodeItem(
                 )
                 Spacer(modifier = Modifier.width(2.dp))
                 Text("${node.battery}%", color = primaryText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Actions", tint = TextMuted, modifier = Modifier.size(18.dp))
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(SurfaceDark)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(t("Rename Node", appLanguage), color = TextLight) },
+                            onClick = {
+                                menuExpanded = false
+                                onRenameClick()
+                            }
+                        )
+                        if (!isConnectedNode) {
+                            DropdownMenuItem(
+                                text = { Text("Traceroute", color = TextLight) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onTraceRoute()
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
+    }
+}
+
+/** Carto Dark Matter basemap — used when Dark map is enabled. */
+fun cartoDarkTileSource(): XYTileSource = XYTileSource(
+    "CartoDarkMatter",
+    0,
+    20,
+    256,
+    ".png",
+    arrayOf(
+        "https://a.basemaps.cartocdn.com/dark_all/",
+        "https://b.basemaps.cartocdn.com/dark_all/",
+        "https://c.basemaps.cartocdn.com/dark_all/",
+        "https://d.basemaps.cartocdn.com/dark_all/"
+    ),
+    "© OpenStreetMap contributors © CARTO"
+)
+
+/** Bearing in degrees [0, 360) from point A to B. */
+fun bearingDegrees(a: GeoPoint, b: GeoPoint): Double {
+    val lat1 = Math.toRadians(a.latitude)
+    val lat2 = Math.toRadians(b.latitude)
+    val dLon = Math.toRadians(b.longitude - a.longitude)
+    val y = Math.sin(dLon) * Math.cos(lat2)
+    val x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+    return (Math.toDegrees(Math.atan2(y, x)) + 360.0) % 360.0
+}
+
+fun offsetGeoPoint(point: GeoPoint, bearingDeg: Double, meters: Double): GeoPoint {
+    val earth = 6_378_137.0
+    val lat1 = Math.toRadians(point.latitude)
+    val lon1 = Math.toRadians(point.longitude)
+    val brng = Math.toRadians(bearingDeg)
+    val ang = meters / earth
+    val lat2 = Math.asin(
+        Math.sin(lat1) * Math.cos(ang) + Math.cos(lat1) * Math.sin(ang) * Math.cos(brng)
+    )
+    val lon2 = lon1 + Math.atan2(
+        Math.sin(brng) * Math.sin(ang) * Math.cos(lat1),
+        Math.cos(ang) - Math.sin(lat1) * Math.sin(lat2)
+    )
+    return GeoPoint(Math.toDegrees(lat2), Math.toDegrees(lon2))
+}
+
+/** Shift a polyline sideways so forward/return don't paint on the same pixels. */
+fun parallelOffsetPath(points: List<GeoPoint>, offsetMeters: Double): List<GeoPoint> {
+    if (points.size < 2 || offsetMeters == 0.0) return points
+    return points.mapIndexed { i, p ->
+        val bearing = when (i) {
+            0 -> bearingDegrees(points[0], points[1])
+            points.lastIndex -> bearingDegrees(points[i - 1], points[i])
+            else -> {
+                val b1 = bearingDegrees(points[i - 1], points[i])
+                val b2 = bearingDegrees(points[i], points[i + 1])
+                val x = Math.cos(Math.toRadians(b1)) + Math.cos(Math.toRadians(b2))
+                val y = Math.sin(Math.toRadians(b1)) + Math.sin(Math.toRadians(b2))
+                (Math.toDegrees(Math.atan2(y, x)) + 360.0) % 360.0
+            }
+        }
+        offsetGeoPoint(p, bearing + 90.0, offsetMeters)
+    }
+}
+
+/**
+ * Keep endpoints pinned to node badges; bow midpoints sideways so overlapping
+ * forward/return paths both stay visible without missing the markers.
+ */
+fun bowedRoutePath(points: List<GeoPoint>, offsetMeters: Double): List<GeoPoint> {
+    if (points.size < 2 || offsetMeters == 0.0) return points
+    val out = ArrayList<GeoPoint>(points.size * 2)
+    for (i in 0 until points.lastIndex) {
+        val a = points[i]
+        val b = points[i + 1]
+        out.add(a)
+        val mid = GeoPoint((a.latitude + b.latitude) / 2.0, (a.longitude + b.longitude) / 2.0)
+        out.add(offsetGeoPoint(mid, bearingDegrees(a, b) + 90.0, offsetMeters))
+    }
+    out.add(points.last())
+    return out
+}
+
+/** Only accept a new map pin when it moved far enough — kills GPS jitter. */
+fun stabilizeMapPoint(
+    cache: MutableMap<Long, GeoPoint>,
+    id: Long,
+    candidate: GeoPoint,
+    thresholdMeters: Double
+): GeoPoint {
+    val prev = cache[id] ?: run {
+        cache[id] = candidate
+        return candidate
+    }
+    val movedM = calculateDistance(
+        prev.latitude, prev.longitude,
+        candidate.latitude, candidate.longitude
+    ) * 1000.0
+    if (movedM >= thresholdMeters) {
+        cache[id] = candidate
+        return candidate
+    }
+    return prev
+}
+
+/** Resolve the BLE-connected radio in the node list despite provisional ID mismatches. */
+fun resolveConnectedMeshNode(
+    nodes: List<MeshNode>,
+    connectedId: Long,
+    deviceName: String?
+): MeshNode? {
+    if (connectedId != 0L) {
+        nodes.find { it.nodeId == connectedId }?.let { return it }
+        nodes.find { (it.nodeId and 0xFFFFFFFFL) == (connectedId and 0xFFFFFFFFL) }?.let { return it }
+        nodes.find { (it.nodeId and 0xFFFFL) == (connectedId and 0xFFFFL) }?.let { return it }
+    }
+    val name = deviceName?.trim().orEmpty()
+    if (name.isNotEmpty()) {
+        nodes.find { it.name.equals(name, ignoreCase = true) }?.let { return it }
+        val short = getShortName(name, connectedId)
+        nodes.find {
+            it.shortName.equals(short, ignoreCase = true) ||
+                it.name.contains(name, ignoreCase = true)
+        }?.let { return it }
+    }
+    return null
+}
+
+fun routePathLengthMeters(points: List<GeoPoint>): Double {
+    if (points.size < 2) return 0.0
+    var total = 0.0
+    for (i in 0 until points.lastIndex) {
+        total += calculateDistance(
+            points[i].latitude, points[i].longitude,
+            points[i + 1].latitude, points[i + 1].longitude
+        ) * 1000.0
+    }
+    return total
+}
+
+fun addCasedRoutePolyline(
+    mapView: MapView,
+    points: List<GeoPoint>,
+    color: Int,
+    strokeDp: Float,
+    dashed: Boolean
+) {
+    if (points.size < 2) return
+    val caseWidth = strokeDp + 4f * mapView.context.resources.displayMetrics.density
+    mapView.overlays.add(Polyline(mapView).apply {
+        outlinePaint.apply {
+            isAntiAlias = true
+            this.color = 0xE60B1220.toInt()
+            strokeWidth = caseWidth
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            if (dashed) pathEffect = DashPathEffect(floatArrayOf(strokeDp * 3.2f, strokeDp * 2.2f), 0f)
+        }
+        setPoints(points)
+    })
+    mapView.overlays.add(Polyline(mapView).apply {
+        outlinePaint.apply {
+            isAntiAlias = true
+            this.color = color
+            strokeWidth = strokeDp
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            if (dashed) pathEffect = DashPathEffect(floatArrayOf(strokeDp * 3.2f, strokeDp * 2.2f), 0f)
+        }
+        setPoints(points)
+    })
+}
+
+fun createRouteChevronDrawable(context: Context, colorInt: Int): BitmapDrawable {
+    val density = context.resources.displayMetrics.density
+    val size = (18f * density).toInt().coerceAtLeast(18)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+    val paint = Paint().apply {
+        isAntiAlias = true
+        color = colorInt
+        style = Paint.Style.FILL
+    }
+    val stroke = Paint().apply {
+        isAntiAlias = true
+        color = 0xE60B1220.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f * density
+        strokeJoin = Paint.Join.ROUND
+    }
+    val path = android.graphics.Path().apply {
+        moveTo(size * 0.18f, size * 0.22f)
+        lineTo(size * 0.82f, size * 0.50f)
+        lineTo(size * 0.18f, size * 0.78f)
+        close()
+    }
+    canvas.drawPath(path, paint)
+    canvas.drawPath(path, stroke)
+    return BitmapDrawable(context.resources, bitmap)
+}
+
+fun addRouteDirectionChevrons(
+    mapView: MapView,
+    context: Context,
+    points: List<GeoPoint>,
+    color: Int
+) {
+    if (points.size < 2) return
+    val icon = createRouteChevronDrawable(context, color)
+    points.zipWithNext().forEach { (from, to) ->
+        val segM = calculateDistance(from.latitude, from.longitude, to.latitude, to.longitude) * 1000.0
+        if (segM < 3.0) return@forEach
+        val mid = GeoPoint(
+            (from.latitude + to.latitude) / 2.0,
+            (from.longitude + to.longitude) / 2.0
+        )
+        val bearing = bearingDegrees(from, to).toFloat()
+        mapView.overlays.add(Marker(mapView).apply {
+            position = mid
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            infoWindow = null
+            title = null
+            snippet = null
+            setInfoWindow(null)
+            this.icon = icon
+            rotation = bearing
+            setFlat(true)
+            setOnMarkerClickListener { _, _ -> true }
+        })
     }
 }
 
@@ -1719,7 +2349,8 @@ fun MapViewCompose(
     useImperialUnits: Boolean,
     phoneLocation: GeoPoint?,
     onPhoneLocationChanged: (GeoPoint) -> Unit,
-    onNavigateToChats: () -> Unit
+    onNavigateToChats: () -> Unit,
+    fitTraceRouteToken: Int = 0
 ) {
     var hasCentered by remember { mutableStateOf(false) }
     var selectedMapNode by remember { mutableStateOf<MeshNode?>(null) }
@@ -1735,9 +2366,32 @@ fun MapViewCompose(
     var showRangeTestHistory by remember {
         mutableStateOf(mapPrefs.getBoolean("show_range_test_history", false))
     }
+    var showPhoneTrack by remember {
+        mutableStateOf(mapPrefs.getBoolean("show_phone_track", false))
+    }
+    var showDirectLinks by remember {
+        mutableStateOf(mapPrefs.getBoolean("show_direct_links", false))
+    }
     var showLayersMenu by remember { mutableStateOf(false) }
     var mapGeneration by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    // Sticky map pins — raw GPS/node updates only move a badge after a real shift.
+    val mapPositionCache = remember { mutableMapOf<Long, GeoPoint>() }
+    val stablePhoneForMap = remember { mutableStateOf<GeoPoint?>(null) }
+    LaunchedEffect(phoneLocation) {
+        val incoming = phoneLocation ?: return@LaunchedEffect
+        val prev = stablePhoneForMap.value
+        if (prev == null) {
+            stablePhoneForMap.value = incoming
+        } else {
+            val movedM = calculateDistance(
+                prev.latitude, prev.longitude,
+                incoming.latitude, incoming.longitude
+            ) * 1000.0
+            if (movedM >= 12.0) stablePhoneForMap.value = incoming
+        }
+    }
+    val mapPhoneLocation = stablePhoneForMap.value
 
     // Remembered MapView to avoid reloading tiles on recomposition
     val mapView = remember(mapGeneration) {
@@ -1749,7 +2403,9 @@ fun MapViewCompose(
         osmConfig.load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
 
         MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
+            setTileSource(
+                if (darkMapTiles) cartoDarkTileSource() else TileSourceFactory.MAPNIK
+            )
             setMultiTouchControls(true)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(12.0)
@@ -1858,19 +2514,12 @@ fun MapViewCompose(
         }
     }
 
-    // Dark tile filter: invert tile colors so the map matches the dark UI
-    LaunchedEffect(darkMapTiles) {
-        if (darkMapTiles) {
-            val invert = ColorMatrix(floatArrayOf(
-                -1f, 0f, 0f, 0f, 255f,
-                0f, -1f, 0f, 0f, 255f,
-                0f, 0f, -1f, 0f, 255f,
-                0f, 0f, 0f, 1f, 0f
-            ))
-            mapView.overlayManager.tilesOverlay.setColorFilter(ColorMatrixColorFilter(invert))
-        } else {
-            mapView.overlayManager.tilesOverlay.setColorFilter(null)
-        }
+    // Prefer a real dark basemap over MAPNIK + color-matrix invert.
+    LaunchedEffect(darkMapTiles, mapView) {
+        mapView.setTileSource(
+            if (darkMapTiles) cartoDarkTileSource() else TileSourceFactory.MAPNIK
+        )
+        mapView.overlayManager.tilesOverlay.setColorFilter(null)
         mapView.invalidate()
     }
 
@@ -1881,11 +2530,12 @@ fun MapViewCompose(
     }
 
     // Update overlays reactively whenever nodes, rangeTestLogs, phoneLocation, or breadcrumbs size changes
-    LaunchedEffect(nodes, observedRoutes, traceRouteState, rangeTestLogs, phoneLocation, breadcrumbs.size, showRangeTestHistory) {
+    LaunchedEffect(nodes, observedRoutes, traceRouteState, rangeTestLogs, mapPhoneLocation, breadcrumbs.size, showRangeTestHistory, showPhoneTrack, showDirectLinks, viewModel.connectedNodeId) {
         // Keep the long-lived overlays (location, compass, scale bar); rebuild the rest
         val persistentOverlays = mapView.overlays.filter {
             it is MyLocationNewOverlay || it is CompassOverlay || it is ScaleBarOverlay
         }
+        InfoWindow.closeAllInfoWindowsOn(mapView)
         mapView.overlays.clear()
         mapView.overlays.addAll(persistentOverlays)
 
@@ -1904,8 +2554,8 @@ fun MapViewCompose(
         val tracingOnMap = traceRouteState.visible &&
             (traceRouteState.forward.isNotEmpty() || traceRouteState.returning.isNotEmpty())
 
-        // Phone breadcrumbs clutter traceroute — hide them while a route is shown.
-        if (!tracingOnMap && breadcrumbs.size > 1) {
+        // Phone GPS track is opt-in (Layers) — otherwise it looks like "stuck" blue lines on open.
+        if (showPhoneTrack && !tracingOnMap && breadcrumbs.size > 1) {
             val breadcrumbPolyline = Polyline(mapView).apply {
                 outlinePaint.apply {
                     color = Color(0xFF3B82F6).copy(alpha = 0.7f).toArgb()
@@ -1918,97 +2568,61 @@ fun MapViewCompose(
             mapView.overlays.add(breadcrumbPolyline)
         }
 
-        // Draw the phone's own position (the default osmdroid person icon is suppressed)
-        phoneLocation?.let { loc ->
-            val phoneMarker = Marker(mapView).apply {
-                position = loc
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                icon = createPhoneDotDrawable(context)
-                infoWindow = null
-                setOnMarkerClickListener { _, _ -> true } // absorb taps, no popup
+        val connectedId = viewModel.connectedNodeId
+        val connectedNode = resolveConnectedMeshNode(
+            nodes = nodes,
+            connectedId = connectedId,
+            deviceName = viewModel.connectedDeviceName
+        )
+        val connectedLabel = connectedNode?.shortName?.takeIf { it.isNotBlank() }
+            ?: connectedNode?.name?.takeIf { it.isNotBlank() }?.let { getShortName(it, connectedId) }
+            ?: viewModel.connectedDeviceName?.takeIf { it.isNotBlank() }?.let { getShortName(it, connectedId) }
+            ?: if (connectedId != 0L) getShortName("Node", connectedId) else null
+
+        // Map pin for the radio we're linked to (stabilized phone GPS). No blue "person" dot.
+        fun connectedMapPoint(): GeoPoint? {
+            val raw = mapPhoneLocation ?: connectedNode?.takeIf {
+                hasValidPosition(it.latitude, it.longitude)
+            }?.let { GeoPoint(it.latitude.toDouble(), it.longitude.toDouble()) }
+                ?: return null
+            return if (connectedId != 0L) {
+                stabilizeMapPoint(mapPositionCache, connectedId, raw, thresholdMeters = 12.0)
+            } else {
+                raw
             }
-            mapView.overlays.add(phoneMarker)
+        }
+
+        fun rawNodePoint(nodeId: Long): GeoPoint? {
+            val isConnected = nodeId != 0L && (
+                nodeId == connectedId ||
+                    (connectedNode != null && nodeId == connectedNode.nodeId)
+                )
+            if (isConnected) return connectedMapPoint()
+            val node = nodes.find { it.nodeId == nodeId } ?: return null
+            if (!hasValidPosition(node.latitude, node.longitude)) return null
+            return GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
         }
 
         fun positionFor(nodeId: Long): GeoPoint? {
-            val node = nodes.find { it.nodeId == nodeId }
-            if (node != null && hasValidPosition(node.latitude, node.longitude)) {
-                return GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
-            }
-            // Connected node often inherits phone GPS; fall back so the route
-            // starts at the blue dot instead of vanishing.
-            if (nodeId == viewModel.connectedNodeId) return phoneLocation
-            return null
+            val raw = rawNodePoint(nodeId) ?: return null
+            val isConnected = nodeId == connectedId ||
+                (connectedNode != null && nodeId == connectedNode.nodeId)
+            val threshold = if (isConnected) 12.0 else 10.0
+            val cacheId = if (isConnected && connectedId != 0L) connectedId else nodeId
+            return stabilizeMapPoint(mapPositionCache, cacheId, raw, threshold)
         }
 
-        val localPoint = positionFor(viewModel.connectedNodeId)
+        val localPoint = connectedMapPoint()
 
-        // 1-hop mesh links — muted while traceroute is the focus.
-        if (!tracingOnMap && localPoint != null) {
-            observedRoutes.values.filter { it.hops == 1 }.forEach { route ->
-                val hopPoint = positionFor(route.targetId) ?: return@forEach
-                if (route.targetId == viewModel.connectedNodeId) return@forEach
-                mapView.overlays.add(Polyline(mapView).apply {
-                    outlinePaint.apply {
-                        color = AccentSteel.copy(alpha = 0.7f).toArgb()
-                        strokeWidth = 6f
-                        strokeCap = Paint.Cap.ROUND
-                        pathEffect = DashPathEffect(floatArrayOf(15f, 15f), 0f)
-                    }
-                    setPoints(listOf(localPoint, hopPoint))
-                })
-            }
+        // Drop stale cache entries for nodes that left the mesh list.
+        val liveIds = nodes.map { it.nodeId }.toHashSet().also {
+            if (connectedId != 0L) it.add(connectedId)
+            connectedNode?.let { n -> it.add(n.nodeId) }
         }
+        mapPositionCache.keys.retainAll(liveIds)
 
-        // Traceroute: solid mint forward path, dashed amber return path, hop badges.
-        if (tracingOnMap && localPoint != null) {
-            val forwardIds = listOf(viewModel.connectedNodeId) + traceRouteState.forward.map { it.nodeId }
-            val forwardPoints = forwardIds.mapNotNull { id -> positionFor(id)?.let { id to it } }
-            forwardPoints.zipWithNext().forEachIndexed { index, (from, to) ->
-                mapView.overlays.add(Polyline(mapView).apply {
-                    outlinePaint.apply {
-                        color = AccentMint.toArgb()
-                        strokeWidth = 10f
-                        strokeCap = Paint.Cap.ROUND
-                    }
-                    setPoints(listOf(from.second, to.second))
-                })
-                // Hop number at the midpoint of each forward segment.
-                val mid = GeoPoint(
-                    (from.second.latitude + to.second.latitude) / 2.0,
-                    (from.second.longitude + to.second.longitude) / 2.0
-                )
-                mapView.overlays.add(Marker(mapView).apply {
-                    position = mid
-                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                    infoWindow = null
-                    icon = createBadgeMarkerDrawable(
-                        context,
-                        "${index + 1}",
-                        AccentMint.toArgb(),
-                        isActive = true,
-                        isPingMarker = true
-                    )
-                    setOnMarkerClickListener { _, _ -> true }
-                })
-            }
-
-            if (traceRouteState.returning.isNotEmpty()) {
-                val returnIds = listOf(traceRouteState.targetId) + traceRouteState.returning.map { it.nodeId }
-                val returnPoints = returnIds.mapNotNull { id -> positionFor(id)?.let { id to it } }
-                returnPoints.zipWithNext().forEach { (from, to) ->
-                    mapView.overlays.add(Polyline(mapView).apply {
-                        outlinePaint.apply {
-                            color = Color(0xFFFBBF24).copy(alpha = 0.9f).toArgb()
-                            strokeWidth = 7f
-                            strokeCap = Paint.Cap.ROUND
-                            pathEffect = DashPathEffect(floatArrayOf(18f, 12f), 0f)
-                        }
-                        setPoints(listOf(from.second, to.second))
-                    })
-                }
-            }
-        }
+        // Direct 1-hop links are opt-in (Layers) so the map opens clean.
+        // Drawn later once badge display positions exist.
 
         // 2. Optional range-test history (off by default). Map shows current
         // node positions; ping pins cluttered the view after long tests.
@@ -2081,36 +2695,147 @@ fun MapViewCompose(
             selectedPingLog = null
         }
 
-        // 3. Draw custom initials-badge markers for each active node.
+        // 3. Badge markers for every node, including the connected radio at phone GPS.
         // Nodes sitting at (nearly) the same spot get fanned out on a small ring so
         // every badge stays visible and tappable instead of stacking.
-        val placedNodes = nodes.filter { it.nodeId != viewModel.connectedNodeId && hasValidPosition(it.latitude, it.longitude) }
+        val placedNodes = nodes.filter { node ->
+            val isConnected = node.nodeId == connectedId ||
+                (connectedNode != null && node.nodeId == connectedNode.nodeId)
+            if (isConnected) return@filter localPoint != null
+            hasValidPosition(node.latitude, node.longitude)
+        }
         val nodeGroups = mutableListOf<MutableList<MeshNode>>()
-        for (node in placedNodes) {
+        for (node in placedNodes.sortedBy { it.nodeId }) {
+            val anchor = positionFor(node.nodeId) ?: continue
             val group = nodeGroups.find { g ->
+                val gAnchor = positionFor(g[0].nodeId) ?: return@find false
                 calculateDistance(
-                    g[0].latitude.toDouble(), g[0].longitude.toDouble(),
-                    node.latitude.toDouble(), node.longitude.toDouble()
-                ) < 0.03 // within 30 m
+                    gAnchor.latitude, gAnchor.longitude,
+                    anchor.latitude, anchor.longitude
+                ) < 0.025 // within 25 m of stabilized pins
             }
             if (group != null) group.add(node) else nodeGroups.add(mutableListOf(node))
         }
         val displayPositions = mutableMapOf<Long, GeoPoint>()
         for (group in nodeGroups) {
-            if (group.size == 1) {
-                val n = group[0]
-                displayPositions[n.nodeId] = GeoPoint(n.latitude.toDouble(), n.longitude.toDouble())
+            val ordered = group.sortedBy { it.nodeId }
+            if (ordered.size == 1) {
+                val n = ordered[0]
+                displayPositions[n.nodeId] = positionFor(n.nodeId) ?: continue
             } else {
-                val cLat = group.map { it.latitude.toDouble() }.average()
-                val cLon = group.map { it.longitude.toDouble() }.average()
-                val fanRadiusM = 25.0
-                group.forEachIndexed { i, n ->
-                    val angle = 2.0 * Math.PI * i / group.size - Math.PI / 2.0
+                val centers = ordered.mapNotNull { positionFor(it.nodeId) }
+                if (centers.isEmpty()) continue
+                val cLat = centers.map { it.latitude }.average()
+                val cLon = centers.map { it.longitude }.average()
+                // Stable fan: radius from node count, angles from sorted nodeId order.
+                val fanRadiusM = 18.0
+                ordered.forEachIndexed { i, n ->
+                    val angle = 2.0 * Math.PI * i / ordered.size - Math.PI / 2.0
                     val dLat = fanRadiusM * kotlin.math.cos(angle) / 111_320.0
                     val dLon = fanRadiusM * kotlin.math.sin(angle) /
-                        (111_320.0 * kotlin.math.cos(Math.toRadians(cLat)))
+                        (111_320.0 * kotlin.math.cos(Math.toRadians(cLat)).coerceAtLeast(0.2))
                     displayPositions[n.nodeId] = GeoPoint(cLat + dLat, cLon + dLon)
                 }
+            }
+        }
+
+        fun routePoint(nodeId: Long): GeoPoint? =
+            displayPositions[nodeId] ?: positionFor(nodeId)
+
+        // Optional direct links — use the same badge pins so lines aren't "stuck" elsewhere.
+        if (showDirectLinks && !tracingOnMap && localPoint != null) {
+            val from = displayPositions[connectedId]
+                ?: connectedNode?.nodeId?.let { displayPositions[it] }
+                ?: localPoint
+            observedRoutes.values.filter { it.hops == 1 }.forEach { route ->
+                if (route.targetId == connectedId ||
+                    (connectedNode != null && route.targetId == connectedNode.nodeId)
+                ) return@forEach
+                val hopPoint = routePoint(route.targetId) ?: return@forEach
+                mapView.overlays.add(Polyline(mapView).apply {
+                    outlinePaint.apply {
+                        isAntiAlias = true
+                        color = AccentSteel.copy(alpha = 0.65f).toArgb()
+                        strokeWidth = 4f * context.resources.displayMetrics.density
+                        strokeCap = Paint.Cap.ROUND
+                        pathEffect = DashPathEffect(floatArrayOf(14f, 12f), 0f)
+                    }
+                    setPoints(listOf(from, hopPoint))
+                })
+            }
+        }
+
+        // Traceroute — both directions share the same centerline (stacked, not parallel).
+        if (tracingOnMap) {
+            val density = context.resources.displayMetrics.density
+            val outgoingColor = android.graphics.Color.parseColor("#FF9800")
+            val returnColor = android.graphics.Color.parseColor("#64B5F6")
+            val stroke = 4.5f * density
+
+            fun pointsFor(ids: List<Long>): List<GeoPoint> {
+                val pts = ids.mapNotNull { routePoint(it) }
+                if (pts.size < 2) return emptyList()
+                val spanM = routePathLengthMeters(pts)
+                return if (spanM < 2.0) {
+                    val base = pts.first()
+                    listOf(
+                        offsetGeoPoint(base, 0.0, 10.0),
+                        offsetGeoPoint(base, 180.0, 10.0)
+                    )
+                } else {
+                    pts
+                }
+            }
+
+            fun drawRoute(pts: List<GeoPoint>, color: Int, dashed: Boolean) {
+                if (pts.size < 2) return
+                mapView.overlays.add(Polyline(mapView).apply {
+                    outlinePaint.apply {
+                        isAntiAlias = true
+                        this.color = color
+                        strokeWidth = stroke
+                        strokeCap = Paint.Cap.ROUND
+                        strokeJoin = Paint.Join.ROUND
+                        style = Paint.Style.STROKE
+                        if (dashed) {
+                            pathEffect = DashPathEffect(floatArrayOf(stroke * 2.8f, stroke * 2.2f), 0f)
+                        }
+                    }
+                    setPoints(ArrayList(pts))
+                })
+            }
+
+            val forwardIds = (listOf(connectedId) + traceRouteState.forward.map { it.nodeId })
+                .filter { it != 0L }
+                .distinct()
+            val outgoingIds = if (forwardIds.size >= 2) {
+                forwardIds
+            } else {
+                listOfNotNull(connectedId.takeIf { it != 0L }, traceRouteState.targetId.takeIf { it != 0L })
+            }
+
+            val returnIds = if (traceRouteState.returning.isNotEmpty()) {
+                (listOf(traceRouteState.targetId) + traceRouteState.returning.map { it.nodeId })
+                    .filter { it != 0L }
+            } else emptyList()
+
+            val outgoingPts = pointsFor(outgoingIds)
+            val returnPts = pointsFor(returnIds)
+            val sameCenterline = outgoingPts.size >= 2 && returnPts.size >= 2 &&
+                outgoingPts.first().latitude == returnPts.last().latitude &&
+                outgoingPts.first().longitude == returnPts.last().longitude &&
+                outgoingPts.last().latitude == returnPts.first().latitude &&
+                outgoingPts.last().longitude == returnPts.first().longitude
+
+            // Stack on one path: solid orange, then blue on top (dashed when it's the same hop).
+            drawRoute(outgoingPts, outgoingColor, dashed = false)
+            if (returnPts.size >= 2) {
+                drawRoute(
+                    // Reuse outgoing geometry when return is just the reverse — exact overlap.
+                    if (sameCenterline) outgoingPts else returnPts,
+                    returnColor,
+                    dashed = sameCenterline
+                )
             }
         }
 
@@ -2121,7 +2846,7 @@ fun MapViewCompose(
             // Position-privacy circle (Meshtastic-style): the node blurs its
             // broadcast position, so it is "somewhere within this radius" of the
             // reported point. Only drawn when the node reports a precision.
-            if (node.positionPrecision > 0) {
+            if (node.nodeId != connectedId && node.positionPrecision > 0) {
                 val circle = Polygon(mapView).apply {
                     val center = GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
                     points = Polygon.pointsAsCircle(center, node.positionPrecision.toDouble())
@@ -2141,9 +2866,16 @@ fun MapViewCompose(
                 position = displayPositions[node.nodeId]
                     ?: GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
                 infoWindow = null
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER) // Center of the badge circle
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
 
-                val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                val nodeShortName = when {
+                    connectedNode != null && node.nodeId == connectedNode.nodeId ->
+                        connectedLabel ?: node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                    node.nodeId == connectedId ->
+                        connectedLabel ?: node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                    else ->
+                        node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                }
                 val isNodeActive = !isNodeStale(node.lastActive)
                 icon = createBadgeMarkerDrawable(context, nodeShortName, color, isActive = isNodeActive, isPingMarker = false)
 
@@ -2154,6 +2886,23 @@ fun MapViewCompose(
                 }
             }
             mapView.overlays.add(marker)
+        }
+
+        // Connected radio not yet in the node DB — still show its real short name (never "ME").
+        if (connectedNode == null && localPoint != null && !connectedLabel.isNullOrBlank()) {
+            mapView.overlays.add(Marker(mapView).apply {
+                position = localPoint
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                infoWindow = null
+                icon = createBadgeMarkerDrawable(
+                    context,
+                    connectedLabel,
+                    getBadgeColor(connectedLabel).toArgb(),
+                    isActive = true,
+                    isPingMarker = false
+                )
+                setOnMarkerClickListener { _, _ -> true }
+            })
         }
 
         // Auto-center on first valid node if we haven't already centered
@@ -2169,21 +2918,51 @@ fun MapViewCompose(
         mapView.invalidate()
     }
 
+    // "View on map" from traceroute — fit the hop positions into view.
+    LaunchedEffect(fitTraceRouteToken) {
+        if (fitTraceRouteToken <= 0) return@LaunchedEffect
+        val connectedId = viewModel.connectedNodeId
+        val idSet = linkedSetOf<Long>()
+        if (connectedId != 0L) idSet += connectedId
+        if (traceRouteState.targetId != 0L) idSet += traceRouteState.targetId
+        traceRouteState.forward.forEach { idSet += it.nodeId }
+        traceRouteState.returning.forEach { idSet += it.nodeId }
+        val points = idSet.mapNotNull { id ->
+            val node = nodes.find { it.nodeId == id }
+                ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
+            if (node != null && hasValidPosition(node.latitude, node.longitude)) {
+                GeoPoint(node.latitude.toDouble(), node.longitude.toDouble())
+            } else null
+        } + listOfNotNull(phoneLocation)
+        if (points.isEmpty()) return@LaunchedEffect
+        val bb = BoundingBox.fromGeoPoints(points)
+        val pad = (56 * context.resources.displayMetrics.density).toInt()
+        if (bb.latitudeSpan < 0.0005 && bb.longitudeSpanWithDateLine < 0.0005) {
+            mapView.controller.animateTo(bb.centerWithDateLine)
+            mapView.controller.setZoom(16.0)
+        } else {
+            mapView.zoomToBoundingBox(bb, true, pad)
+        }
+        hasCentered = true
+    }
+
     Box(modifier = Modifier.fillMaxSize().clip(androidx.compose.ui.graphics.RectangleShape)) {
         AndroidView(
             factory = { mapView },
             modifier = Modifier.fillMaxSize()
         )
 
-        // expandable Heard (No GPS) Nodes overlay Card
+        // expandable Heard (No GPS) Nodes overlay Card — top-start, clear of compass/legend
         val noGpsNodes = nodes.filter { it.nodeId != viewModel.connectedNodeId }.filterNot { hasValidPosition(it.latitude, it.longitude) }
         var showNoGpsNodesList by remember { mutableStateOf(false) }
+        val tracingLegend = traceRouteState.visible &&
+            (traceRouteState.forward.isNotEmpty() || traceRouteState.returning.isNotEmpty())
         
         if (noGpsNodes.isNotEmpty()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 16.dp, start = 16.dp)
+                    .padding(top = 16.dp, start = 16.dp, end = if (tracingLegend) 140.dp else 16.dp)
                     .widthIn(max = 240.dp)
             ) {
                 Card(
@@ -2384,6 +3163,42 @@ fun MapViewCompose(
                             modifier = Modifier
                         )
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Rastro GPS" else "Phone GPS track",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Switch(
+                            checked = showPhoneTrack,
+                            onCheckedChange = {
+                                showPhoneTrack = it
+                                mapPrefs.edit().putBoolean("show_phone_track", it).apply()
+                            }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (appLanguage == "Spanish") "Enlaces 1 salto" else "Direct 1-hop links",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Switch(
+                            checked = showDirectLinks,
+                            onCheckedChange = {
+                                showDirectLinks = it
+                                mapPrefs.edit().putBoolean("show_direct_links", it).apply()
+                            }
+                        )
+                    }
                     Text(
                         text = if (appLanguage == "Spanish")
                             "Los círculos alrededor de los nodos muestran su radio de privacidad de posición."
@@ -2433,9 +3248,51 @@ fun MapViewCompose(
             }
         }
 
-        val tracingLegend = traceRouteState.visible &&
-            (traceRouteState.forward.isNotEmpty() || traceRouteState.returning.isNotEmpty())
-        if (tracingLegend || showRangeTestHistory) {
+        if (tracingLegend) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.92f)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, BorderDark),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 12.dp, top = 52.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 16.dp, height = 3.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color(0xFFFF9800))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Outgoing route", color = TextLight, fontSize = 12.sp)
+                    }
+                    if (traceRouteState.returning.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 16.dp, height = 3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(Color(0xFF64B5F6))
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Return route", color = TextLight, fontSize = 12.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = { viewModel.clearTraceRouteResult() },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Text("Clear route", color = AccentMint, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        if (showRangeTestHistory && !tracingLegend) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark.copy(alpha = 0.92f)),
                 shape = RoundedCornerShape(10.dp),
@@ -2445,42 +3302,18 @@ fun MapViewCompose(
                     .padding(start = 12.dp, top = 56.dp)
             ) {
                 Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                    if (tracingLegend) {
-                        Text("ROUTE", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentMint))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Forward", color = TextMuted, fontSize = 10.sp)
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentAmber))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Return", color = TextMuted, fontSize = 10.sp)
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(width = 16.dp, height = 3.dp).background(AccentSteel))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("1-hop", color = TextMuted, fontSize = 10.sp)
-                        }
+                    Text("RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentMint))
+                        Spacer(Modifier.width(6.dp))
+                        Text("ACK", color = TextMuted, fontSize = 10.sp)
                     }
-                    if (showRangeTestHistory) {
-                        if (tracingLegend) Spacer(modifier = Modifier.height(6.dp))
-                        Text("RANGE PINS", color = AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentMint))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("ACK", color = TextMuted, fontSize = 10.sp)
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentRed))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Timeout", color = TextMuted, fontSize = 10.sp)
-                        }
+                    Spacer(Modifier.height(3.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(AccentRed))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Timeout", color = TextMuted, fontSize = 10.sp)
                     }
                 }
             }
@@ -6277,12 +7110,27 @@ fun ConnectionView(
     val context = LocalContext.current
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val isRangeTestActive by viewModel.isRangeTestActive.collectAsStateWithLifecycle()
+    val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
+    val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
+    val bleReconnectAttempt by viewModel.bleReconnectAttempt.collectAsStateWithLifecycle()
+    val bleReconnectGaveUp by viewModel.bleReconnectGaveUp.collectAsStateWithLifecycle()
     val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
     val displayName = connectedNode?.name ?: viewModel.connectedDeviceName ?: "Wolf Base"
     val shortName = getShortName(displayName, viewModel.connectedNodeId ?: 0L)
     val badgeColor = getBadgeColor(displayName)
     val batteryVal = connectedNode?.battery ?: 98
     var toolsExpanded by remember { mutableStateOf(false) }
+    val toolsPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
+    val hasLocationPermission = remember {
+        ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+    }
 
     LaunchedEffect(isRangeTestActive) {
         if (isRangeTestActive) toolsExpanded = true
@@ -6296,6 +7144,48 @@ fun ConnectionView(
     ) {
         AetherSectionHeader(title = t("Connection", appLanguage))
         Spacer(modifier = Modifier.height(16.dp))
+
+        if (!isConnected) {
+            when {
+                bleReconnectGaveUp -> {
+                    Text(
+                        if (appLanguage == "Spanish")
+                            "La reconexión automática se detuvo tras varios intentos."
+                        else
+                            "Auto-reconnect stopped after several attempts.",
+                        color = AccentAmber,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.retryBleConnection() },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            if (appLanguage == "Spanish") "Reintentar conexión" else "Retry connection",
+                            color = DarkBackground,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+                blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+                    blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting -> {
+                    Text(
+                        if (appLanguage == "Spanish")
+                            "Reconectando (intento $bleReconnectAttempt)…"
+                        else
+                            "Reconnecting (attempt $bleReconnectAttempt)…",
+                        color = AccentAmber,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }
+        }
 
         // 1. Connected Node Card
         if (isConnected) {
@@ -6413,11 +7303,39 @@ fun ConnectionView(
                 onToggle = { toolsExpanded = !toolsExpanded },
                 badge = when {
                     isRangeTestActive -> t("ACTIVE", appLanguage)
+                    isConnected && !isDeviceAuthenticated -> if (appLanguage == "Spanish") "Auth" else "Auth"
                     toolsExpanded -> null
                     else -> if (appLanguage == "Spanish") "Rango · Enrutamiento" else "Range · Routing"
                 }
             )
             if (toolsExpanded) {
+            if (isConnected && !isDeviceAuthenticated) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+                    border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            if (appLanguage == "Spanish") "Herramientas bloqueadas"
+                            else "Tools locked",
+                            color = AccentAmber,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Autentica el nodo conectado para usar prueba de rango, modo silencioso y diagnósticos en vivo."
+                            else
+                                "Authenticate the connected node to use range test, quiet mode, and live diagnostics.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            } else {
             // Mesh health
             val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
             val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
@@ -6444,6 +7362,12 @@ fun ConnectionView(
                             diagnostics.ackTimeouts == 0L -> AccentMint
                             else -> AccentAmber
                         }
+                        val ageSec = ((System.currentTimeMillis() - diagnostics.timestamp) / 1000L).coerceAtLeast(0L)
+                        val ageLabel = when {
+                            ageSec < 5L -> if (appLanguage == "Spanish") "ahora" else "just now"
+                            ageSec < 60L -> "${ageSec}s"
+                            else -> "${ageSec / 60}m"
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -6456,22 +7380,52 @@ fun ConnectionView(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            DiagnosticCard(if (appLanguage == "Spanish") "TX fallos" else "TX fail", "${diagnostics.txFailures}", TextMuted, Modifier.weight(1f), compact = true)
                             DiagnosticCard(if (appLanguage == "Spanish") "Caídas" else "Drops", "${diagnostics.queueDrops}", TextMuted, Modifier.weight(1f), compact = true)
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             DiagnosticCard("CAD busy", "${diagnostics.cadBusyEvents}", TextMuted, Modifier.weight(1f), compact = true)
+                            DiagnosticCard("ACK Q", "${diagnostics.pendingAckDepth}", TextMuted, Modifier.weight(1f), compact = true)
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            DiagnosticCard("Rebroadcast Q", "${diagnostics.rebroadcastQueueDepth}", TextMuted, Modifier.weight(1f), compact = true)
+                            DiagnosticCard(
+                                if (appLanguage == "Spanish") "Silencio" else "Quiet",
+                                if (diagnostics.quietMode) "ON" else "off",
+                                if (diagnostics.quietMode) AccentMint else TextMuted,
+                                Modifier.weight(1f),
+                                compact = true
+                            )
                         }
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            "Relayed ${diagnostics.relayedPackets}  ·  Retries ${diagnostics.retries}  ·  Airtime ${diagnostics.airtimeMs / 1000}s  ·  V${diagnostics.protocolVersion}",
+                            "Relayed ${diagnostics.relayedPackets}  ·  Retries ${diagnostics.retries}  ·  Airtime ${diagnostics.airtimeMs / 1000}s  ·  Up ${diagnostics.uptimeSeconds}s  ·  V${diagnostics.protocolVersion}",
                             color = TextMuted,
                             fontSize = 11.sp
+                        )
+                        Text(
+                            if (appLanguage == "Spanish") "Actualizado: $ageLabel" else "Updated: $ageLabel",
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                         if (diagnostics.rangePingsRx > 0L || diagnostics.rangePongsSent > 0L || diagnostics.quietMode) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 buildString {
-                                    if (diagnostics.quietMode) append("Quiet ON  ·  ")
-                                    append("Range ping RX ${diagnostics.rangePingsRx}")
-                                    append("  ·  PONG q/s/fail ${diagnostics.rangePongsQueued}/${diagnostics.rangePongsSent}/${diagnostics.rangePongTxFailures}")
+                                    if (diagnostics.quietMode) {
+                                        append(if (appLanguage == "Spanish") "Modo silencioso activo  ·  " else "Quiet mode active  ·  ")
+                                    }
+                                    append("Range RX ${diagnostics.rangePingsRx}")
+                                    append("  ·  PONGs queued/sent/fail ${diagnostics.rangePongsQueued}/${diagnostics.rangePongsSent}/${diagnostics.rangePongTxFailures}")
                                 },
                                 color = if (diagnostics.quietMode) AccentMint else TextMuted,
                                 fontSize = 11.sp
@@ -6559,14 +7513,38 @@ fun ConnectionView(
             )
             val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
             var rangeTestTargetDropdownExpanded by remember { mutableStateOf(false) }
-            var selectedRangeTargetNode by remember { mutableStateOf<MeshNode?>(null) }
-            var pingIntervalSec by remember { mutableFloatStateOf(5f) }
-            
-            // Auto-select target if null
-            if (selectedRangeTargetNode == null && nodes.isNotEmpty()) {
-                selectedRangeTargetNode = nodes.firstOrNull { it.nodeId != viewModel.connectedNodeId }
+            val rangeTargets = remember(nodes, viewModel.connectedNodeId) {
+                nodes.filter { it.nodeId != viewModel.connectedNodeId }
             }
-            
+            var selectedRangeTargetNode by remember {
+                val savedId = toolsPrefs.getLong("range_test_target_id", 0L)
+                mutableStateOf(rangeTargets.find { it.nodeId == savedId })
+            }
+            var pingIntervalSec by remember {
+                mutableFloatStateOf(toolsPrefs.getFloat("range_test_interval_sec", 5f).coerceIn(2f, 30f))
+            }
+
+            LaunchedEffect(rangeTargets) {
+                if (selectedRangeTargetNode == null && rangeTargets.isNotEmpty()) {
+                    selectedRangeTargetNode = rangeTargets.first()
+                } else {
+                    selectedRangeTargetNode?.let { sel ->
+                        selectedRangeTargetNode = rangeTargets.find { it.nodeId == sel.nodeId } ?: rangeTargets.firstOrNull()
+                    }
+                }
+            }
+            LaunchedEffect(selectedRangeTargetNode?.nodeId) {
+                selectedRangeTargetNode?.nodeId?.let { viewModel.loadRangeTestLogs(it) }
+            }
+            LaunchedEffect(pingIntervalSec) {
+                toolsPrefs.edit().putFloat("range_test_interval_sec", pingIntervalSec).apply()
+            }
+            LaunchedEffect(selectedRangeTargetNode?.nodeId) {
+                selectedRangeTargetNode?.nodeId?.let {
+                    toolsPrefs.edit().putLong("range_test_target_id", it).apply()
+                }
+            }
+
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                 shape = RoundedCornerShape(16.dp),
@@ -6574,6 +7552,29 @@ fun ConnectionView(
                 border = BorderStroke(1.dp, BorderDark)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    if (isConnected && !isDeviceAuthenticated) {
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Autentica el dispositivo para usar la prueba de rango y el modo silencioso."
+                            else
+                                "Authenticate the device to use range test and quiet mode.",
+                            color = AccentAmber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+                    if (!hasLocationPermission) {
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Sin permiso de ubicación: distancia y GPS del CSV usarán la posición del nodo."
+                            else
+                                "Location permission off — distance/CSV will fall back to the node’s reported position.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -6630,7 +7631,7 @@ fun ConnectionView(
                             onDismissRequest = { rangeTestTargetDropdownExpanded = false },
                             modifier = Modifier.background(SurfaceDark)
                         ) {
-                            nodes.filter { it.nodeId != viewModel.connectedNodeId }.forEach { node ->
+                            rangeTargets.forEach { node ->
                                 DropdownMenuItem(
                                     text = { Text("${node.name} (0x${node.nodeId.toString(16).uppercase()})", color = TextLight) },
                                     onClick = {
@@ -6664,20 +7665,52 @@ fun ConnectionView(
                                     viewModel.startRangeTest(it.nodeId, pingIntervalSec.toInt())
                                 }
                             },
-                            enabled = selectedRangeTargetNode != null,
+                            enabled = selectedRangeTargetNode != null && isDeviceAuthenticated,
                             modifier = Modifier.fillMaxWidth().height(40.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("Start Range Test", color = DarkBackground, fontWeight = FontWeight.Bold)
                         }
+                        if (!isDeviceAuthenticated) {
+                            Text(
+                                if (appLanguage == "Spanish") "Bloqueado hasta autenticar" else "Locked until authenticated",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                        if (rangeTestLogs.isNotEmpty()) {
+                            val total = rangeTestLogs.size
+                            val ok = rangeTestLogs.count { it.success }
+                            val rate = if (total > 0) ok * 100 / total else 0
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "Última sesión: $ok/$total ($rate%)"
+                                else
+                                    "Last session: $ok/$total replies ($rate%)",
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
+                            rangeTestLogs.lastOrNull { !it.success }?.let { miss ->
+                                Text(
+                                    rangeTestFailureLabel(miss.failureReason, appLanguage),
+                                    color = AccentAmber,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
                     } else {
                         // Active range test statistics
                         val totalPings = rangeTestLogs.size
                         val successfulPings = rangeTestLogs.count { it.success }
                         val successRate = if (totalPings > 0) (successfulPings * 100 / totalPings) else 0
-                        val timeoutFails = rangeTestLogs.count { !it.success && (it.failureReason == null || it.failureReason == "timeout") }
-                        val otherFails = rangeTestLogs.count { !it.success && it.failureReason != null && it.failureReason != "timeout" }
+                        val failBuckets = rangeTestLogs
+                            .filter { !it.success }
+                            .groupingBy { it.failureReason ?: "timeout" }
+                            .eachCount()
                         
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -6696,16 +7729,28 @@ fun ConnectionView(
                                 Text("$successRate%", color = if (successRate > 75) AccentMint else if (successRate > 40) Color(0xFFFBBF24) else Color(0xFFF87171), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        if (timeoutFails + otherFails > 0) {
+                        if (failBuckets.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                "Misses: $timeoutFails timeout" +
-                                    if (otherFails > 0) " · $otherFails other" else "",
+                                failBuckets.entries.joinToString(" · ") { (reason, count) ->
+                                    "$count× ${rangeTestFailureShort(reason, appLanguage)}"
+                                },
                                 color = TextMuted,
                                 fontSize = 11.sp,
                                 modifier = Modifier.fillMaxWidth(),
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
+                            rangeTestLogs.lastOrNull { !it.success }?.let { miss ->
+                                Text(
+                                    rangeTestFailureLabel(miss.failureReason, appLanguage),
+                                    color = AccentAmber,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         }
 
                         // Live distance to the target (phone GPS -> target's reported position),
@@ -6947,7 +7992,8 @@ fun ConnectionView(
                     }
                 }
             }
-            }
+            } // end authenticated tools
+            } // end toolsExpanded
         } else {
             // Unconnected State Placeholder
             Card(
@@ -7069,7 +8115,8 @@ fun ConnectionView(
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 scannedDevices.forEach { device ->
-                    val isThisConnected = isConnected && viewModel.connectedDeviceName == device.name
+                    val isThisConnected = isConnected &&
+                        viewModel.connectedDeviceAddress.equals(device.mac, ignoreCase = true)
                     Card(
                         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                         shape = RoundedCornerShape(12.dp),
@@ -7204,6 +8251,38 @@ fun hasValidPosition(latitude: Number, longitude: Number): Boolean {
     val lon = longitude.toDouble()
     return lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0 &&
         !(lat == 0.0 && lon == 0.0)
+}
+
+fun rangeTestFailureShort(reason: String?, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
+    return when (reason) {
+        "ble_send_fail" -> if (spanish) "fallo BLE" else "BLE fail"
+        "auth_blocked" -> if (spanish) "auth" else "auth"
+        "test_stopped" -> if (spanish) "detenido" else "stopped"
+        else -> if (spanish) "timeout" else "timeout"
+    }
+}
+
+fun rangeTestFailureLabel(reason: String?, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
+    return when (reason) {
+        "ble_send_fail" -> if (spanish)
+            "Fallo al escribir por BLE — revisa el enlace."
+        else
+            "BLE write failed — check the phone↔node link."
+        "auth_blocked" -> if (spanish)
+            "Bloqueado: autentica el dispositivo."
+        else
+            "Blocked — unlock/authenticate the device."
+        "test_stopped" -> if (spanish)
+            "Prueba detenida."
+        else
+            "Test stopped."
+        else -> if (spanish)
+            "Sin respuesta (timeout)."
+        else
+            "No reply (timeout)."
+    }
 }
 
 fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): String {

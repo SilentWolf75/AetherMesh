@@ -68,6 +68,7 @@ data class TraceHop(
 
 data class TraceRouteState(
     val visible: Boolean = false,
+    val showDialog: Boolean = false,
     val active: Boolean = false,
     val targetId: Long = 0L,
     val traceId: Int = 0,
@@ -75,8 +76,16 @@ data class TraceRouteState(
     val returning: List<TraceHop> = emptyList(),
     val forwardTruncated: Boolean = false,
     val returnTruncated: Boolean = false,
-    val error: String? = null
-)
+    val error: String? = null,
+    val startedAtMs: Long = 0L,
+    val finishedAtMs: Long = 0L
+) {
+    val durationSeconds: Float?
+        get() {
+            if (startedAtMs <= 0L || finishedAtMs < startedAtMs) return null
+            return (finishedAtMs - startedAtMs) / 1000f
+        }
+}
 
 class AetherMeshRepository(private val context: Context) {
 
@@ -150,6 +159,14 @@ class AetherMeshRepository(private val context: Context) {
 
     private val _isBleConnected = MutableStateFlow(false)
     val isBleConnected: StateFlow<Boolean> = _isBleConnected.asStateFlow()
+    private val _bleConnectionPhase =
+        MutableStateFlow(com.example.aethermesh.ble.BleConnectionPhase.Disconnected)
+    val bleConnectionPhase: StateFlow<com.example.aethermesh.ble.BleConnectionPhase> =
+        _bleConnectionPhase.asStateFlow()
+    private val _bleReconnectAttempt = MutableStateFlow(0)
+    val bleReconnectAttempt: StateFlow<Int> = _bleReconnectAttempt.asStateFlow()
+    private val _bleReconnectGaveUp = MutableStateFlow(false)
+    val bleReconnectGaveUp: StateFlow<Boolean> = _bleReconnectGaveUp.asStateFlow()
 
     // Group channels: the list of known channel names and the one currently being viewed.
     private val _channels = MutableStateFlow(listOf(DEFAULT_CHANNEL))
@@ -303,6 +320,7 @@ class AetherMeshRepository(private val context: Context) {
             if (connected) {
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
+                _bleReconnectGaveUp.value = false
                 val mac = bleManager.getConnectedDeviceAddress()
                 if (mac != null) {
                     autoAuthenticate(mac)
@@ -316,6 +334,11 @@ class AetherMeshRepository(private val context: Context) {
                 }
                 refreshData()
             }
+        }
+        bleManager.onConnectionPhaseChanged = { phase, attempt ->
+            _bleConnectionPhase.value = phase
+            _bleReconnectAttempt.value = attempt
+            _bleReconnectGaveUp.value = bleManager.reconnectGaveUp
         }
 
         // Configure BLE packet receiver
@@ -676,11 +699,13 @@ class AetherMeshRepository(private val context: Context) {
                     traceRouteJob?.cancel()
                     _traceRouteState.value = current.copy(
                         active = false,
+                        showDialog = true,
                         forward = forward,
                         returning = returning,
                         forwardTruncated = trace.forwardTruncated,
                         returnTruncated = trace.returnTruncated,
-                        error = null
+                        error = null,
+                        finishedAtMs = System.currentTimeMillis()
                     )
 
                     if (forward.isNotEmpty()) {
@@ -1032,20 +1057,40 @@ class AetherMeshRepository(private val context: Context) {
         if (!bleManager.sendPacket(packet.toByteArray())) return false
 
         traceRouteJob?.cancel()
-        _traceRouteState.value = TraceRouteState(visible = true, active = true, targetId = targetId, traceId = traceId)
+        _traceRouteState.value = TraceRouteState(
+            visible = true,
+            showDialog = true,
+            active = true,
+            targetId = targetId,
+            traceId = traceId,
+            startedAtMs = System.currentTimeMillis()
+        )
         traceRouteJob = repositoryScope.launch {
             delay(TRACE_ROUTE_TIMEOUT_MS)
             val pending = _traceRouteState.value
             if (pending.active && pending.traceId == traceId) {
-                _traceRouteState.value = pending.copy(active = false, error = "No route response received")
+                _traceRouteState.value = pending.copy(
+                    active = false,
+                    showDialog = true,
+                    error = "No route response received",
+                    finishedAtMs = System.currentTimeMillis()
+                )
             }
         }
         return true
     }
 
+    fun hideTraceRouteDialog() {
+        _traceRouteState.value = _traceRouteState.value.copy(showDialog = false)
+    }
+
     fun clearTraceRouteResult() {
         traceRouteJob?.cancel()
-        _traceRouteState.value = _traceRouteState.value.copy(visible = false, active = false)
+        _traceRouteState.value = _traceRouteState.value.copy(
+            visible = false,
+            showDialog = false,
+            active = false
+        )
     }
 
     fun sendRemoteConfig(
@@ -1994,6 +2039,11 @@ class AetherMeshRepository(private val context: Context) {
     fun lastPhoneFix(): android.location.Location? = lastPhoneLocation
 
     fun getTelemetryHistory(nodeId: Long) = dbHelper.getTelemetryHistory(nodeId)
+
+    fun getChannelInboxPreviews(): Map<String, ChatInboxPreview> = dbHelper.getChannelInboxPreviews()
+
+    fun getDmInboxPreviews(localNodeId: Long): Map<Long, ChatInboxPreview> =
+        dbHelper.getDmInboxPreviews(localNodeId)
 
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList().map { channel ->

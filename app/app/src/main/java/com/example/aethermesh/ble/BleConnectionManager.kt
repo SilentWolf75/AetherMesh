@@ -15,12 +15,20 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.*
 
+enum class BleConnectionPhase {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting
+}
+
 @SuppressLint("MissingPermission")
 class BleConnectionManager(private val context: Context) {
 
     companion object {
         private const val TAG = "BleConnManager"
         private const val PREF_PAIRED_MAC = "paired_mac"
+        private const val MAX_RECONNECT_ATTEMPTS = 12
         
         val SERVICE_UUID: UUID = UUID.fromString("a75e0001-8b01-4475-bf7d-9477b83e7953")
         val TX_CHAR_UUID: UUID = UUID.fromString("a75e0002-8b01-4475-bf7d-9477b83e7953")
@@ -53,6 +61,22 @@ class BleConnectionManager(private val context: Context) {
     private var reconnectAttempt = 0
     private var mtuTimeoutRunnable: Runnable? = null
     private var pendingAutoConnectMac: String? = null
+    @Volatile
+    private var phase: BleConnectionPhase = BleConnectionPhase.Disconnected
+    @Volatile
+    var reconnectGaveUp = false
+        private set
+
+    /** Current BLE phase for UI (Connecting / Reconnecting / Connected / Disconnected). */
+    fun connectionPhase(): BleConnectionPhase = phase
+
+    fun reconnectAttemptNumber(): Int = reconnectAttempt
+
+    private fun setPhase(next: BleConnectionPhase) {
+        if (phase == next) return
+        phase = next
+        handler.post { onConnectionPhaseChanged?.invoke(next, reconnectAttempt) }
+    }
 
     init {
         // Auto-connect is deferred until BLUETOOTH_CONNECT is granted (Android 12+).
@@ -122,6 +146,7 @@ class BleConnectionManager(private val context: Context) {
     
     // Callbacks
     var onConnectionStateChanged: ((Boolean) -> Unit)? = null
+    var onConnectionPhaseChanged: ((BleConnectionPhase, Int) -> Unit)? = null
     var onPacketReceived: ((ByteArray) -> Unit)? = null
     var onDeviceDiscovered: ((String, String) -> Unit)? = null // Device Name, MAC Address
 
@@ -184,6 +209,8 @@ class BleConnectionManager(private val context: Context) {
             return
         }
 
+        reconnectGaveUp = false
+
         // Cancel any pending reconnect attempts
         reconnectRunnable?.let {
             handler.removeCallbacks(it)
@@ -196,8 +223,14 @@ class BleConnectionManager(private val context: Context) {
         val currentGatt = bluetoothGatt
         if (currentGatt != null) {
             val currentMac = currentGatt.device.address
-            if (currentMac == macAddress) {
-                Log.d(TAG, "Already connected/connecting to device: $macAddress. Skipping reconnect.")
+            if (currentMac.equals(macAddress, ignoreCase = true) && (isConnected || phase == BleConnectionPhase.Connecting)) {
+                // Refresh the handshake watchdog if we're still mid-connect.
+                if (!isConnected) {
+                    Log.d(TAG, "Refresh connect watchdog for $macAddress")
+                    armConnectWatchdog(macAddress)
+                } else {
+                    Log.d(TAG, "Already connected to device: $macAddress. Skipping reconnect.")
+                }
                 return
             }
             Log.d(TAG, "Disconnecting and closing existing connection to $currentMac before connecting to $macAddress")
@@ -224,22 +257,7 @@ class BleConnectionManager(private val context: Context) {
         }
     }
 
-    private fun performConnect(macAddress: String) {
-        if (!hasBleConnectPermission()) {
-            Log.w(TAG, "BLUETOOTH_CONNECT not granted; deferring performConnect to $macAddress")
-            pendingAutoConnectMac = macAddress
-            return
-        }
-
-        userWantsDisconnect = false
-        prefs.edit().putString(PREF_PAIRED_MAC, macAddress).apply()
-
-        val device = bluetoothAdapter.getRemoteDevice(macAddress)
-        val label = safeDeviceName(device) ?: "Unknown"
-        Log.d(TAG, "Connecting to device: $label (${device.address})")
-
-        // Explicitly use TRANSPORT_LE to avoid fallback connection delays/drops on dual-mode devices
-        bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    private fun armConnectWatchdog(macAddress: String) {
         connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
         connectionTimeoutRunnable = Runnable {
             val stalledGatt = bluetoothGatt
@@ -259,11 +277,38 @@ class BleConnectionManager(private val context: Context) {
         handler.postDelayed(connectionTimeoutRunnable!!, 15_000)
     }
 
+    private fun performConnect(macAddress: String) {
+        if (!hasBleConnectPermission()) {
+            Log.w(TAG, "BLUETOOTH_CONNECT not granted; deferring performConnect to $macAddress")
+            pendingAutoConnectMac = macAddress
+            return
+        }
+
+        userWantsDisconnect = false
+        prefs.edit().putString(PREF_PAIRED_MAC, macAddress).apply()
+        setPhase(if (reconnectAttempt > 0) BleConnectionPhase.Reconnecting else BleConnectionPhase.Connecting)
+
+        val device = bluetoothAdapter.getRemoteDevice(macAddress)
+        val label = safeDeviceName(device) ?: "Unknown"
+        Log.d(TAG, "Connecting to device: $label (${device.address})")
+
+        // Explicitly use TRANSPORT_LE to avoid fallback connection delays/drops on dual-mode devices
+        bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        armConnectWatchdog(macAddress)
+    }
+
     private fun scheduleReconnect(macAddress: String) {
         if (userWantsDisconnect || suppressReconnect) return
+        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "Giving up auto-reconnect after $reconnectAttempt attempts")
+            reconnectGaveUp = true
+            setPhase(BleConnectionPhase.Disconnected)
+            return
+        }
         reconnectRunnable?.let { handler.removeCallbacks(it) }
         val delay = ReconnectPolicy.delayMs(reconnectAttempt, macAddress.hashCode() + reconnectAttempt)
         reconnectAttempt++
+        setPhase(BleConnectionPhase.Reconnecting)
         Log.d(TAG, "Scheduling reconnect attempt $reconnectAttempt in ${delay}ms")
         reconnectRunnable = Runnable {
             reconnectRunnable = null
@@ -294,11 +339,13 @@ class BleConnectionManager(private val context: Context) {
         isConnected = false
         connectedDeviceName = null
         onConnectionStateChanged?.invoke(false)
+        setPhase(BleConnectionPhase.Disconnected)
     }
 
     fun resumeAfterDfu() {
         suppressReconnect = false
         reconnectAttempt = 0
+        reconnectGaveUp = false
         val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
         if (savedMac != null && !isConnected) {
             // Give the freshly flashed node a moment to boot before connecting
@@ -313,6 +360,7 @@ class BleConnectionManager(private val context: Context) {
     fun disconnect() {
         userWantsDisconnect = true
         reconnectAttempt = 0
+        reconnectGaveUp = false
         
         // Cancel any pending reconnect attempts
         reconnectRunnable?.let {
@@ -334,6 +382,15 @@ class BleConnectionManager(private val context: Context) {
         connectedDeviceName = null
         connectedNodeId = 0
         onConnectionStateChanged?.invoke(false)
+        setPhase(BleConnectionPhase.Disconnected)
+    }
+
+    /** After auto-reconnect gave up, clear the flag and try the paired MAC again. */
+    fun retryAfterGaveUp() {
+        reconnectGaveUp = false
+        reconnectAttempt = 0
+        val mac = getPairedMac() ?: pendingAutoConnectMac ?: return
+        connect(mac)
     }
 
     fun getPairedMac(): String? {
@@ -553,11 +610,13 @@ class BleConnectionManager(private val context: Context) {
             
             isConnected = true
             reconnectAttempt = 0
+            reconnectGaveUp = false
             connectionTimeoutRunnable?.let {
                 handler.removeCallbacks(it)
                 connectionTimeoutRunnable = null
             }
             connectedDeviceName = safeDeviceName(gatt.device)
+            setPhase(BleConnectionPhase.Connected)
             
             // Save MAC address to preferences for auto-reconnection
             prefs.edit().putString(PREF_PAIRED_MAC, gatt.device.address).apply()

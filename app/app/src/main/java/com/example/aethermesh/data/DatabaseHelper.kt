@@ -863,6 +863,69 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
+    /** Latest message per named channel for inbox previews. */
+    fun getChannelInboxPreviews(): Map<String, ChatInboxPreview> {
+        val db = readableDatabase
+        val out = mutableMapOf<String, ChatInboxPreview>()
+        val cursor = db.rawQuery(
+            """
+                SELECT $COL_MSG_CHANNEL, $COL_MSG_CONTENT, $COL_MSG_TIMESTAMP
+                FROM $TABLE_MESSAGES
+                WHERE $COL_MSG_CHANNEL != ''
+                  AND $COL_MSG_ID IN (
+                    SELECT MAX($COL_MSG_ID) FROM $TABLE_MESSAGES
+                    WHERE $COL_MSG_CHANNEL != ''
+                    GROUP BY $COL_MSG_CHANNEL
+                  )
+            """.trimIndent(),
+            null
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                val channel = cursor.getString(0) ?: continue
+                out[channel] = ChatInboxPreview(
+                    snippet = cursor.getString(1) ?: "",
+                    timestamp = cursor.getLong(2)
+                )
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return out
+    }
+
+    /** Latest direct-message preview keyed by the peer node id. */
+    fun getDmInboxPreviews(localNodeId: Long): Map<Long, ChatInboxPreview> {
+        val db = readableDatabase
+        val out = mutableMapOf<Long, ChatInboxPreview>()
+        val cursor = db.rawQuery(
+            """
+                SELECT $COL_MSG_SENDER, $COL_MSG_RECIPIENT, $COL_MSG_CONTENT, $COL_MSG_TIMESTAMP
+                FROM $TABLE_MESSAGES
+                WHERE $COL_MSG_CHANNEL = ''
+                ORDER BY $COL_MSG_TIMESTAMP DESC
+            """.trimIndent(),
+            null
+        )
+        if (cursor.moveToFirst()) {
+            do {
+                val sender = cursor.getLong(0)
+                val recipient = cursor.getLong(1)
+                val peer = when {
+                    localNodeId != 0L && sender == localNodeId -> recipient
+                    localNodeId != 0L && recipient == localNodeId -> sender
+                    else -> if (sender != 0L) sender else recipient
+                }
+                if (peer == 0L || out.containsKey(peer)) continue
+                out[peer] = ChatInboxPreview(
+                    snippet = cursor.getString(2) ?: "",
+                    timestamp = cursor.getLong(3)
+                )
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return out
+    }
+
     // Resolve canonical node ID (handles merging 16-bit and 32-bit representations of the same physical node)
     fun resolveCanonicalNodeId(db: android.database.sqlite.SQLiteDatabase, nodeId: Long): Long {
         return nodeId
@@ -1242,6 +1305,12 @@ data class ChatMessage(
     val packetId: Int = 0,
     val status: String = "SENT",
     val isEncrypted: Boolean = false
+)
+
+/** Lightweight last-message summary for the Chats inbox. */
+data class ChatInboxPreview(
+    val snippet: String,
+    val timestamp: Long
 )
 
 data class MeshNode(
