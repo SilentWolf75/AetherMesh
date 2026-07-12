@@ -370,6 +370,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun startRakDfuUpdate(zipUri: android.net.Uri) = repository.startRakDfuUpdate(zipUri)
     fun cancelFirmwareUpdate() = repository.cancelFirmwareUpdate()
     fun resetOtaState() = repository.resetOtaState()
+    val diagnosticLogs = repository.diagnosticLogs
 
     fun lastPhoneFix() = repository.lastPhoneFix()
 

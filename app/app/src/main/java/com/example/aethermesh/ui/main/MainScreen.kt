@@ -453,6 +453,7 @@ fun MainScreen(
     var fitTraceRouteToken by remember { mutableIntStateOf(0) }
     var pendingMapFocusNodeId by remember { mutableStateOf<Long?>(null) }
     var pendingSettingsCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    var selectedNodeDetailsId by remember { mutableStateOf<Long?>(null) }
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
@@ -463,6 +464,21 @@ fun MainScreen(
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
+
+    LaunchedEffect(bleReconnectGaveUp, appLanguage) {
+        if (bleReconnectGaveUp) {
+            AppUiFeedback.show(
+                text = if (appLanguage == "Spanish")
+                    "Reconexión agotada. ¿Reintentar?"
+                else
+                    "Reconnect gave up. Retry?",
+                actionLabel = if (appLanguage == "Spanish") "Reintentar" else "Retry"
+            ) {
+                viewModel.retryBleConnection()
+            }
+        }
+    }
+
     val phoneLocationFlow by viewModel.phoneLocation.collectAsStateWithLifecycle()
     var phoneLocation by remember { mutableStateOf<GeoPoint?>(null) }
     LaunchedEffect(phoneLocationFlow) {
@@ -539,12 +555,20 @@ fun MainScreen(
     DisposableEffect(isConnected) {
         if (isConnected) {
             val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            var lastShareMs = 0L
+            val minShareIntervalMs = 60_000L // mesh share at most once per minute
             val listener = object : android.location.LocationListener {
                 override fun onLocationChanged(location: android.location.Location) {
                     val gp = GeoPoint(location.latitude, location.longitude)
                     phoneLocation = gp
+                    viewModel.updatePhoneLocation(gp.latitude, gp.longitude)
                     if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
-                        viewModel.sharePhoneLocation(gp.latitude, gp.longitude)
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - lastShareMs >= minShareIntervalMs) {
+                            if (viewModel.sharePhoneLocation(gp.latitude, gp.longitude)) {
+                                lastShareMs = now
+                            }
+                        }
                     }
                 }
                 override fun onProviderEnabled(provider: String) {}
@@ -552,28 +576,28 @@ fun MainScreen(
                 override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
             }
             try {
-                // Request location updates every 15 seconds, min distance 5 meters
+                // Battery-friendlier than 15s: 45s / 25m still keeps the map useful
                 lm.requestLocationUpdates(
                     android.location.LocationManager.GPS_PROVIDER,
-                    15000L,
-                    5f,
+                    45_000L,
+                    25f,
                     listener
                 )
-                // Fallback network provider
                 lm.requestLocationUpdates(
                     android.location.LocationManager.NETWORK_PROVIDER,
-                    15000L,
-                    5f,
+                    60_000L,
+                    50f,
                     listener
                 )
-                // Share the last known fix immediately so a GPS-less node gets a
-                // position right away, instead of waiting for the phone to move 5m
                 val lastFix = lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
                     ?: lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
                 if (lastFix != null) {
                     phoneLocation = GeoPoint(lastFix.latitude, lastFix.longitude)
+                    viewModel.updatePhoneLocation(lastFix.latitude, lastFix.longitude)
                     if (sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) {
-                        viewModel.sharePhoneLocation(lastFix.latitude, lastFix.longitude)
+                        if (viewModel.sharePhoneLocation(lastFix.latitude, lastFix.longitude)) {
+                            lastShareMs = android.os.SystemClock.elapsedRealtime()
+                        }
                     }
                 }
             } catch (e: SecurityException) {
@@ -664,9 +688,9 @@ fun MainScreen(
                 if (!isConnected && activeTab != TabItem.CONNECTION) {
                     val bannerText = when {
                         bleReconnectGaveUp -> if (appLanguage == "Spanish")
-                            "Reconexión agotada. Toque para escanear de nuevo."
+                            "Reconexión agotada. Toque para reintentar o abrir Conexión."
                         else
-                            "Reconnect gave up. Tap to scan again."
+                            "Reconnect gave up. Tap to retry or open Connection."
                         blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
                             blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting ->
                             if (appLanguage == "Spanish")
@@ -689,24 +713,49 @@ fun MainScreen(
                             .fillMaxWidth()
                             .background(SurfaceDark)
                             .border(BorderStroke(1.dp, bannerColor.copy(alpha = 0.35f)))
-                            .clickable { activeTab = TabItem.CONNECTION }
+                            .clickable {
+                                if (bleReconnectGaveUp) {
+                                    viewModel.retryBleConnection()
+                                    AppUiFeedback.show(
+                                        if (appLanguage == "Spanish") "Reintentando conexión…"
+                                        else "Retrying connection…"
+                                    )
+                                } else {
+                                    activeTab = TabItem.CONNECTION
+                                }
+                            }
                             .padding(horizontal = 16.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.Center,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Disconnected",
-                            tint = bannerColor,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = bannerText,
-                            color = TextLight,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = if (appLanguage == "Spanish") "Desconectado" else "Disconnected",
+                                tint = bannerColor,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = bannerText,
+                                color = TextLight,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        if (bleReconnectGaveUp) {
+                            TextButton(onClick = { activeTab = TabItem.CONNECTION }) {
+                                Text(
+                                    if (appLanguage == "Spanish") "Conexión" else "Connection",
+                                    color = AccentCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -740,29 +789,112 @@ fun MainScreen(
                             deepLinkEpoch = chatDeepLinkEpoch,
                             chatKeysRevision = chatKeysRevision
                         )
-                        TabItem.NODES -> NodesView(
-                            nodes = nodes,
-                            observedRoutes = observedRoutes,
-                            phoneLocation = phoneLocation,
-                            appLanguage = appLanguage,
-                            useImperialUnits = useImperialUnitsSetting,
-                            onNodeClick = { nodeId ->
-                                viewModel.selectDirectMessage(nodeId)
-                                activeTab = TabItem.CHATS
-                            },
-                            onRenameNode = { nodeId, longName, shortName, password ->
-                                viewModel.renameNode(nodeId, longName, shortName, password)
-                            },
-                            getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
-                            connectedNodeId = viewModel.connectedNodeId,
-                            onTraceRoute = { viewModel.startTraceRoute(it) },
-                            onRemoteConfig = { node -> viewModel.requestRemoteConfig(node.nodeId) },
-                            onViewOnMap = { nodeId -> viewModel.requestOpenMapTab(focusNodeId = nodeId) },
-                            onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
-                            onOpenNodeDetails = { nodeId ->
-                                onItemClick(com.example.aethermesh.NodeDetails(nodeId))
+                        TabItem.NODES -> {
+                            val nodesTwoPane = adaptive.useTwoPane
+                            if (nodesTwoPane) {
+                                Row(modifier = Modifier.fillMaxSize()) {
+                                    Box(modifier = Modifier.weight(0.4f).fillMaxHeight()) {
+                                        NodesView(
+                                            nodes = nodes,
+                                            observedRoutes = observedRoutes,
+                                            phoneLocation = phoneLocation,
+                                            appLanguage = appLanguage,
+                                            useImperialUnits = useImperialUnitsSetting,
+                                            onNodeClick = { nodeId ->
+                                                viewModel.selectDirectMessage(nodeId)
+                                                activeTab = TabItem.CHATS
+                                            },
+                                            onRenameNode = { nodeId, longName, shortName, password ->
+                                                viewModel.renameNode(nodeId, longName, shortName, password)
+                                            },
+                                            getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
+                                            connectedNodeId = viewModel.connectedNodeId,
+                                            onTraceRoute = { viewModel.startTraceRoute(it) },
+                                            onRemoteConfig = { node -> viewModel.requestRemoteConfig(node.nodeId) },
+                                            onViewOnMap = { nodeId -> viewModel.requestOpenMapTab(focusNodeId = nodeId) },
+                                            onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
+                                            onOpenNodeDetails = { nodeId -> selectedNodeDetailsId = nodeId },
+                                            selectedNodeId = selectedNodeDetailsId
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .width(1.dp)
+                                            .fillMaxHeight()
+                                            .background(BorderDark.copy(alpha = 0.7f))
+                                    )
+                                    Box(modifier = Modifier.weight(0.6f).fillMaxHeight()) {
+                                        val detailId = selectedNodeDetailsId
+                                        val detailNode = detailId?.let { id ->
+                                            nodes.find { it.nodeId == id }
+                                                ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
+                                        }
+                                        if (detailNode != null) {
+                                            NodeDetailsScreen(
+                                                node = detailNode,
+                                                observedRoutes = observedRoutes,
+                                                phoneLocation = phoneLocation,
+                                                appLanguage = appLanguage,
+                                                useImperialUnits = useImperialUnitsSetting,
+                                                connectedNodeId = viewModel.connectedNodeId,
+                                                getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
+                                                onDismiss = { selectedNodeDetailsId = null },
+                                                onMessage = {
+                                                    viewModel.selectDirectMessage(detailNode.nodeId)
+                                                    activeTab = TabItem.CHATS
+                                                },
+                                                onRename = { /* NodesView rename dialog handles list-side */ },
+                                                onTraceRoute = { viewModel.startTraceRoute(detailNode.nodeId) },
+                                                onRemoteConfig = { viewModel.requestRemoteConfig(detailNode.nodeId) },
+                                                onViewOnMap = {
+                                                    viewModel.requestOpenMapTab(focusNodeId = detailNode.nodeId)
+                                                    activeTab = TabItem.MAP
+                                                },
+                                                onStartRangeTest = { viewModel.requestRangeTestDialog(detailNode.nodeId) }
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    if (appLanguage == "Spanish")
+                                                        "Selecciona un nodo para ver detalles"
+                                                    else
+                                                        "Select a node to view details",
+                                                    color = TextMuted,
+                                                    fontSize = 14.sp
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                NodesView(
+                                    nodes = nodes,
+                                    observedRoutes = observedRoutes,
+                                    phoneLocation = phoneLocation,
+                                    appLanguage = appLanguage,
+                                    useImperialUnits = useImperialUnitsSetting,
+                                    onNodeClick = { nodeId ->
+                                        viewModel.selectDirectMessage(nodeId)
+                                        activeTab = TabItem.CHATS
+                                    },
+                                    onRenameNode = { nodeId, longName, shortName, password ->
+                                        viewModel.renameNode(nodeId, longName, shortName, password)
+                                    },
+                                    getTelemetryHistory = { nodeId -> viewModel.getTelemetryHistory(nodeId) },
+                                    connectedNodeId = viewModel.connectedNodeId,
+                                    onTraceRoute = { viewModel.startTraceRoute(it) },
+                                    onRemoteConfig = { node -> viewModel.requestRemoteConfig(node.nodeId) },
+                                    onViewOnMap = { nodeId -> viewModel.requestOpenMapTab(focusNodeId = nodeId) },
+                                    onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
+                                    onOpenNodeDetails = { nodeId ->
+                                        onItemClick(com.example.aethermesh.NodeDetails(nodeId))
+                                    }
+                                )
                             }
-                        )
+                        }
                         TabItem.MAP -> MapViewCompose(
                             nodes = nodes,
                             observedRoutes = observedRoutes,
@@ -1085,6 +1217,7 @@ fun ChatView(
     var sendError by remember { mutableStateOf<String?>(null) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
     var inThread by remember { mutableStateOf(false) }
+    val chatTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
     val listState = rememberLazyListState()
     val canSend = isConnected && isAuthenticated
     val spanish = appLanguage == "Spanish"
@@ -1119,7 +1252,27 @@ fun ChatView(
         )
     }
 
-    if (!inThread) {
+    val selectedNode = nodes.find { it.nodeId == activeChatId }
+    val threadTitle = if (activeChatId == null) {
+        "#$selectedChannel"
+    } else {
+        selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"
+    }
+    val isChannelThread = activeChatId == null
+
+    LaunchedEffect(activeChatId, selectedChannel, inThread) {
+        if (inThread && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
+        }
+    }
+    LaunchedEffect(messages.size) {
+        if (inThread && messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
+    @Composable
+    fun ChatInboxPane() {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             val dmNodes = nodes.filter { it.nodeId != localNodeId }
             val sortedChannels = remember(channels, channelPreviews) {
@@ -1262,47 +1415,34 @@ fun ChatView(
                 }
             }
         }
-        return
     }
 
-    val selectedNode = nodes.find { it.nodeId == activeChatId }
-    val threadTitle = if (activeChatId == null) {
-        "#$selectedChannel"
-    } else {
-        selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"
-    }
-    val isChannelThread = activeChatId == null
-
-    LaunchedEffect(activeChatId, selectedChannel, inThread) {
-        if (inThread && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.lastIndex)
-        }
-    }
-    LaunchedEffect(messages.size) {
-        if (inThread && messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            IconButton(onClick = { inThread = false }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextLight)
+    @Composable
+    fun ChatThreadPane() {
+        Column(modifier = Modifier.fillMaxSize().imePadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                if (!chatTwoPane) {
+                    IconButton(onClick = { inThread = false }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = if (spanish) "Atrás" else "Back",
+                            tint = TextLight
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (isChannelThread) {
+                            if (spanish) "Canal" else "Channel"
+                        } else {
+                            if (spanish) "Mensaje directo" else "Direct message"
+                        },
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                }
             }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    if (isChannelThread) {
-                        if (spanish) "Canal" else "Channel"
-                    } else {
-                        if (spanish) "Mensaje directo" else "Direct message"
-                    },
-                    color = TextMuted,
-                    fontSize = 12.sp
-                )
-            }
-        }
-
         Spacer(modifier = Modifier.height(8.dp))
 
         if (!canSend) {
@@ -1541,9 +1681,51 @@ fun ChatView(
                 )
             }
         }
+        }
+    }
+
+    if (chatTwoPane) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .weight(0.38f)
+                    .fillMaxHeight()
+            ) {
+                ChatInboxPane()
+            }
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(BorderDark.copy(alpha = 0.7f))
+            )
+            Box(
+                modifier = Modifier
+                    .weight(0.62f)
+                    .fillMaxHeight()
+            ) {
+                if (inThread) {
+                    ChatThreadPane()
+                } else {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (spanish) "Selecciona un canal o mensaje directo"
+                            else "Select a channel or direct message",
+                            color = TextMuted,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    }
+                }
+            }
+        }
+    } else if (!inThread) {
+        ChatInboxPane()
+    } else {
+        ChatThreadPane()
     }
 }
-
 
 @Composable
 fun NewChannelDialog(
@@ -1961,7 +2143,8 @@ fun NodesView(
     onRemoteConfig: ((MeshNode) -> Unit)? = null,
     onViewOnMap: (Long) -> Unit = {},
     onRangeTest: (Long) -> Unit = {},
-    onOpenNodeDetails: (Long) -> Unit = {}
+    onOpenNodeDetails: (Long) -> Unit = {},
+    selectedNodeId: Long? = null
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -2136,7 +2319,8 @@ fun NodesView(
                                     onViewOnMap(connectedNode.nodeId)
                                 }
                             },
-                            isConnectedNode = true
+                            isConnectedNode = true,
+                            selected = selectedNodeId != null && selectedNodeId == connectedNode.nodeId
                         )
                     }
                 }
@@ -2156,7 +2340,8 @@ fun NodesView(
                         },
                         onRangeTest = { onRangeTest(node.nodeId) },
                         onRemoteConfig = { onRemoteConfig?.invoke(node) },
-                        isConnectedNode = false
+                        isConnectedNode = false,
+                        selected = selectedNodeId != null && selectedNodeId == node.nodeId
                     )
                 }
                 if (staleNodes.isNotEmpty()) {
@@ -2185,7 +2370,8 @@ fun NodesView(
                             },
                             onRangeTest = { onRangeTest(node.nodeId) },
                             onRemoteConfig = { onRemoteConfig?.invoke(node) },
-                            isConnectedNode = false
+                            isConnectedNode = false,
+                            selected = selectedNodeId != null && selectedNodeId == node.nodeId
                         )
                     }
                 }
@@ -2245,7 +2431,8 @@ fun NodeItem(
     onViewOnMap: (() -> Unit)? = null,
     onRangeTest: (() -> Unit)? = null,
     onRemoteConfig: (() -> Unit)? = null,
-    isConnectedNode: Boolean = false
+    isConnectedNode: Boolean = false,
+    selected: Boolean = false
 ) {
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
     val badgeColor = getBadgeColor(node.name)
@@ -2277,7 +2464,17 @@ fun NodeItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (stale) SurfaceDark.copy(alpha = 0.55f) else SurfaceDark)
+            .background(
+                when {
+                    selected -> AccentCyan.copy(alpha = 0.16f)
+                    stale -> SurfaceDark.copy(alpha = 0.55f)
+                    else -> SurfaceDark
+                }
+            )
+            .then(
+                if (selected) Modifier.border(BorderStroke(1.dp, AccentCyan.copy(alpha = 0.45f)), RoundedCornerShape(12.dp))
+                else Modifier
+            )
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = { menuExpanded = true }
@@ -3809,6 +4006,47 @@ fun MapViewCompose(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                    if (usingOfflineTiles) {
+                        val info = remember(mapGeneration) { OfflineMapTiles.archiveInfo(context) }
+                        val sizeMb = ((info?.compressedBytes ?: 0L) / (1024.0 * 1024.0))
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Archivo: ${info?.entries ?: 0} entradas · %.1f MB".format(sizeMb)
+                            else
+                                "Archive: ${info?.entries ?: 0} entries · %.1f MB".format(sizeMb),
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
+                        )
+                        TextButton(
+                            onClick = {
+                                if (OfflineMapTiles.clearArchive(context)) {
+                                    AppUiFeedback.show(
+                                        if (appLanguage == "Spanish")
+                                            "Mapa offline eliminado. Usando tiles en línea."
+                                        else
+                                            "Offline map removed. Using online tiles."
+                                    )
+                                    mapGeneration++
+                                } else {
+                                    AppUiFeedback.show(
+                                        if (appLanguage == "Spanish")
+                                            "No se pudo eliminar el mapa offline."
+                                        else
+                                            "Could not remove offline map."
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (appLanguage == "Spanish") "Quitar mapa offline" else "Remove offline map",
+                                color = AccentRed,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     
                     Spacer(modifier = Modifier.height(8.dp))
                     
@@ -4465,6 +4703,7 @@ fun SettingsView(
     var enablePhoneGpsSharing by remember { mutableStateOf(sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) }
 
     val consoleMessages by viewModel.messages.collectAsStateWithLifecycle()
+    val diagnosticLogs by viewModel.diagnosticLogs.collectAsStateWithLifecycle()
 
     val createDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -4569,6 +4808,7 @@ fun SettingsView(
     var ecdhKeys by remember { mutableStateOf(Pair("", "")) }
     var showPrivateKey by remember { mutableStateOf(false) }
     var showRegenKeysDialog by remember { mutableStateOf(false) }
+    val settingsTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
 
     DisposableEffect(Unit) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -4678,7 +4918,82 @@ fun SettingsView(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        if (activeCategory == null) {
+        val categories = listOf(
+            Triple(SettingsCategory.CHANNELS, "Channels", "Manage secondary channels and share/join links"),
+            Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
+            Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure GPS enable, telemetry interval, and view satellite lock status"),
+            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
+            Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password"),
+            Triple(SettingsCategory.ROUTING, "Mesh Routing", "Live mesh health, quiet-mode status, and observed routes"),
+            Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, and background alerts"),
+            Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
+        )
+
+        if (settingsTwoPane) {
+            Text(
+                text = t("Settings", appLanguage),
+                color = AccentCyan,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            ) {
+                items(categories, key = { it.first.name }) { (cat, title, _) ->
+                    val needsDevice = cat == SettingsCategory.CHANNELS ||
+                        cat == SettingsCategory.RADIO ||
+                        cat == SettingsCategory.POSITION ||
+                        cat == SettingsCategory.FIRMWARE ||
+                        cat == SettingsCategory.SECURITY ||
+                        cat == SettingsCategory.ROUTING
+                    val enabled = !needsDevice || isConnected
+                    val selected = activeCategory == cat
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(
+                                when {
+                                    !enabled -> SurfaceDark.copy(alpha = 0.45f)
+                                    selected -> AccentCyan.copy(alpha = 0.22f)
+                                    else -> SurfaceDark
+                                }
+                            )
+                            .border(
+                                BorderStroke(
+                                    1.dp,
+                                    if (selected) AccentCyan.copy(alpha = 0.55f) else BorderDark
+                                ),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .clickable(enabled = enabled) { activeCategory = cat }
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            t(title, appLanguage),
+                            color = if (enabled) TextLight else TextMuted,
+                            fontSize = 12.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+            if (activeCategory == null) {
+                Text(
+                    if (appLanguage == "Spanish")
+                        "Elige una categoría arriba para editar ajustes."
+                    else
+                        "Choose a category above to edit settings.",
+                    color = TextMuted,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
+        } else if (activeCategory == null) {
             // Gradient Graphic Header Banner
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -4693,7 +5008,7 @@ fun SettingsView(
                         .fillMaxSize()
                         .background(
                             Brush.linearGradient(
-                                colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B), Color(0xFF0F766E))
+                                colors = listOf(SurfaceRaised, SurfaceDark, AccentCyan.copy(alpha = 0.35f))
                             )
                         )
                         .padding(16.dp),
@@ -4718,17 +5033,6 @@ fun SettingsView(
             }
 
             // Categories Menu List
-            val categories = listOf(
-                Triple(SettingsCategory.CHANNELS, "Channels", "Manage secondary channels and share/join links"),
-                Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
-                Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure GPS enable, telemetry interval, and view satellite lock status"),
-                Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
-                Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password"),
-                Triple(SettingsCategory.ROUTING, "Mesh Routing", "Live mesh health, quiet-mode status, and observed routes"),
-                Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, and background alerts"),
-                Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
-            )
-
             categories.forEach { (cat, title, desc) ->
                 val needsDevice = cat == SettingsCategory.CHANNELS ||
                     cat == SettingsCategory.RADIO ||
@@ -6841,23 +7145,26 @@ fun SettingsView(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(180.dp)
+                            .height(220.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(DarkBackground)
                             .padding(12.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
-                        if (consoleMessages.isEmpty()) {
+                        if (diagnosticLogs.isEmpty() && consoleMessages.isEmpty()) {
                             Text(
                                 if (appLanguage == "Spanish")
-                                    "Sin mensajes recientes. Los paquetes de chat aparecen aquí al enviarse o recibirse."
+                                    "Sin eventos recientes. Errores BLE/malla y paquetes de chat aparecen aquí."
                                 else
-                                    "No recent messages. Chat packets appear here as they are sent or received.",
+                                    "No recent events. BLE/mesh errors and chat packets appear here.",
                                 color = TextMuted,
                                 fontSize = 11.sp
                             )
                         } else {
-                            consoleMessages.takeLast(20).forEach { msg ->
+                            diagnosticLogs.takeLast(30).forEach { line ->
+                                Text(line, color = AccentAmber, fontSize = 11.sp)
+                            }
+                            consoleMessages.takeLast(12).forEach { msg ->
                                 Text(
                                     if (appLanguage == "Spanish")
                                         "Paquete de 0x${msg.senderId.toString(16).uppercase()}: ${msg.content.length} bytes"
@@ -6882,7 +7189,11 @@ fun SettingsView(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(t("Version", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("v2.7.14 (Stable Release) google", color = TextMuted, fontSize = 11.sp)
+                        Text(
+                            "v${com.example.aethermesh.BuildConfig.VERSION_NAME} (${com.example.aethermesh.BuildConfig.VERSION_CODE})",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
@@ -7778,7 +8089,7 @@ fun ConnectionView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF422006))
+                    .background(AccentAmber.copy(alpha = 0.18f))
                     .padding(12.dp)
             ) {
                 Text(
@@ -7796,7 +8107,7 @@ fun ConnectionView(
                             else "This phone has no BLE scanner available."
                         else -> ""
                     },
-                    color = Color(0xFFFDE68A),
+                    color = AccentAmber,
                     fontSize = 12.sp
                 )
                 if (scanBlockReason == com.example.aethermesh.ble.BleScanBlockReason.PermissionDenied) {
@@ -8190,15 +8501,44 @@ fun exportMeshDiagnosticsToCsv(
 
 fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLanguage: String = "English") {
     val spanish = appLanguage == "Spanish"
-    val csv = StringBuilder("Timestamp,SenderId,RecipientId,Content,Channel,Status,Encrypted\n")
-    messages.forEach {
-        val date = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.timestamp))
-        csv.append("\"$date\",0x${it.senderId.toString(16).uppercase()},0x${it.recipientId.toString(16).uppercase()},\"${it.content.replace("\"", "\"\"")}\",\"${it.channel}\",\"${it.status}\",${it.isEncrypted}\n")
+    if (messages.isEmpty()) {
+        AppUiFeedback.show(if (spanish) "No hay mensajes para exportar." else "No messages to export.")
+        return
     }
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("All Messages CSV", csv.toString()))
-    AppUiFeedback.show(if (spanish) "Mensajes exportados a CSV y copiados al portapapeles."
-        else "All messages exported to CSV and copied to clipboard!", duration = SnackbarDuration.Long)
+    try {
+        val csv = StringBuilder("Timestamp,SenderId,RecipientId,Content,Channel,Status,Encrypted\n")
+        messages.forEach {
+            val date = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it.timestamp))
+            csv.append(
+                "\"$date\",0x${it.senderId.toString(16).uppercase()},0x${it.recipientId.toString(16).uppercase()}," +
+                    "\"${it.content.replace("\"", "\"\"")}\",\"${it.channel}\",\"${it.status}\",${it.isEncrypted}\n"
+            )
+        }
+        val filename = "aethermesh_messages_${System.currentTimeMillis()}.csv"
+        val outDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = java.io.File(outDir, filename)
+        file.writeText(csv.toString())
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(
+            android.content.Intent.createChooser(
+                intent,
+                if (spanish) "Compartir mensajes CSV" else "Share messages CSV"
+            )
+        )
+    } catch (e: Exception) {
+        AppUiFeedback.show(
+            if (spanish) "Error al exportar: ${e.localizedMessage}"
+            else "Export failed: ${e.localizedMessage}",
+            duration = SnackbarDuration.Long
+        )
+    }
 }
 
 fun exportBreadcrumbsToKml(

@@ -26,6 +26,8 @@ data class AdaptiveLayoutInfo(
     val screenHeightDp: Int,
     /** Prefer a side navigation rail instead of the bottom tab bar. */
     val useNavigationRail: Boolean,
+    /** List + detail side-by-side (chat, settings, nodes). */
+    val useTwoPane: Boolean,
     /** Cap readable content width on large screens (forms, lists, settings). */
     val contentMaxWidth: Dp,
     val horizontalPadding: Dp,
@@ -48,6 +50,7 @@ fun rememberAdaptiveLayoutInfo(): AdaptiveLayoutInfo {
             screenWidthDp = widthDp,
             screenHeightDp = heightDp,
             useNavigationRail = widthDp >= 600,
+            useTwoPane = widthDp >= 840,
             contentMaxWidth = when (widthClass) {
                 AppWidthSizeClass.Compact -> Dp.Unspecified // fill width
                 AppWidthSizeClass.Medium -> 840.dp

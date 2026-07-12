@@ -246,6 +246,20 @@ class AetherMeshRepository(private val context: Context) {
     )
     private val _otaState = MutableStateFlow(OtaState())
     val otaState: StateFlow<OtaState> = _otaState.asStateFlow()
+
+    private val diagnosticRing = ArrayDeque<String>(64)
+    private val _diagnosticLogs = MutableStateFlow<List<String>>(emptyList())
+    val diagnosticLogs: StateFlow<List<String>> = _diagnosticLogs.asStateFlow()
+
+    fun appendDiagnostic(message: String) {
+        val line = "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())} $message"
+        synchronized(diagnosticRing) {
+            if (diagnosticRing.size >= 60) diagnosticRing.removeFirst()
+            diagnosticRing.addLast(line)
+            _diagnosticLogs.value = diagnosticRing.toList()
+        }
+        Log.d(TAG, message)
+    }
     private val otaStatusChannel =
         kotlinx.coroutines.channels.Channel<com.example.aethermesh.proto.OtaStatus>(kotlinx.coroutines.channels.Channel.BUFFERED)
     private var otaJob: Job? = null
@@ -360,6 +374,7 @@ class AetherMeshRepository(private val context: Context) {
                 handleMeshPacket(packet)
             } catch (e: Exception) {
                 Log.e(TAG, "Error decoding mesh packet: ${e.message}")
+                appendDiagnostic("Decode error: ${e.message}")
             }
         }
     }
@@ -1362,7 +1377,18 @@ class AetherMeshRepository(private val context: Context) {
 
                 _otaState.value = OtaState(
                     progress = 100, done = true,
-                    status = "Update verified - node is rebooting into the new firmware"
+                    status = "Update verified — reconnecting after node reboot…"
+                )
+                // Node reboots into new firmware; give it time then reattach BLE.
+                delay(4_000)
+                try {
+                    bleManager.resumeAfterDfu()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Post-OTA reconnect schedule failed: ${e.message}")
+                }
+                _otaState.value = OtaState(
+                    progress = 100, done = true,
+                    status = "Update verified — waiting for node to come back online"
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 try {
@@ -1372,10 +1398,18 @@ class AetherMeshRepository(private val context: Context) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "OTA failed: ${e.message}")
+                appendDiagnostic("OTA failed: ${e.message}")
                 try {
                     sendOtaControl(bleManager.connectedNodeId, com.example.aethermesh.proto.OtaControl.Op.ABORT, 0, "")
                 } catch (_: Exception) {}
-                _otaState.value = OtaState(error = true, status = "Update failed: ${e.message}")
+                val bleLost = !bleManager.isConnected
+                _otaState.value = OtaState(
+                    error = true,
+                    status = if (bleLost)
+                        "Update interrupted — Bluetooth dropped. Reconnect and retry the update."
+                    else
+                        "Update failed: ${e.message}"
+                )
             }
         }
     }
@@ -2273,6 +2307,9 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    private var lastPhoneLocationShareMs = 0L
+    private val PHONE_LOCATION_SHARE_MIN_INTERVAL_MS = 60_000L
+
     fun sendPhoneLocation(lat: Double, lon: Double): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
@@ -2283,6 +2320,13 @@ class AetherMeshRepository(private val context: Context) {
         if ((lat == 0.0 && lon == 0.0) || lat.isNaN() || lon.isNaN() ||
             kotlin.math.abs(lat) > 90.0 || kotlin.math.abs(lon) > 180.0) {
             Log.d(TAG, "sendPhoneLocation: ignoring invalid/no-fix coords ($lat, $lon)")
+            return false
+        }
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastPhoneLocationShareMs != 0L &&
+            now - lastPhoneLocationShareMs < PHONE_LOCATION_SHARE_MIN_INTERVAL_MS
+        ) {
             return false
         }
 
@@ -2336,6 +2380,8 @@ class AetherMeshRepository(private val context: Context) {
             .build()
 
         // Write over BLE
-        return bleManager.sendPacket(packet.toByteArray())
+        val sent = bleManager.sendPacket(packet.toByteArray())
+        if (sent) lastPhoneLocationShareMs = android.os.SystemClock.elapsedRealtime()
+        return sent
     }
 }

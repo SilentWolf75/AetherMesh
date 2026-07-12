@@ -27,6 +27,25 @@ object OfflineMapTiles {
         return file.exists() && file.length() > 0L
     }
 
+    fun archiveInfo(context: Context): OfflineMapArchiveInfo? {
+        val file = archiveFile(context)
+        if (!file.exists() || file.length() <= 0L) return null
+        return try {
+            OfflineMapArchive.validate(file)
+        } catch (_: Exception) {
+            OfflineMapArchiveInfo(entries = 0, compressedBytes = file.length(), uncompressedBytes = 0)
+        }
+    }
+
+    fun clearArchive(context: Context): Boolean {
+        val file = archiveFile(context)
+        val backup = File(file.parentFile, "$ARCHIVE_NAME.backup")
+        var ok = true
+        if (file.exists()) ok = file.delete() && ok
+        if (backup.exists()) ok = backup.delete() && ok
+        return ok
+    }
+
     /**
      * Apply offline tiles when an archive is present; otherwise use online MAPNIK/Carto.
      * @return true if offline provider is active
