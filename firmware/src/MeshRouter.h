@@ -14,11 +14,10 @@
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
 #define SEEN_PACKET_TIMEOUT_MS 120000
-// Field data: PONGs travel the strong link direction and always delivered on
-// the FIRST attempt (~30 successes, zero via retry), while retries of already
-// delivered pongs collided with the pinger's next ping. Keep exactly one
-// insurance retry, timed to land between 5s-interval pings.
-#define PONG_RETRY_WINDOW_MS 4000
+// Direct-range (_D) PONGs: one successful TX then stop. Extra retries of an
+// already-sent PONG collide with the next ping on half-duplex radios.
+// Failed first attempts keep retrying (CAD/radio-busy) within this window.
+#define PONG_RETRY_WINDOW_MS 6000
 #define PONG_RESEND_INTERVAL_MS 2500
 #define ACK_MAX_RETRIES 3
 #define STORE_FORWARD_TTL_MS 1800000UL
@@ -67,10 +66,12 @@ struct PendingAck {
 struct PendingPongReply {
     uint32_t recipientId;
     char content[32];
+    char pingId[11];
     uint8_t hopLimit;
     uint32_t sendAtMs;
     uint32_t firstQueuedMs;
     uint32_t sendCount;
+    bool directOnly;
     bool active;
 };
 

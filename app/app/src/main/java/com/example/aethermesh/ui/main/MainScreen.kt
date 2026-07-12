@@ -6436,10 +6436,19 @@ fun ConnectionView(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     meshDiagnostics?.let { diagnostics ->
+                        // Delivery is mesh ACK success rate only. Range-test PINGs use
+                        // want_ack=false (scored via PONG), so this stays n/a during tests.
                         val deliveryAttempts = diagnostics.ackedPackets + diagnostics.ackTimeouts
-                        val deliveryRate = if (deliveryAttempts > 0) {
-                            diagnostics.ackedPackets * 100 / deliveryAttempts
-                        } else 0
+                        val deliveryLabel = if (deliveryAttempts > 0) {
+                            "${diagnostics.ackedPackets * 100 / deliveryAttempts}%"
+                        } else {
+                            "—"
+                        }
+                        val deliveryColor = when {
+                            deliveryAttempts == 0L -> TextMuted
+                            diagnostics.ackTimeouts == 0L -> AccentMint
+                            else -> Color(0xFFFACC15)
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -6450,7 +6459,7 @@ fun ConnectionView(
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Delivery", color = TextMuted, fontSize = 10.sp)
-                                Text("$deliveryRate%", color = if (diagnostics.ackTimeouts == 0L) AccentMint else Color(0xFFFACC15), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text(deliveryLabel, color = deliveryColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 Text("Drops / Busy", color = TextMuted, fontSize = 10.sp)

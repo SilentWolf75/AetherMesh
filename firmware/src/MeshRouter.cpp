@@ -928,11 +928,16 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
         snprintf(pongContent, sizeof(pongContent), "PONG_%s", pingId);
     }
 
-    // Coalesce duplicate PING retries for the same id.
+    // Coalesce by ping id (not full content): RSSI/SNR in the direct reply
+    // string would otherwise create duplicate slots for the same ping.
     for (int i = 0; i < MAX_PENDING_PONGS; i++) {
         if (pendingPongs[i].active &&
             pendingPongs[i].recipientId == recipientId &&
-            strcmp(pendingPongs[i].content, pongContent) == 0) {
+            strcmp(pendingPongs[i].pingId, pingId) == 0) {
+            strncpy(pendingPongs[i].content, pongContent, sizeof(pendingPongs[i].content) - 1);
+            pendingPongs[i].content[sizeof(pendingPongs[i].content) - 1] = '\0';
+            pendingPongs[i].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
+            pendingPongs[i].directOnly = directOnly;
             pendingPongs[i].sendAtMs = millis() + 100 + random(0, 100);
             pendingPongs[i].firstQueuedMs = millis();
             pendingPongs[i].sendCount = 0;
@@ -960,21 +965,17 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
         }
     }
 
-    // A new ping id supersedes stale PONG retries — stop flooding the channel
-    // with PONG replies for the previous ping while the next one is in flight.
-    for (int i = 0; i < MAX_PENDING_PONGS; i++) {
-        if (pendingPongs[i].active &&
-            pendingPongs[i].recipientId == recipientId &&
-            strcmp(pendingPongs[i].content, pongContent) != 0) {
-            Serial.printf("Cancelled stale %s (new ping queued)\n", pendingPongs[i].content);
-            pendingPongs[i].active = false;
-        }
-    }
+    // Do not cancel other ping-ids for this recipient. The app matches any
+    // outstanding id within RANGE_PING_TIMEOUT; killing an unsent PONG when
+    // the next ping arrives was a major source of close-range misses.
 
     strncpy(pendingPongs[slot].content, pongContent, sizeof(pendingPongs[slot].content) - 1);
     pendingPongs[slot].content[sizeof(pendingPongs[slot].content) - 1] = '\0';
+    strncpy(pendingPongs[slot].pingId, pingId, sizeof(pendingPongs[slot].pingId) - 1);
+    pendingPongs[slot].pingId[sizeof(pendingPongs[slot].pingId) - 1] = '\0';
     pendingPongs[slot].recipientId = recipientId;
     pendingPongs[slot].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
+    pendingPongs[slot].directOnly = directOnly;
     pendingPongs[slot].sendAtMs = millis() + 100 + random(0, 100);
     pendingPongs[slot].firstQueuedMs = millis();
     pendingPongs[slot].sendCount = 0;
@@ -995,21 +996,25 @@ void MeshRouter::drainPendingPongReplies() {
             pendingPongs[i].active = false;
             continue;
         }
-        // Only the FIRST send skips CAD (reply latency matters). Retries are
-        // blind repeats of a possibly-already-delivered PONG: transmitting them
-        // without listening deafened the node to the pinger's NEXT ping and
-        // caused back-to-back failures in field tests. Retries also back off
-        // (1.5s, 3s, 4.5s...) instead of hammering a flat 1.5s cadence.
-        bool firstAttempt = (pendingPongs[i].sendCount == 0);
+        // Direct-range replies always skip CAD: channel politeness here only
+        // produced CAD-busy / tx_failures while the phone scored a miss.
+        // Multi-hop legacy PONGs still skip CAD on the first attempt only.
+        bool skipCad = pendingPongs[i].directOnly || (pendingPongs[i].sendCount == 0);
         if (sendTextNoAck(
                 pendingPongs[i].recipientId,
                 pendingPongs[i].content,
-                firstAttempt,
+                skipCad,
                 pendingPongs[i].hopLimit
             )) {
             pendingPongs[i].sendCount++;
             Serial.printf("Sent range-test %s (attempt %u)\n",
                           pendingPongs[i].content, pendingPongs[i].sendCount);
+            if (pendingPongs[i].directOnly) {
+                // One clean TX is enough on the strong link; further airtime
+                // only collides with the pinger's next PING.
+                pendingPongs[i].active = false;
+                continue;
+            }
             pendingPongs[i].sendAtMs = now +
                 PONG_RESEND_INTERVAL_MS * pendingPongs[i].sendCount + random(0, 400);
         } else {
