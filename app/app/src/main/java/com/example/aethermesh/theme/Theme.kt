@@ -8,16 +8,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 
-/** Dark text on ember buttons for contrast. */
-private val ColorOnEmber = Color(0xFF1A1008)
+/** Dark ink on bright azure / lime controls. */
+private val ColorOnBright = Color(0xFF061018)
 
 private val DarkColorScheme = darkColorScheme(
     primary = AccentCyan,
-    onPrimary = ColorOnEmber,
+    onPrimary = ColorOnBright,
     secondary = AccentMint,
-    onSecondary = DarkPalette.background,
+    onSecondary = ColorOnBright,
     tertiary = AccentSteel,
-    onTertiary = DarkPalette.background,
+    onTertiary = ColorOnBright,
     background = DarkPalette.background,
     onBackground = DarkPalette.textPrimary,
     surface = DarkPalette.surface,
@@ -31,11 +31,11 @@ private val DarkColorScheme = darkColorScheme(
 
 private val LightColorScheme = lightColorScheme(
     primary = AccentCyan,
-    onPrimary = ColorOnEmber,
+    onPrimary = ColorOnBright,
     secondary = AccentMint,
-    onSecondary = LightPalette.background,
+    onSecondary = ColorOnBright,
     tertiary = AccentSteel,
-    onTertiary = LightPalette.background,
+    onTertiary = ColorOnBright,
     background = LightPalette.background,
     onBackground = LightPalette.textPrimary,
     surface = LightPalette.surface,

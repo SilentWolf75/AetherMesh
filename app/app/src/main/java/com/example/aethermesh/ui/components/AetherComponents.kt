@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.aethermesh.theme.AccentAmber
 import com.example.aethermesh.theme.AccentCyan
 import com.example.aethermesh.theme.AccentCyanDim
 import com.example.aethermesh.theme.AccentMint
@@ -47,6 +48,10 @@ import com.example.aethermesh.theme.SurfaceDark
 import com.example.aethermesh.theme.SurfaceRaised
 import com.example.aethermesh.theme.TextLight
 import com.example.aethermesh.theme.TextMuted
+import com.example.aethermesh.theme.batteryLevelColor
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 
 @Composable
 fun AetherSectionHeader(
@@ -330,5 +335,130 @@ fun PulseDot(
                 .clip(CircleShape)
                 .background(if (active) activeColor else inactiveColor)
         )
+    }
+}
+
+/** Concentric radar rings for empty / pairing states. */
+@Composable
+fun RadarGraphic(
+    modifier: Modifier = Modifier,
+    size: Dp = 120.dp,
+    sweep: Color = AccentCyan,
+    ring: Color = AccentSteel
+) {
+    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.size(size)) {
+            val c = androidx.compose.ui.geometry.Offset(this.size.width / 2f, this.size.height / 2f)
+            val maxR = this.size.minDimension / 2f
+            listOf(0.35f, 0.58f, 0.82f, 1.0f).forEach { f ->
+                drawCircle(
+                    color = ring.copy(alpha = 0.18f + (1f - f) * 0.12f),
+                    radius = maxR * f,
+                    center = c,
+                    style = Stroke(width = 2f)
+                )
+            }
+            drawArc(
+                color = sweep.copy(alpha = 0.22f),
+                startAngle = -70f,
+                sweepAngle = 55f,
+                useCenter = true,
+                topLeft = androidx.compose.ui.geometry.Offset(c.x - maxR, c.y - maxR),
+                size = androidx.compose.ui.geometry.Size(maxR * 2, maxR * 2)
+            )
+            drawCircle(color = sweep, radius = 5f, center = c)
+            drawLine(
+                color = ring.copy(alpha = 0.35f),
+                start = androidx.compose.ui.geometry.Offset(c.x - maxR, c.y),
+                end = androidx.compose.ui.geometry.Offset(c.x + maxR, c.y),
+                strokeWidth = 1.5f
+            )
+            drawLine(
+                color = ring.copy(alpha = 0.35f),
+                start = androidx.compose.ui.geometry.Offset(c.x, c.y - maxR),
+                end = androidx.compose.ui.geometry.Offset(c.x, c.y + maxR),
+                strokeWidth = 1.5f
+            )
+        }
+    }
+}
+
+/** Semi-circle battery / power gauge. */
+@Composable
+fun BatteryArcGauge(
+    level: Int,
+    modifier: Modifier = Modifier,
+    size: Dp = 64.dp,
+    charging: Boolean = false
+) {
+    val color = batteryLevelColor(level.coerceIn(0, 100))
+    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.size(size)) {
+            val stroke = 7.dp.toPx()
+            val pad = stroke / 2f
+            val arcSize = androidx.compose.ui.geometry.Size(this.size.width - stroke, this.size.height - stroke)
+            val topLeft = androidx.compose.ui.geometry.Offset(pad, pad)
+            drawArc(
+                color = BorderDark,
+                startAngle = 150f,
+                sweepAngle = 240f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            val sweep = 240f * (level.coerceIn(0, 100) / 100f)
+            drawArc(
+                color = color,
+                startAngle = 150f,
+                sweepAngle = sweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "${level.coerceAtLeast(0)}%",
+                color = TextLight,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (charging) {
+                Text("CHG", color = AccentAmber, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun GraphicStatTile(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(SurfaceRaised)
+            .padding(12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(accent)
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        Text(label, color = TextMuted, fontSize = 10.sp)
+        Text(value, color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
     }
 }

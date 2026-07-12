@@ -22,19 +22,22 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import com.example.aethermesh.ui.components.AetherSectionHeader
+import com.example.aethermesh.ui.components.BatteryArcGauge
 import com.example.aethermesh.ui.components.ExpandableSectionHeader
+import com.example.aethermesh.ui.components.GraphicStatTile
 import com.example.aethermesh.ui.components.IconWell
 import com.example.aethermesh.ui.components.NodeBadge
 import com.example.aethermesh.ui.components.PulseDot
+import com.example.aethermesh.ui.components.RadarGraphic
 import com.example.aethermesh.ui.components.SecureChip
 import com.example.aethermesh.ui.components.aetherFilledFieldColors
 import com.example.aethermesh.ui.components.aetherTextFieldColors
 import com.example.aethermesh.theme.appBackgroundBrush
 import com.example.aethermesh.theme.headerBarBrush
+import com.example.aethermesh.theme.primaryButtonBrush
 import com.example.aethermesh.theme.AccentCyanDim
 import com.example.aethermesh.theme.AccentSteel
 import com.example.aethermesh.theme.AccentSteelDim
-import com.example.aethermesh.theme.SurfaceRaised as ThemeSurfaceRaised
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -677,20 +680,35 @@ fun HeaderBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = title.uppercase(),
-                    color = AccentCyan,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.4.sp
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    RadarGraphic(size = 36.dp)
+                }
                 Spacer(modifier = Modifier.width(10.dp))
-                PulseDot(active = isConnected)
+                Column {
+                    Text(
+                        text = title.uppercase(),
+                        color = AccentCyan,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PulseDot(active = isConnected)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (isConnected) "LINK UP" else "OFFLINE",
+                            color = if (isConnected) AccentMint else AccentRed,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                    }
+                }
             }
 
             if (isConnected && !connectedNodeName.isNullOrBlank()) {
@@ -698,15 +716,13 @@ fun HeaderBar(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            Brush.horizontalGradient(listOf(AccentOrange, AccentCyan))
-                        )
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                        .background(primaryButtonBrush())
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = shortName,
-                        color = Color(0xFF1A1008),
+                        color = Color(0xFF061018),
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
@@ -716,13 +732,13 @@ fun HeaderBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(2.dp)
+                .height(3.dp)
                 .background(
                     Brush.horizontalGradient(
                         listOf(
                             Color.Transparent,
-                            AccentCyan.copy(alpha = 0.7f),
-                            AccentMint.copy(alpha = 0.5f),
+                            AccentCyan,
+                            AccentMint.copy(alpha = 0.7f),
                             Color.Transparent
                         )
                     )
@@ -1154,13 +1170,16 @@ fun MessageBubble(message: ChatMessage, localNodeId: Long, onRetryMessage: (Chat
                         bottomEnd = if (isMe) 4.dp else 16.dp
                     )
                 )
-                .background(if (isMe) AccentCyan else SurfaceDark)
+                .then(
+                    if (isMe) Modifier.background(primaryButtonBrush())
+                    else Modifier.background(SurfaceDark)
+                )
                 .clickable(enabled = canRetry) { onRetryMessage(message) }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
                 text = message.content,
-                color = if (isMe) DarkBackground else TextLight,
+                color = if (isMe) Color(0xFF061018) else TextLight,
                 fontSize = 15.sp
             )
         }
@@ -1406,14 +1425,8 @@ fun NodesView(
         if (displayNodes.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
-                    IconWell(
-                        icon = Icons.Default.People,
-                        tint = AccentSteel,
-                        well = AccentSteelDim,
-                        size = 56.dp,
-                        iconSize = 28.dp
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
+                    RadarGraphic(size = 110.dp, sweep = AccentSteel, ring = AccentCyan)
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         t("No nodes discovered yet. Waiting for telemetry...", appLanguage),
                         color = TextMuted,
@@ -6294,87 +6307,63 @@ fun ConnectionView(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.BatteryFull,
-                                contentDescription = null,
-                                tint = batteryLevelColor(batteryVal),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("PWR ${batteryVal}%", color = TextLight, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            if (connectedNode?.isCharging == true) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    imageVector = Icons.Default.Bolt,
-                                    contentDescription = "Charging",
-                                    tint = AccentAmber,
-                                    modifier = Modifier.size(14.dp)
+                        BatteryArcGauge(
+                            level = batteryVal,
+                            charging = connectedNode?.isCharging == true,
+                            size = 72.dp
+                        )
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                NodeBadge(shortName = shortName, color = badgeColor)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                    val fwVersion = connectedNode?.firmwareVersion?.takeIf { it.isNotEmpty() } ?: "unknown"
+                                    Text(
+                                        "${t("Firmware Version", appLanguage)}: $fwVersion",
+                                        color = TextMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            if ((connectedNode?.voltage ?: 0f) > 0f) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "%.2f V pack".format(connectedNode!!.voltage),
+                                    color = AccentMint,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
-                        if ((connectedNode?.voltage ?: 0f) > 0f) {
-                            Text(
-                                "%.2f V".format(connectedNode!!.voltage),
-                                color = AccentMint, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                            )
-                        }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        NodeBadge(shortName = shortName, color = badgeColor)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                            val fwVersion = connectedNode?.firmwareVersion?.takeIf { it.isNotEmpty() } ?: "unknown"
-                            Text(
-                                "${t("Firmware Version", appLanguage)}: $fwVersion",
-                                color = TextMuted,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-
-                    // Info strip — identity at a glance
                     Spacer(modifier = Modifier.height(14.dp))
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(DarkBackground)
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column {
-                            Text("ID", color = TextMuted, fontSize = 10.sp)
-                            Text(
-                                "0x${viewModel.connectedNodeId.toString(16).uppercase()}",
-                                color = TextLight,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(if (appLanguage == "Spanish") "Modelo" else "Model", color = TextMuted, fontSize = 10.sp)
-                            Text(
-                                connectedNode?.model?.takeIf { it.isNotEmpty() } ?: "—",
-                                color = TextLight,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(if (appLanguage == "Spanish") "Enlace" else "Link", color = TextMuted, fontSize = 10.sp)
-                            Text("BLE", color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        }
+                        GraphicStatTile(
+                            label = "ID",
+                            value = "0x${viewModel.connectedNodeId.toString(16).uppercase().takeLast(4)}",
+                            accent = AccentCyan,
+                            modifier = Modifier.weight(1f)
+                        )
+                        GraphicStatTile(
+                            label = if (appLanguage == "Spanish") "Modelo" else "Model",
+                            value = connectedNode?.model?.takeIf { it.isNotEmpty() }?.take(8) ?: "—",
+                            accent = AccentSteel,
+                            modifier = Modifier.weight(1f)
+                        )
+                        GraphicStatTile(
+                            label = if (appLanguage == "Spanish") "Enlace" else "Link",
+                            value = "BLE",
+                            accent = AccentMint,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
 
                     val outdatedNodes = nodes.filter {
@@ -6945,14 +6934,8 @@ fun ConnectionView(
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    IconWell(
-                        icon = Icons.Default.BluetoothSearching,
-                        tint = AccentCyan,
-                        well = AccentCyanDim,
-                        size = 56.dp,
-                        iconSize = 28.dp
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    RadarGraphic(size = 128.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text("No Node Connected", color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     Text(
                         "Scan for a WisBlock or Heltec node, then tap it to pair.",
@@ -6969,22 +6952,22 @@ fun ConnectionView(
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AccentCyan,
-                            contentColor = Color(0xFF1A1008)
+                            contentColor = Color(0xFF061018)
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isScanning) {
                             CircularProgressIndicator(
-                                color = Color(0xFF1A1008),
+                                color = Color(0xFF061018),
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scanning…", color = Color(0xFF1A1008), fontWeight = FontWeight.Bold)
+                            Text("Scanning…", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
                         } else {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF1A1008))
+                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF061018))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scan for devices", color = Color(0xFF1A1008), fontWeight = FontWeight.Bold)
+                            Text("Scan for devices", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
                         }
                     }
                 }

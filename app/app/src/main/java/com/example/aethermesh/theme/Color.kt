@@ -7,9 +7,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 /**
- * Graphite instrument panel + ember primary.
- * AccentCyan / AccentMint keep their API names so existing UI call sites pick up
- * the new scheme without a mass rename.
+ * Night-radar scheme: deep navy field, azure primary, lime success.
+ * AccentCyan / AccentMint keep API names for existing call sites.
  */
 data class AetherPalette(
     val background: Color,
@@ -21,21 +20,21 @@ data class AetherPalette(
 )
 
 val DarkPalette = AetherPalette(
-    background = Color(0xFF0B0D10),
-    surface = Color(0xFF151920),
-    surfaceRaised = Color(0xFF1C222C),
-    border = Color(0xFF2C3440),
-    textPrimary = Color(0xFFEEF1F4),
-    textMuted = Color(0xFF8A93A0)
+    background = Color(0xFF060B14),
+    surface = Color(0xFF0E1624),
+    surfaceRaised = Color(0xFF152033),
+    border = Color(0xFF243044),
+    textPrimary = Color(0xFFE8F0FF),
+    textMuted = Color(0xFF7E90A8)
 )
 
 val LightPalette = AetherPalette(
-    background = Color(0xFFE8ECF1),
-    surface = Color(0xFFF7F9FC),
+    background = Color(0xFFE6EEF8),
+    surface = Color(0xFFF5F8FC),
     surfaceRaised = Color(0xFFFFFFFF),
-    border = Color(0xFFC5CDD8),
-    textPrimary = Color(0xFF12161C),
-    textMuted = Color(0xFF5A6573)
+    border = Color(0xFFB8C7DA),
+    textPrimary = Color(0xFF0B1524),
+    textMuted = Color(0xFF4E6078)
 )
 
 private var activePalette by mutableStateOf(DarkPalette)
@@ -53,28 +52,28 @@ val BorderDark: Color get() = activePalette.border
 val TextLight: Color get() = activePalette.textPrimary
 val TextMuted: Color get() = activePalette.textMuted
 
-/** Primary brand / actions / selected nav (ember). */
-val AccentCyan = Color(0xFFE87B3A)
+/** Primary — azure radar blue. */
+val AccentCyan = Color(0xFF4DA3FF)
 
-/** Success / connected / positive signal (seafoam). */
-val AccentMint = Color(0xFF45C4A0)
+/** Success — lime. */
+val AccentMint = Color(0xFFC8F547)
 
-/** Errors / disconnect. */
-val AccentRed = Color(0xFFE85D5D)
+/** Errors. */
+val AccentRed = Color(0xFFFF5C7A)
 
-/** Warning / mid battery. */
-val AccentAmber = Color(0xFFE8B84A)
+/** Mid / warning. */
+val AccentAmber = Color(0xFFFFB347)
 
-/** Connected-radio chip / warm highlight. */
-val AccentOrange = Color(0xFFF0A04B)
+/** Radio chip / warm callout. */
+val AccentOrange = Color(0xFFFF8C42)
 
-/** Cool secondary info (routes, hops, steel accents). */
-val AccentSteel = Color(0xFF6B8FB8)
+/** Cool secondary (hops, steel info). */
+val AccentSteel = Color(0xFF7AD4FF)
 
-/** Soft fills for icon wells and selected chrome. */
-val AccentCyanDim = Color(0x33E87B3A)
-val AccentMintDim = Color(0x3345C4A0)
-val AccentSteelDim = Color(0x336B8FB8)
+val AccentCyanDim = Color(0x334DA3FF)
+val AccentMintDim = Color(0x33C8F547)
+val AccentSteelDim = Color(0x337AD4FF)
+val AccentOrangeDim = Color(0x33FF8C42)
 
 fun batteryLevelColor(level: Int): Color {
     return when {
@@ -85,22 +84,25 @@ fun batteryLevelColor(level: Int): Color {
     }
 }
 
-fun appBackgroundBrush(): Brush = Brush.verticalGradient(
+fun appBackgroundBrush(): Brush = Brush.radialGradient(
     colors = listOf(
+        Color(0xFF122038),
         activePalette.background,
-        activePalette.surface.copy(alpha = 0.55f),
-        activePalette.background
+        Color(0xFF04070C)
     )
 )
 
-fun headerBarBrush(): Brush = Brush.horizontalGradient(
+fun headerBarBrush(): Brush = Brush.verticalGradient(
     colors = listOf(
         activePalette.surfaceRaised,
-        activePalette.surface,
-        activePalette.surfaceRaised
+        activePalette.surface
     )
 )
 
-fun accentGlowBrush(): Brush = Brush.horizontalGradient(
-    colors = listOf(AccentCyan.copy(alpha = 0.0f), AccentCyan.copy(alpha = 0.55f), AccentCyan.copy(alpha = 0.0f))
+fun cardTopStripeBrush(): Brush = Brush.horizontalGradient(
+    colors = listOf(AccentCyan, AccentSteel, AccentMint)
+)
+
+fun primaryButtonBrush(): Brush = Brush.horizontalGradient(
+    colors = listOf(AccentCyan, AccentSteel)
 )
