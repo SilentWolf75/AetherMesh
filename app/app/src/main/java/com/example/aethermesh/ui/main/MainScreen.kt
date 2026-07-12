@@ -7278,15 +7278,19 @@ fun ConnectionView(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     meshDiagnostics?.let { diagnostics ->
+                        // ACK % is only for want_ack unicast (DMs). Range pings and
+                        // channel broadcasts never touch ackedPackets/ackTimeouts, so
+                        // an empty value is expected — not a broken gauge.
                         val deliveryAttempts = diagnostics.ackedPackets + diagnostics.ackTimeouts
                         val deliveryLabel = if (deliveryAttempts > 0) {
                             "${diagnostics.ackedPackets * 100 / deliveryAttempts}%"
                         } else {
-                            "—"
+                            if (appLanguage == "Spanish") "n/d" else "n/a"
                         }
                         val deliveryColor = when {
                             deliveryAttempts == 0L -> TextMuted
                             diagnostics.ackTimeouts == 0L -> AccentMint
+                            diagnostics.ackedPackets * 100 / deliveryAttempts >= 70L -> AccentMint
                             else -> AccentAmber
                         }
                         val ageSec = ((System.currentTimeMillis() - diagnostics.timestamp) / 1000L).coerceAtLeast(0L)
@@ -7300,7 +7304,34 @@ fun ConnectionView(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             DiagnosticCard("TX / RX", "${diagnostics.txPackets} / ${diagnostics.rxPackets}", AccentCyan, Modifier.weight(1f), compact = true)
-                            DiagnosticCard(if (appLanguage == "Spanish") "Entrega" else "Delivery", deliveryLabel, deliveryColor, Modifier.weight(1f), compact = true)
+                            DiagnosticCard(
+                                if (appLanguage == "Spanish") "ACK %" else "ACK %",
+                                deliveryLabel,
+                                deliveryColor,
+                                Modifier.weight(1f),
+                                compact = true
+                            )
+                        }
+                        if (deliveryAttempts == 0L) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "ACK % solo cuenta DMs con recibo — no pruebas de rango ni canales."
+                                else
+                                    "ACK % counts DMs with receipts — not range tests or channel chats.",
+                                color = TextMuted,
+                                fontSize = 10.sp
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "ACK ${diagnostics.ackedPackets} · timeout ${diagnostics.ackTimeouts}"
+                                else
+                                    "ACK ${diagnostics.ackedPackets} · timeout ${diagnostics.ackTimeouts}",
+                                color = TextMuted,
+                                fontSize = 10.sp
+                            )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
