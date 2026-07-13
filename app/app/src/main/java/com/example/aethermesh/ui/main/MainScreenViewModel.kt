@@ -37,6 +37,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val traceRouteState = repository.traceRouteState
     val isDeviceAuthenticated: StateFlow<Boolean> = repository.isDeviceAuthenticated
     val authenticationRequired: StateFlow<Boolean?> = repository.authenticationRequired
+    val needsRegionSetup: StateFlow<Boolean> = repository.needsRegionSetup
+    val deviceConfigSyncEpoch: StateFlow<Int> = repository.deviceConfigSyncEpoch
 
     fun getMeshDiagnosticsHistory() = repository.getMeshDiagnosticsHistory()
 
@@ -192,18 +194,19 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 val currentList = _scannedDevices.value.toMutableList()
                 val index = currentList.indexOfFirst { it.mac.equals(mac, ignoreCase = true) }
                 if (index == -1) {
+                    // Keep first-seen order so rows don't jump while the user taps.
                     currentList.add(BleDeviceItem(name, mac, rssi))
+                    _scannedDevices.value = currentList
+                    Log.d(TAG, "BLE Discovered: $name ($mac) rssi=$rssi")
                 } else {
                     val existing = currentList[index]
                     val betterName = existing.name != name && name != "AetherMesh Node"
+                    // Update RSSI/name in place — never re-sort mid-scan.
                     currentList[index] = existing.copy(
                         name = if (betterName) name else existing.name,
                         rssi = rssi
                     )
-                }
-                _scannedDevices.value = currentList.sortedByDescending { it.rssi }
-                if (index == -1) {
-                    Log.d(TAG, "BLE Discovered: $name ($mac) rssi=$rssi")
+                    _scannedDevices.value = currentList
                 }
             }
         }
@@ -451,6 +454,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.sendAuthRequest(password)
     }
 
+    fun clearRegionSetupPrompt() {
+        repository.clearRegionSetupPrompt()
+    }
+
     fun promptDeviceAuthentication() {
         repository.promptDeviceAuthentication()
     }
@@ -474,6 +481,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     // Range Test management
     val isRangeTestActive: StateFlow<Boolean> = repository.isRangeTestActive
     val rangeTestLogs: StateFlow<List<com.example.aethermesh.data.RangeTestLog>> = repository.rangeTestLogs
+    val rangeTestSessionStartMs: StateFlow<Long> = repository.rangeTestSessionStartMs
     val rangeTestTargetId: Long
         get() = repository.activeRangeTestTargetId
 

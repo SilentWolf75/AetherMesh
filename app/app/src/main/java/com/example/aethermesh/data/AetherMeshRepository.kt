@@ -11,6 +11,7 @@ import com.example.aethermesh.proto.Ack
 import com.example.aethermesh.proto.DeliveryStatus
 import com.example.aethermesh.proto.TraceRoute
 import com.example.aethermesh.proto.RangeTestControl
+import com.example.aethermesh.proto.NodeConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -209,6 +210,14 @@ class AetherMeshRepository(private val context: Context) {
     private val _authenticationRequired = MutableStateFlow<Boolean?>(null)
     val authenticationRequired: StateFlow<Boolean?> = _authenticationRequired.asStateFlow()
 
+    // After auth, device reports whether the user has confirmed LoRa region.
+    private val _needsRegionSetup = MutableStateFlow(false)
+    val needsRegionSetup: StateFlow<Boolean> = _needsRegionSetup.asStateFlow()
+
+    // Bumped when a device→app NodeConfig report hydrates SharedPreferences.
+    private val _deviceConfigSyncEpoch = MutableStateFlow(0)
+    val deviceConfigSyncEpoch: StateFlow<Int> = _deviceConfigSyncEpoch.asStateFlow()
+
     private var pendingAuthPassword: String? = null
 
     // Range Test Engine properties
@@ -221,6 +230,10 @@ class AetherMeshRepository(private val context: Context) {
     private var rangeTestTargetId: Long = 0L
     val activeRangeTestTargetId: Long
         get() = rangeTestTargetId
+    /** Wall-clock when the current (or last) range-test session started; 0 if never. */
+    private val _rangeTestSessionStartMs = MutableStateFlow(0L)
+    val rangeTestSessionStartMs: StateFlow<Long> = _rangeTestSessionStartMs.asStateFlow()
+    private var rangeTestRxBaseline: Long = -1L
     private data class RangeTestPosition(
         val latitude: Double,
         val longitude: Double,
@@ -345,6 +358,7 @@ class AetherMeshRepository(private val context: Context) {
             if (connected) {
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
+                _needsRegionSetup.value = false
                 _bleReconnectGaveUp.value = false
                 val mac = bleManager.getConnectedDeviceAddress()
                 if (mac != null) {
@@ -354,6 +368,7 @@ class AetherMeshRepository(private val context: Context) {
             } else {
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
+                _needsRegionSetup.value = false
                 if (_isRangeTestActive.value) {
                     stopRangeTest()
                 }
@@ -567,6 +582,7 @@ class AetherMeshRepository(private val context: Context) {
                 }
 
                 _isDeviceAuthenticated.value = false
+                _needsRegionSetup.value = false
                 if (authResp.passwordNotSet) {
                     _authenticationRequired.value = false // Needs to set initial password
                 } else {
@@ -579,6 +595,13 @@ class AetherMeshRepository(private val context: Context) {
                 }
                 pendingAuthPassword = null
             }
+            return
+        }
+
+        // Device → phone config snapshot (after auth). Hydrate local prefs so a
+        // fresh app install matches the node's NVS without pushing defaults.
+        if (packet.payloadCase == MeshPacket.PayloadCase.CONFIG && packet.config.reportOnly) {
+            hydrateNodeSettingsFromDevice(senderId, packet.config)
             return
         }
 
@@ -642,11 +665,14 @@ class AetherMeshRepository(private val context: Context) {
             return
         }
 
-        if (senderId == 0L || recipientId == 0L) {
+        // Range-test PONGs are scored even if recipient_id is unexpectedly 0.
+        val isRangePong = packet.payloadCase == MeshPacket.PayloadCase.TEXT &&
+            packet.text.content.startsWith("PONG_")
+        if ((senderId == 0L || recipientId == 0L) && !isRangePong) {
             Log.w(TAG, "Ignoring packet with invalid sender/recipient: sender=0x${senderId.toString(16)}, recipient=0x${recipientId.toString(16)}")
             return
         }
-        
+
         Log.d(TAG, "Received mesh packet from 0x${senderId.toString(16).uppercase()}")
 
         // Update routing diagnostics map. Only for frames that carry a real
@@ -687,9 +713,27 @@ class AetherMeshRepository(private val context: Context) {
                     val targetRssi = fields.getOrNull(1)?.toFloatOrNull()
                     val targetSnr = fields.getOrNull(2)?.toFloatOrNull()?.div(4f)
                     val pending = pongId?.let { pendingRangePings[it] }
-                    if (_isRangeTestActive.value && pongId != null && pending != null &&
-                        pending.targetId == senderId && pendingRangePings.remove(pongId, pending)
-                    ) {
+                    if (!_isRangeTestActive.value) {
+                        Log.d(TAG, "Ignoring PONG while range test inactive: $contentReceived")
+                        return
+                    }
+                    if (pongId == null || pending == null) {
+                        Log.w(
+                            TAG,
+                            "Range-test PONG not matched (id=$pongId pending=${pending != null}): $contentReceived " +
+                                "from 0x${senderId.toString(16)} outstanding=${pendingRangePings.keys}"
+                        )
+                        return
+                    }
+                    // Ping-id is authoritative. Sender may differ by 16-bit vs 32-bit form.
+                    if (!sameMeshNodeId(pending.targetId, senderId)) {
+                        Log.w(
+                            TAG,
+                            "PONG sender 0x${senderId.toString(16)} != target " +
+                                "0x${pending.targetId.toString(16)} for ping $pongId — scoring anyway"
+                        )
+                    }
+                    if (pendingRangePings.remove(pongId, pending)) {
                         Log.d(TAG, "Direct range-test PONG matched ping $pongId")
                         logRangeTestResult(
                             pending = pending,
@@ -772,7 +816,11 @@ class AetherMeshRepository(private val context: Context) {
                     voltage = telemetry.batteryVoltage,
                     positionPrecision = telemetry.positionPrecision,
                     advertisedName = telemetry.nodeName,
-                    protocolVersion = packet.protocolVersion.coerceAtLeast(1)
+                    protocolVersion = packet.protocolVersion.coerceAtLeast(1),
+                    loraSf = telemetry.loraSf,
+                    // Proto3 defaults region to 0 (US915). Only trust it when SF was
+                    // also present — older firmware omits both fields.
+                    region = if (telemetry.loraSf in 7..12) telemetry.region else -1
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
@@ -1066,6 +1114,54 @@ class AetherMeshRepository(private val context: Context) {
             refreshData()
         }
         return success
+    }
+
+    /** Persist on-device settings into phone prefs and trigger Settings UI reload. */
+    private fun hydrateNodeSettingsFromDevice(nodeId: Long, config: NodeConfig) {
+        if (nodeId == 0L) return
+        val prefs = context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("node_name", config.nodeName)
+            .putInt("lora_sf", if (config.loraSf in 7..12) config.loraSf else 11)
+            .putFloat("lora_bw", if (config.loraBw > 0f) config.loraBw else 125f)
+            .putInt("lora_tx_power", if (config.loraTxPower != 0) config.loraTxPower else 22)
+            .putInt("region", config.region)
+            .putInt("node_role", config.nodeRole)
+            .putInt("telemetry_interval", if (config.telemetryInterval > 0) config.telemetryInterval else 60)
+            .putInt("screen_timeout", config.screenTimeoutSecs)
+            .putBoolean("power_save_mode", config.powerSaveMode)
+            .putInt("position_precision", config.positionPrecision)
+            .putInt("gps_mode", config.gpsMode)
+            .putBoolean("fixed_position", config.fixedPosition)
+            .putFloat("fixed_latitude", config.fixedLatitude)
+            .putFloat("fixed_longitude", config.fixedLongitude)
+            .putInt("fixed_altitude", config.fixedAltitude)
+            .putBoolean("region_configured", config.regionConfigured)
+            .putBoolean("device_synced", true)
+            .apply()
+
+        if (config.nodeName.isNotBlank()) {
+            val short = config.nodeName.replace("AetherMesh-", "")
+                .replace("Node ", "")
+                .replace(Regex("[^a-zA-Z0-9]"), "")
+                .take(4)
+                .uppercase()
+                .ifEmpty { String.format("%04X", (nodeId and 0xFFFFL).toInt()) }
+            dbHelper.updateNodeNameAndShortName(nodeId, config.nodeName, short)
+        }
+
+        _needsRegionSetup.value = !config.regionConfigured
+        _deviceConfigSyncEpoch.value = _deviceConfigSyncEpoch.value + 1
+        Log.d(
+            TAG,
+            "Hydrated node settings from device 0x${nodeId.toString(16)} " +
+                "SF=${config.loraSf} region=${config.region} regionConfigured=${config.regionConfigured}"
+        )
+        refreshData()
+    }
+
+    fun clearRegionSetupPrompt() {
+        _needsRegionSetup.value = false
     }
 
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
@@ -2027,10 +2123,47 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    /** Full 32-bit or BLE-name 16-bit suffix — same node behind either form. */
+    private fun sameMeshNodeId(a: Long, b: Long): Boolean {
+        if (a == 0L || b == 0L) return false
+        val a32 = a and 0xFFFFFFFFL
+        val b32 = b and 0xFFFFFFFFL
+        if (a32 == b32) return true
+        return (a32 and 0xFFFFL) == (b32 and 0xFFFFL)
+    }
+
     // Range Test Engine Methods
     fun startRangeTest(targetId: Long, intervalSeconds: Int) {
+        val localNodeId = bleManager.connectedNodeId
+        if (sameMeshNodeId(localNodeId, targetId)) {
+            Log.w(
+                TAG,
+                "Refusing range test: target 0x${targetId.toString(16).uppercase()} is the " +
+                    "BLE-connected node 0x${localNodeId.toString(16).uppercase()} " +
+                    "(half-duplex radio cannot ping itself)."
+            )
+            return
+        }
+        // SF11+ PONG bursts need ~6–8s of clear air after each PING.
+        val sf = try {
+            context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
+                .getInt("lora_sf", 11)
+        } catch (_: Exception) {
+            11
+        }
+        val minInterval = when {
+            sf >= 11 -> 10
+            sf >= 10 -> 8
+            else -> 5
+        }
+        val intervalSecondsClamped = intervalSeconds.coerceIn(minInterval, 30)
+        if (intervalSecondsClamped != intervalSeconds) {
+            Log.w(TAG, "Range test interval clamped $intervalSeconds → ${intervalSecondsClamped}s (SF$sf)")
+        }
         if (rangeTestJob != null) stopRangeTest()
         rangeTestTargetId = targetId
+        _rangeTestSessionStartMs.value = System.currentTimeMillis()
+        rangeTestRxBaseline = _meshDiagnostics.value?.rxPackets ?: -1L
         _isRangeTestActive.value = true
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
         startRangeTestLocationUpdates()
@@ -2041,7 +2174,7 @@ class AetherMeshRepository(private val context: Context) {
             while (_isRangeTestActive.value) {
                 expirePendingRangePings()
                 sendRangePing(targetId)
-                val nextPingAt = System.currentTimeMillis() + intervalSeconds * 1000L
+                val nextPingAt = System.currentTimeMillis() + intervalSecondsClamped * 1000L
                 while (_isRangeTestActive.value && System.currentTimeMillis() < nextPingAt) {
                     val remaining = (nextPingAt - System.currentTimeMillis()).coerceAtLeast(1L)
                     delay(minOf(1000L, remaining))
@@ -2049,7 +2182,7 @@ class AetherMeshRepository(private val context: Context) {
                 }
             }
         }
-        Log.d(TAG, "Direct range test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSeconds}s.")
+        Log.d(TAG, "Direct range test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSecondsClamped}s.")
     }
 
     fun loadRangeTestLogs(targetId: Long) {
@@ -2117,9 +2250,21 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         val localNodeId = bleManager.connectedNodeId
-        if (localNodeId == targetId) {
-            Log.w(TAG, "Range test target 0x${targetId.toString(16)} is the BLE-connected node; " +
-                    "connect to a different node to test this target.")
+        if (sameMeshNodeId(localNodeId, targetId)) {
+            Log.w(TAG, "Range test ping skipped: target is the BLE-connected node.")
+            logRangeTestResult(
+                pending = PendingRangePing(
+                    targetId = targetId,
+                    sentAtMs = System.currentTimeMillis(),
+                    position = captureRangeTestPosition()
+                ),
+                success = false,
+                rssi = -140f,
+                snr = -20f,
+                failureReason = "self_target"
+            )
+            stopRangeTest()
+            return
         }
 
         // Keep range-test IDs in 1..9999999 so the decimal form fits the

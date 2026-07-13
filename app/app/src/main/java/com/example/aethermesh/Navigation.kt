@@ -59,6 +59,7 @@ import com.example.aethermesh.ui.main.TextMuted
 import com.example.aethermesh.ui.main.adaptiveContentWidth
 import com.example.aethermesh.ui.main.getShortName
 import com.example.aethermesh.ui.main.rememberAdaptiveLayoutInfo
+import com.example.aethermesh.ui.main.sameMeshNodeId
 import com.example.aethermesh.ui.main.t
 import com.example.aethermesh.ui.components.aetherTextFieldColors
 
@@ -295,14 +296,14 @@ private fun NodeDetailsRoute(
         onTraceRoute = {
             if (viewModel.startTraceRoute(node.nodeId)) onBack()
         },
-        onRemoteConfig = if (node.nodeId != viewModel.connectedNodeId) {
+        onRemoteConfig = if (!sameMeshNodeId(node.nodeId, viewModel.connectedNodeId)) {
             { viewModel.requestRemoteConfig(node.nodeId) }
         } else null,
         onViewOnMap = {
             viewModel.requestOpenMapTab(focusNodeId = node.nodeId)
             onBack()
         },
-        onStartRangeTest = if (node.nodeId != viewModel.connectedNodeId) {
+        onStartRangeTest = if (!sameMeshNodeId(node.nodeId, viewModel.connectedNodeId)) {
             { viewModel.requestRangeTestDialog(node.nodeId) }
         } else null
     )

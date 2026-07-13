@@ -14,11 +14,12 @@
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
 #define SEEN_PACKET_TIMEOUT_MS 120000
-// Direct-range (_D) PONGs: a few short CAD-skipped copies (~400ms apart)
-// recover when the pinger is deaf during relay/other TX. Keep the burst
-// well under a 5s ping interval so we do not recreate the old retry storm.
-// Failed attempts (radio busy) keep retrying within this window.
-#define PONG_RETRY_WINDOW_MS 6000
+// Direct-range (_D) PONGs: a few CAD-skipped copies after each PING.
+// startTransmit() returns before TX completes — spacing MUST include the
+// expected airtime (SF11/BW125 ≈ 1.4s) or copies collide with themselves
+// (radio-busy / range_pong_tx_failures storm) and never reach the pinger.
+// Window must fit MAX_ATTEMPTS spaced copies at SF12.
+#define PONG_RETRY_WINDOW_MS 20000
 #define PONG_RESEND_INTERVAL_MS 2500
 #define DIRECT_PONG_MAX_ATTEMPTS 3
 #define DIRECT_PONG_RESEND_MS 400
@@ -95,7 +96,7 @@ public:
     // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
     bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false, uint8_t hopLimit = DEFAULT_HOP_LIMIT);
     // lat/lon must already be privacy-blurred by the caller when positionPrecision > 0
-    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0);
+    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0, uint32_t loraSf = 0, uint32_t region = 0);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
     void processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr);

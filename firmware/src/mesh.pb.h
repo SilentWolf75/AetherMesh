@@ -135,6 +135,9 @@ typedef struct _aethermesh_Telemetry {
     /* broadcast; 0 = precise. Receivers should show the node
  as "somewhere within this radius" (uncertainty circle). */
     char node_name[17]; /* Configured network-visible name (max 16 characters). */
+    uint32_t lora_sf; /* Current spreading factor (7-12). Receivers use this to */
+    /* detect radio-profile mismatches across the mesh. */
+    uint32_t region; /* 0 = US915, 1 = EU868 (same enum as NodeConfig.region). */
 } aethermesh_Telemetry;
 
 /* On-air route observation. Each receiver appends itself and the quality of
@@ -210,6 +213,12 @@ typedef struct _aethermesh_NodeConfig {
     /* If true, only node_name is applied (radio/GPS settings ignored) and the
  node does not reboot. Used for rename-from-phone so names live on the mesh. */
     bool apply_name_only;
+    /* Device → phone snapshot after BLE auth. Phone must hydrate local prefs and
+ MUST NOT treat this as an apply/reboot command. */
+    bool report_only;
+    /* True once the user has confirmed LoRa region (first-setup wizard or Settings).
+ False on factory-fresh nodes so the app can prompt before the radio is used. */
+    bool region_configured;
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -326,12 +335,12 @@ extern "C" {
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_default      {"", "", 0}
-#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0, ""}
+#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0}
 #define aethermesh_TraceRoute_init_default       {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
@@ -341,12 +350,12 @@ extern "C" {
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
 #define aethermesh_TextMessage_init_zero         {"", "", 0}
-#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0, ""}
+#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0}
 #define aethermesh_TraceRoute_init_zero          {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -397,6 +406,8 @@ extern "C" {
 #define aethermesh_Telemetry_battery_voltage_tag 9
 #define aethermesh_Telemetry_position_precision_tag 10
 #define aethermesh_Telemetry_node_name_tag       11
+#define aethermesh_Telemetry_lora_sf_tag         12
+#define aethermesh_Telemetry_region_tag          13
 #define aethermesh_TraceRoute_type_tag           1
 #define aethermesh_TraceRoute_trace_id_tag       2
 #define aethermesh_TraceRoute_origin_id_tag      3
@@ -437,6 +448,8 @@ extern "C" {
 #define aethermesh_NodeConfig_fixed_longitude_tag 15
 #define aethermesh_NodeConfig_fixed_altitude_tag 16
 #define aethermesh_NodeConfig_apply_name_only_tag 17
+#define aethermesh_NodeConfig_report_only_tag    18
+#define aethermesh_NodeConfig_region_configured_tag 19
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -587,7 +600,9 @@ X(a, STATIC,   SINGULAR, STRING,   firmware_version,   7) \
 X(a, STATIC,   SINGULAR, BOOL,     is_charging,       8) \
 X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9) \
 X(a, STATIC,   SINGULAR, UINT32,   position_precision,  10) \
-X(a, STATIC,   SINGULAR, STRING,   node_name,        11)
+X(a, STATIC,   SINGULAR, STRING,   node_name,        11) \
+X(a, STATIC,   SINGULAR, UINT32,   lora_sf,          12) \
+X(a, STATIC,   SINGULAR, UINT32,   region,           13)
 #define aethermesh_Telemetry_CALLBACK NULL
 #define aethermesh_Telemetry_DEFAULT NULL
 
@@ -647,7 +662,9 @@ X(a, STATIC,   SINGULAR, BOOL,     fixed_position,   13) \
 X(a, STATIC,   SINGULAR, FLOAT,    fixed_latitude,   14) \
 X(a, STATIC,   SINGULAR, FLOAT,    fixed_longitude,  15) \
 X(a, STATIC,   SINGULAR, INT32,    fixed_altitude,   16) \
-X(a, STATIC,   SINGULAR, BOOL,     apply_name_only,  17)
+X(a, STATIC,   SINGULAR, BOOL,     apply_name_only,  17) \
+X(a, STATIC,   SINGULAR, BOOL,     report_only,      18) \
+X(a, STATIC,   SINGULAR, BOOL,     region_configured,  19)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -706,13 +723,13 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshDiagnostics_size          135
 #define aethermesh_MeshPacket_size               411
-#define aethermesh_NodeConfig_size               139
+#define aethermesh_NodeConfig_size               145
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
 #define aethermesh_RangeTestControl_size         2
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                118
+#define aethermesh_Telemetry_size                130
 #define aethermesh_TextMessage_size              205
 #define aethermesh_TraceRoute_size               312
 

@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 18
+        private const val DATABASE_VERSION = 19
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -66,6 +66,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_VOLTAGE = "battery_voltage"
         const val COL_NODE_POS_PRECISION = "position_precision"
         const val COL_NODE_PROTOCOL_VERSION = "protocol_version"
+        const val COL_NODE_LORA_SF = "lora_sf"
+        const val COL_NODE_REGION = "lora_region"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -140,7 +142,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_SNR REAL DEFAULT 0,
                 $COL_NODE_VOLTAGE REAL DEFAULT 0,
                 $COL_NODE_POS_PRECISION INTEGER DEFAULT 0,
-                $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1
+                $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1,
+                $COL_NODE_LORA_SF INTEGER DEFAULT 0,
+                $COL_NODE_REGION INTEGER DEFAULT -1
             )
         """.trimIndent()
 
@@ -394,6 +398,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN range_pong_tx_failures INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN quiet_mode INTEGER NOT NULL DEFAULT 0")
             } catch (_: Exception) { }
+        }
+        if (oldVersion < 19) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_LORA_SF INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_REGION INTEGER DEFAULT -1")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add radio profile columns: ${e.message}")
+            }
         }
     }
 
@@ -1036,7 +1048,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         voltage: Float = 0f,
         positionPrecision: Int = 0,
         advertisedName: String = "",
-        protocolVersion: Int = 1
+        protocolVersion: Int = 1,
+        loraSf: Int = 0,
+        region: Int = -1
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -1091,11 +1105,19 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             // means "precise" (or old firmware), so always store it.
             put(COL_NODE_POS_PRECISION, positionPrecision)
             put(COL_NODE_PROTOCOL_VERSION, protocolVersion.coerceAtLeast(1))
+            if (loraSf in 7..12) {
+                put(COL_NODE_LORA_SF, loraSf)
+            }
+            if (region >= 0) {
+                put(COL_NODE_REGION, region)
+            }
         }
         
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
         if (rows == 0) {
             values.put(COL_NODE_ID, canonicalId)
+            if (!values.containsKey(COL_NODE_LORA_SF)) values.put(COL_NODE_LORA_SF, 0)
+            if (!values.containsKey(COL_NODE_REGION)) values.put(COL_NODE_REGION, -1)
             db.insert(TABLE_NODES, null, values)
         }
     }
@@ -1123,7 +1145,15 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     snr = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_SNR)),
                     voltage = cursor.getFloat(cursor.getColumnIndexOrThrow(COL_NODE_VOLTAGE)),
                     positionPrecision = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_POS_PRECISION)),
-                    protocolVersion = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_PROTOCOL_VERSION))
+                    protocolVersion = cursor.getInt(cursor.getColumnIndexOrThrow(COL_NODE_PROTOCOL_VERSION)),
+                    loraSf = run {
+                        val idx = cursor.getColumnIndex(COL_NODE_LORA_SF)
+                        if (idx >= 0 && !cursor.isNull(idx)) cursor.getInt(idx) else 0
+                    },
+                    region = run {
+                        val idx = cursor.getColumnIndex(COL_NODE_REGION)
+                        if (idx >= 0 && !cursor.isNull(idx)) cursor.getInt(idx) else -1
+                    }
                 ))
             } while (cursor.moveToNext())
         }
@@ -1330,7 +1360,11 @@ data class MeshNode(
     val voltage: Float = 0f,
     // Privacy blur radius (m) the node applies to its broadcast position; 0 = precise
     val positionPrecision: Int = 0,
-    val protocolVersion: Int = 1
+    val protocolVersion: Int = 1,
+    /** Last advertised SF from telemetry; 0 = unknown / older firmware. */
+    val loraSf: Int = 0,
+    /** Last advertised region; -1 = unknown, 0 = US915, 1 = EU868. */
+    val region: Int = -1
 )
 
 data class TelemetrySample(

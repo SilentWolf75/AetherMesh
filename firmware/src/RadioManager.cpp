@@ -48,7 +48,7 @@ RadioManager::RadioManager() {
     
     // Default US915 configuration
     frequency = 906.875f;
-    spreadingFactor = 9;
+    spreadingFactor = 11; // Long range default (was Fast/SF9)
     bandwidth = 125.0f;
     codingRate = 5; // 4/5
     
@@ -239,12 +239,12 @@ void RadioManager::loop() {
                       radio->getRSSI(false));
     }
 
-    // RX watchdog: with telemetry from each nearby node every ~60s, two minutes
-    // with no RX activity of any kind (packet, CRC error, header error) most
-    // likely means the SX1262 silently dropped out of RX mode. Re-arm it.
-    // (Harmless no-op if the mesh is genuinely quiet, e.g. a lone node.)
-    if (!isTransmitting && (millis() - lastRxActivityTime > 120000)) {
-        Serial.printf("RX watchdog: no receive activity for 120s (IRQ=0x%04X). Re-arming receiver.\n",
+    // RX watchdog: with telemetry from each nearby node every ~60s, ~30s with
+    // no RX activity of any kind (packet, CRC error, header error) most likely
+    // means the SX1262 silently dropped out of RX mode. Re-arm it.
+    // (Shorter than 2 minutes so range-test / SF11 TX glitches recover mid-test.)
+    if (!isTransmitting && (millis() - lastRxActivityTime > 30000)) {
+        Serial.printf("RX watchdog: no receive activity for 30s (IRQ=0x%04X). Re-arming receiver.\n",
                       radio->getIrqStatus());
         radio->standby();
 #if defined(HELTEC_V4)

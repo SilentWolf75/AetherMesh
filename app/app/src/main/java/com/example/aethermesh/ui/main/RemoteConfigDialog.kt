@@ -62,10 +62,26 @@ fun RemoteConfigDialog(
         mutableStateOf(remotePrefs.getString("node_name", null) ?: node.name)
     }
     var remotePassword by remember(node.nodeId) { mutableStateOf("") }
-    var remoteSF by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_sf", 9)) }
+    var remoteSF by remember(node.nodeId) {
+        mutableIntStateOf(
+            when {
+                remotePrefs.contains("lora_sf") -> remotePrefs.getInt("lora_sf", 11)
+                node.loraSf in 7..12 -> node.loraSf
+                else -> 11
+            }
+        )
+    }
     var remoteBW by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("lora_bw", 125f)) }
     var remoteTxPower by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_tx_power", 22)) }
-    var remoteRegion by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("region", 0)) }
+    var remoteRegion by remember(node.nodeId) {
+        mutableIntStateOf(
+            when {
+                remotePrefs.contains("region") -> remotePrefs.getInt("region", 0)
+                node.region >= 0 -> node.region
+                else -> 0
+            }
+        )
+    }
     var remoteRole by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("node_role", 0)) }
     var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
     var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }

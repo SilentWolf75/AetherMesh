@@ -139,6 +139,9 @@ message Telemetry {
                                   // broadcast; 0 = precise. Receivers should show the node
                                   // as "somewhere within this radius" (uncertainty circle).
   string node_name = 11;          // Configured network-visible name (max 16 characters).
+  uint32 lora_sf = 12;            // Current spreading factor (7-12). Receivers use this to
+                                  // detect radio-profile mismatches across the mesh.
+  uint32 region = 13;             // 0 = US915, 1 = EU868 (same enum as NodeConfig.region).
 }
 
 // On-air route observation. Each receiver appends itself and the quality of
@@ -234,6 +237,12 @@ message NodeConfig {
   // If true, only node_name is applied (radio/GPS settings ignored) and the
   // node does not reboot. Used for rename-from-phone so names live on the mesh.
   bool apply_name_only = 17;
+  // Device → phone snapshot after BLE auth. Phone must hydrate local prefs and
+  // MUST NOT treat this as an apply/reboot command.
+  bool report_only = 18;
+  // True once the user has confirmed LoRa region (first-setup wizard or Settings).
+  // False on factory-fresh nodes so the app can prompt before the radio is used.
+  bool region_configured = 19;
 }
 
 // Authentication request sent by companion app to LoRa node

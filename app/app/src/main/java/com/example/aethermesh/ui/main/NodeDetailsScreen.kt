@@ -179,7 +179,7 @@ fun NodeDetailsScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         RoundActionButton(Icons.Default.Edit, if (appLanguage == "Spanish") "Renombrar" else "Rename", onRename)
-                        if (onRemoteConfig != null && node.nodeId != connectedNodeId) {
+                        if (onRemoteConfig != null && !sameMeshNodeId(node.nodeId, connectedNodeId)) {
                             Spacer(modifier = Modifier.width(8.dp))
                             RoundActionButton(
                                 Icons.Default.Settings,
@@ -193,7 +193,7 @@ fun NodeDetailsScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 SectionCard(title = if (appLanguage == "Spanish") "Herramientas" else "Tools") {
-                    if (node.nodeId != connectedNodeId) {
+                    if (!sameMeshNodeId(node.nodeId, connectedNodeId)) {
                         ToolRow(
                             icon = Icons.Default.AltRoute,
                             label = if (appLanguage == "Spanish") "Traceroute" else "Traceroute",
@@ -434,6 +434,15 @@ private fun DetailsCard(
                     }
                     if (node.firmwareVersion.isNotEmpty()) {
                         MetaItem(Icons.Default.Memory, if (appLanguage == "Spanish") "Firmware" else "Firmware", node.firmwareVersion)
+                    }
+                    if (node.loraSf in 7..12) {
+                        val profile = radioProfileLabel(node.loraSf) +
+                            if (node.region >= 0) " · ${radioRegionLabel(node.region)}" else ""
+                        MetaItem(
+                            Icons.Default.SignalCellularAlt,
+                            if (appLanguage == "Spanish") "Radio" else "Radio",
+                            profile
+                        )
                     }
                 }
             }

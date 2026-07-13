@@ -16,6 +16,25 @@ static bool isRangeTestTextPacket(const aethermesh_MeshPacket& packet) {
             strncmp(packet.payload.text.content, "PONG_", 5) == 0);
 }
 
+// startTransmit() returns as soon as TX begins. Schedule the next direct PONG
+// copy only after the current one should have finished, plus a short gap.
+static uint32_t directPongSpacingMs(RadioManager* radio) {
+    uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+    uint32_t airtimeMs;
+    if (sf >= 12) {
+        airtimeMs = 2600;
+    } else if (sf >= 11) {
+        airtimeMs = 1600;
+    } else if (sf >= 10) {
+        airtimeMs = 900;
+    } else if (sf >= 9) {
+        airtimeMs = 500;
+    } else {
+        airtimeMs = 250;
+    }
+    return airtimeMs + DIRECT_PONG_RESEND_MS;
+}
+
 MeshRouter::MeshRouter(RadioManager* radioMgr) {
     radio = radioMgr;
     localNodeId = 0;
@@ -654,7 +673,7 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     return serializeAndSend(&packet, urgent);
 }
 
-bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging, float voltage, uint32_t positionPrecision) {
+bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging, float voltage, uint32_t positionPrecision, uint32_t loraSf, uint32_t region) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
@@ -672,6 +691,8 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     packet.payload.telemetry.battery_voltage = voltage;
     packet.payload.telemetry.position_precision = positionPrecision;
     packet.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
+    packet.payload.telemetry.lora_sf = loraSf;
+    packet.payload.telemetry.region = region;
     strncpy(packet.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
             sizeof(packet.payload.telemetry.firmware_version) - 1);
     if (nodeName != nullptr) {
@@ -1005,6 +1026,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
 
 void MeshRouter::drainPendingPongReplies() {
     uint32_t now = millis();
+    const uint32_t directSpacing = directPongSpacingMs(radio);
     for (int i = 0; i < MAX_PENDING_PONGS; i++) {
         if (!pendingPongs[i].active || (int32_t)(now - pendingPongs[i].sendAtMs) < 0) {
             continue;
@@ -1027,16 +1049,17 @@ void MeshRouter::drainPendingPongReplies() {
             )) {
             pendingPongs[i].sendCount++;
             rangePongsSent++;
-            Serial.printf("Sent range-test %s (attempt %u)\n",
-                          pendingPongs[i].content, pendingPongs[i].sendCount);
+            Serial.printf("Sent range-test %s (attempt %u, next in %lums)\n",
+                          pendingPongs[i].content, pendingPongs[i].sendCount,
+                          (unsigned long)directSpacing);
             if (pendingPongs[i].directOnly) {
-                // startTransmit success != pinger RX. A few short copies cover
-                // half-duplex deaf windows without a multi-second retry storm.
+                // startTransmit success != pinger RX. Spaced copies cover
+                // half-duplex deaf windows without colliding with our own TX.
                 if (pendingPongs[i].sendCount >= DIRECT_PONG_MAX_ATTEMPTS) {
                     pendingPongs[i].active = false;
                 } else {
                     pendingPongs[i].sendAtMs =
-                        now + DIRECT_PONG_RESEND_MS + random(0, 150);
+                        now + directSpacing + random(0, 150);
                 }
                 continue;
             }
@@ -1044,8 +1067,13 @@ void MeshRouter::drainPendingPongReplies() {
                 PONG_RESEND_INTERVAL_MS * pendingPongs[i].sendCount + random(0, 400);
         } else {
             rangePongTxFailures++;
-            pendingPongs[i].sendAtMs = now +
-                meshmath::radioBusyRetryDelayMs(random(0, 181));
+            // Radio still busy (often previous PONG still on air at SF11+).
+            // Wait out airtime instead of a sub-second busy spin.
+            uint32_t busyWait = pendingPongs[i].directOnly
+                ? (directSpacing / 2)
+                : meshmath::radioBusyRetryDelayMs(random(0, 181));
+            if (busyWait < 200) busyWait = 200;
+            pendingPongs[i].sendAtMs = now + busyWait;
         }
     }
 }

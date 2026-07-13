@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <string.h>
 #include "RadioManager.h"
 #include "MeshRouter.h"
 #include "PacketAuth.h"
@@ -21,6 +22,28 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 struct NodeSettings {
+    uint32_t version;
+    char name[17];
+    uint32_t sf;
+    float bw;
+    int32_t txPower;
+    uint32_t region;
+    char password[33];
+    uint32_t role;
+    uint32_t telemetryInterval;
+    uint32_t screenTimeoutSecs;
+    bool powerSaveMode;
+    uint32_t positionPrecisionM;
+    uint32_t gpsMode;
+    bool fixedPosition;
+    float fixedLat;
+    float fixedLon;
+    int32_t fixedAlt;
+    bool regionConfigured; // v10+: user confirmed LoRa region
+};
+
+// v9 layout (without regionConfigured) for InternalFS migration.
+struct NodeSettingsV9 {
     uint32_t version;
     char name[17];
     uint32_t sf;
@@ -755,10 +778,11 @@ bool isBleClientAuthenticated = false;
 uint8_t failedAuthAttempts = 0;
 uint32_t authLockoutUntil = 0;
 
-uint32_t loraSF = 9;
+uint32_t loraSF = 11; // Long range default
 float loraBW = 125.0f;
 int32_t loraTxPower = 22; // default for Heltec V4
 uint32_t nodeRegion = 0; // 0 = US915, 1 = EU868
+bool regionConfigured = false; // set true after first-setup / Settings apply
 uint32_t nodeRole = 0;   // 0 = Client, 1 = Router, 2 = Low-Power Repeater
 uint32_t telemetryIntervalSec = 60; // default telemetry broadcast interval in seconds
 uint32_t screenTimeoutSecs = 30; // Screen timeout in seconds (0 = display off, 0xFFFFFFFF = display always on)
@@ -784,7 +808,7 @@ bool fixedPosition = false;
 float fixedLat = 0.0f;
 float fixedLon = 0.0f;
 int32_t fixedAlt = 0;
-static const uint32_t SETTINGS_VERSION = 9;
+static const uint32_t SETTINGS_VERSION = 10;
 
 // OLED message popup state
 char lastMsgText[40] = "";
@@ -841,6 +865,7 @@ static uint32_t tdeckLastRenderSig = 0;
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
 void applyNodeNameOnly(const char* name);
+void sendNodeConfigReportToPhone();
 
 void loadSettings() {
 #ifdef ESP32
@@ -855,8 +880,10 @@ void loadSettings() {
     
     uint32_t storedVersion = preferences.getUInt("settings_ver", 0);
 
-    if (storedVersion == SETTINGS_VERSION) {
-        loraSF = preferences.getUInt("lora_sf", 9);
+    // Prefer migrating existing keys over wiping on version bumps. Missing keys
+    // take the Long-range factory defaults (SF11 / US915).
+    if (storedVersion > 0) {
+        loraSF = preferences.getUInt("lora_sf", 11);
         loraBW = preferences.getFloat("lora_bw", 125.0f);
         loraTxPower = preferences.getInt("lora_tx_power", 22);
         nodeRegion = preferences.getUInt("region", 0);
@@ -870,11 +897,19 @@ void loadSettings() {
         fixedLat = preferences.getFloat("fixed_lat", 0.0f);
         fixedLon = preferences.getFloat("fixed_lon", 0.0f);
         fixedAlt = preferences.getInt("fixed_alt", 0);
+        if (storedVersion >= 10) {
+            regionConfigured = preferences.getBool("region_cfg", false);
+        } else {
+            // Grandfather pre-v10 nodes so existing installs aren't forced
+            // through the region wizard after an OTA.
+            regionConfigured = true;
+        }
     } else {
-        loraSF = 9;
+        loraSF = 11;
         loraBW = 125.0f;
         loraTxPower = 22;
         nodeRegion = 0;
+        regionConfigured = false;
         nodeRole = 0;
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
@@ -885,8 +920,7 @@ void loadSettings() {
         fixedLat = 0.0f;
         fixedLon = 0.0f;
         fixedAlt = 0;
-        nodePassword[0] = '\0';
-        Serial.println("Radio settings version changed; resetting settings to defaults.");
+        Serial.println("No saved settings; using Long-range factory defaults.");
     }
     preferences.end();
 
@@ -899,7 +933,8 @@ void loadSettings() {
     Serial.printf("  SF: %u\n", loraSF);
     Serial.printf("  BW: %.1f\n", loraBW);
     Serial.printf("  TX Power: %d\n", loraTxPower);
-    Serial.printf("  Region: %u (%s)\n", nodeRegion, (nodeRegion == 0) ? "US915" : "EU868");
+    Serial.printf("  Region: %u (%s)%s\n", nodeRegion, (nodeRegion == 0) ? "US915" : "EU868",
+                  regionConfigured ? "" : " [needs setup]");
     Serial.printf("  Password Configured: %s\n", (strlen(nodePassword) > 0) ? "Yes" : "No");
     Serial.printf("  Node Role: %u\n", nodeRole);
     Serial.printf("  Telemetry Interval: %u sec\n", telemetryIntervalSec);
@@ -911,43 +946,72 @@ void loadSettings() {
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     InternalFS.begin();
     File file(InternalFS);
-    NodeSettings settings;
+    NodeSettings settings = {};
     bool loaded = false;
+    bool needsRewrite = false;
     
     if (file.open("/settings.bin", FILE_O_READ)) {
-        if (file.read((uint8_t*)&settings, sizeof(settings)) == sizeof(settings)) {
-            if (settings.version == SETTINGS_VERSION) {
-                strncpy(nodeCustomName, settings.name, sizeof(nodeCustomName) - 1);
+        size_t n = file.read((uint8_t*)&settings, sizeof(settings));
+        file.close();
+        if (n == sizeof(settings) && settings.version == SETTINGS_VERSION) {
+            strncpy(nodeCustomName, settings.name, sizeof(nodeCustomName) - 1);
+            nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+            strncpy(nodePassword, settings.password, sizeof(nodePassword) - 1);
+            nodePassword[sizeof(nodePassword) - 1] = '\0';
+            loraSF = settings.sf;
+            loraBW = settings.bw;
+            loraTxPower = settings.txPower;
+            nodeRegion = settings.region;
+            nodeRole = settings.role;
+            telemetryIntervalSec = settings.telemetryInterval;
+            screenTimeoutSecs = settings.screenTimeoutSecs;
+            powerSaveMode = settings.powerSaveMode;
+            positionPrecisionM = settings.positionPrecisionM;
+            gpsMode = settings.gpsMode;
+            fixedPosition = settings.fixedPosition;
+            fixedLat = settings.fixedLat;
+            fixedLon = settings.fixedLon;
+            fixedAlt = settings.fixedAlt;
+            regionConfigured = settings.regionConfigured;
+            loaded = true;
+        } else if (n >= sizeof(NodeSettingsV9)) {
+            NodeSettingsV9 v9;
+            memcpy(&v9, &settings, sizeof(v9));
+            if (v9.version == 9) {
+                strncpy(nodeCustomName, v9.name, sizeof(nodeCustomName) - 1);
                 nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
-                strncpy(nodePassword, settings.password, sizeof(nodePassword) - 1);
+                strncpy(nodePassword, v9.password, sizeof(nodePassword) - 1);
                 nodePassword[sizeof(nodePassword) - 1] = '\0';
-                loraSF = settings.sf;
-                loraBW = settings.bw;
-                loraTxPower = settings.txPower;
-                nodeRegion = settings.region;
-                nodeRole = settings.role;
-                telemetryIntervalSec = settings.telemetryInterval;
-                screenTimeoutSecs = settings.screenTimeoutSecs;
-                powerSaveMode = settings.powerSaveMode;
-                positionPrecisionM = settings.positionPrecisionM;
-                gpsMode = settings.gpsMode;
-                fixedPosition = settings.fixedPosition;
-                fixedLat = settings.fixedLat;
-                fixedLon = settings.fixedLon;
-                fixedAlt = settings.fixedAlt;
+                loraSF = v9.sf;
+                loraBW = v9.bw;
+                loraTxPower = v9.txPower;
+                nodeRegion = v9.region;
+                nodeRole = v9.role;
+                telemetryIntervalSec = v9.telemetryInterval;
+                screenTimeoutSecs = v9.screenTimeoutSecs;
+                powerSaveMode = v9.powerSaveMode;
+                positionPrecisionM = v9.positionPrecisionM;
+                gpsMode = v9.gpsMode;
+                fixedPosition = v9.fixedPosition;
+                fixedLat = v9.fixedLat;
+                fixedLon = v9.fixedLon;
+                fixedAlt = v9.fixedAlt;
+                regionConfigured = true; // grandfather
                 loaded = true;
+                needsRewrite = true;
+                Serial.println("Migrated settings.bin v9 -> v10.");
             }
         }
-        file.close();
     }
     
     if (!loaded) {
         nodeCustomName[0] = '\0';
         nodePassword[0] = '\0';
-        loraSF = 9;
+        loraSF = 11;
         loraBW = 125.0f;
         loraTxPower = 20; // default for RAK
         nodeRegion = 0;
+        regionConfigured = false;
         nodeRole = 0;
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
@@ -958,7 +1022,10 @@ void loadSettings() {
         fixedLat = 0.0f;
         fixedLon = 0.0f;
         fixedAlt = 0;
-
+        needsRewrite = true;
+    }
+    
+    if (needsRewrite) {
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
     
@@ -969,6 +1036,7 @@ void loadSettings() {
     Serial.print("  TX Power: "); Serial.println(loraTxPower);
     Serial.print("  Region: "); Serial.print(nodeRegion);
     Serial.println((nodeRegion == 0) ? " (US915)" : " (EU868)");
+    Serial.printf("  Region configured: %s\n", regionConfigured ? "yes" : "no (needs setup)");
     Serial.print("  Password Configured: "); Serial.println((strlen(nodePassword) > 0) ? "Yes" : "No");
     Serial.print("  Node Role: "); Serial.println(nodeRole);
     Serial.print("  Telemetry Interval: "); Serial.print(telemetryIntervalSec); Serial.println(" sec");
@@ -981,10 +1049,11 @@ void loadSettings() {
 #else
     nodeCustomName[0] = '\0';
     nodePassword[0] = '\0';
-    loraSF = 9;
+    loraSF = 11;
     loraBW = 125.0f;
     loraTxPower = 20;
     nodeRegion = 0;
+    regionConfigured = false;
     nodeRole = 0;
     powerSaveMode = false;
 #endif
@@ -1014,6 +1083,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putFloat("fixed_lat", fixedLat);
     preferences.putFloat("fixed_lon", fixedLon);
     preferences.putInt("fixed_alt", fixedAlt);
+    preferences.putBool("region_cfg", regionConfigured);
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
@@ -1043,6 +1113,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         settings.fixedLat = fixedLat;
         settings.fixedLon = fixedLon;
         settings.fixedAlt = fixedAlt;
+        settings.regionConfigured = regionConfigured;
 
         file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
@@ -2800,6 +2871,54 @@ void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
     }
 }
 
+// Push the node's persisted radio/GPS settings to the phone after BLE auth so
+// an app reinstall can hydrate Settings without overwriting the device.
+void sendNodeConfigReportToPhone() {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+        return;
+    }
+
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = 0; // Local BLE client only
+    packet.packet_id = random(1, 0x7FFFFFFF);
+    packet.hop_limit = 0;
+    packet.want_ack = false;
+    packet.prev_hop_id = localNodeId;
+    packet.protocol_version = 2;
+    packet.which_payload = aethermesh_MeshPacket_config_tag;
+
+    aethermesh_NodeConfig& cfg = packet.payload.config;
+    strncpy(cfg.node_name, nodeCustomName, sizeof(cfg.node_name) - 1);
+    cfg.node_name[sizeof(cfg.node_name) - 1] = '\0';
+    cfg.lora_sf = loraSF;
+    cfg.lora_bw = loraBW;
+    cfg.lora_tx_power = loraTxPower;
+    cfg.region = nodeRegion;
+    cfg.node_role = nodeRole;
+    cfg.telemetry_interval = telemetryIntervalSec;
+    cfg.screen_timeout_secs = screenTimeoutSecs;
+    cfg.power_save_mode = powerSaveMode;
+    cfg.position_precision = positionPrecisionM;
+    cfg.gps_mode = gpsMode;
+    cfg.fixed_position = fixedPosition;
+    cfg.fixed_latitude = fixedLat;
+    cfg.fixed_longitude = fixedLon;
+    cfg.fixed_altitude = fixedAlt;
+    cfg.apply_name_only = false;
+    cfg.report_only = true;
+    cfg.region_configured = regionConfigured;
+
+    uint8_t buffer[256];
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &packet)) {
+        bleMgr.sendToPhone(buffer, stream.bytes_written);
+        Serial.println("Sent NodeConfig report to phone.");
+    } else {
+        Serial.println("Failed to encode NodeConfig report for BLE.");
+    }
+}
+
 void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr) {
     if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
         return;
@@ -3126,6 +3245,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     isBleClientAuthenticated = true;
                     Serial.println("Initial device password set successfully.");
                     sendAuthResponse(true, "Password set successfully", false);
+                    sendNodeConfigReportToPhone();
                 } else {
                     // Verify the password
                     if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
@@ -3133,6 +3253,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                         failedAuthAttempts = 0;
                         Serial.println("BLE client authenticated successfully.");
                         sendAuthResponse(true, "Authenticated successfully", false);
+                        sendNodeConfigReportToPhone();
                     } else {
                         failedAuthAttempts++;
                         Serial.printf("BLE client authentication failed (attempt %u).\n", failedAuthAttempts);
@@ -3198,6 +3319,12 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         if (packet.which_payload == aethermesh_MeshPacket_config_tag && configForLocal) {
             Serial.println("Received local NodeConfig packet from phone via BLE.");
 
+            // Device→phone snapshots use report_only; never apply/reboot on those.
+            if (packet.payload.config.report_only) {
+                Serial.println("Ignoring report_only NodeConfig on device.");
+                return;
+            }
+
             if (packet.payload.config.apply_name_only) {
                 applyNodeNameOnly(packet.payload.config.node_name);
                 return;
@@ -3209,6 +3336,9 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             fixedLat = packet.payload.config.fixed_latitude;
             fixedLon = packet.payload.config.fixed_longitude;
             fixedAlt = packet.payload.config.fixed_altitude;
+            // Any full Settings / first-setup apply confirms the LoRa region.
+            regionConfigured = true;
+            nodeRegion = packet.payload.config.region;
 
             // Save to NVS
             saveSettings(
@@ -3380,6 +3510,8 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
         fixedLat = config.fixed_latitude;
         fixedLon = config.fixed_longitude;
         fixedAlt = config.fixed_altitude;
+        regionConfigured = true;
+        nodeRegion = config.region;
 
         saveSettings(
             config.node_name,
@@ -3506,7 +3638,7 @@ void setup() {
         Serial.println("!!! BOOT BUTTON HELD ON STARTUP - PERFORMING FACTORY RESET !!!");
         nodeCustomName[0] = '\0';
         nodePassword[0] = '\0';
-        loraSF = 9;
+        loraSF = 11;
         loraBW = 125.0f;
 #if defined(HELTEC_V4) || defined(HELTEC_V3)
         loraTxPower = 22;
@@ -3514,6 +3646,7 @@ void setup() {
         loraTxPower = 20;
 #endif
         nodeRegion = 0;
+        regionConfigured = false;
         nodeRole = 0; // Client role
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, 60, 30);
         Serial.println("Factory reset settings saved. Restarting...");
@@ -4151,7 +4284,7 @@ void loop() {
             // sees local GPS, but skip LoRa telemetry broadcasts that contend
             // with direct PING/PONG airtime.
             if (!router.isQuietMode()) {
-                router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM);
+                router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM, loraSF, nodeRegion);
             } else {
                 Serial.println("Quiet mode: skipping LoRa telemetry broadcast.");
             }
@@ -4177,6 +4310,8 @@ void loop() {
                 localTelemetryPacket.payload.telemetry.is_charging = batteryCharging;
                 localTelemetryPacket.payload.telemetry.battery_voltage = batteryVoltage;
                 localTelemetryPacket.payload.telemetry.position_precision = positionPrecisionM;
+                localTelemetryPacket.payload.telemetry.lora_sf = loraSF;
+                localTelemetryPacket.payload.telemetry.region = nodeRegion;
                 localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
                 strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
                         sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);

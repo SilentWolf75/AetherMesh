@@ -482,9 +482,11 @@ fun MainScreen(
 
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
+    val needsRegionSetup by viewModel.needsRegionSetup.collectAsStateWithLifecycle()
 
     var authPasswordInput by remember { mutableStateOf("") }
     var authError by remember { mutableStateOf(false) }
+    var setupRegion by remember { mutableIntStateOf(0) } // 0 = US915, 1 = EU868
 
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
@@ -874,12 +876,16 @@ fun MainScreen(
                                                 },
                                                 onRename = { /* NodesView rename dialog handles list-side */ },
                                                 onTraceRoute = { viewModel.startTraceRoute(detailNode.nodeId) },
-                                                onRemoteConfig = { viewModel.requestRemoteConfig(detailNode.nodeId) },
+                                                onRemoteConfig = if (!sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId)) {
+                                                    { viewModel.requestRemoteConfig(detailNode.nodeId) }
+                                                } else null,
                                                 onViewOnMap = {
                                                     viewModel.requestOpenMapTab(focusNodeId = detailNode.nodeId)
                                                     activeTab = TabItem.MAP
                                                 },
-                                                onStartRangeTest = { viewModel.requestRangeTestDialog(detailNode.nodeId) }
+                                                onStartRangeTest = if (!sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId)) {
+                                                    { viewModel.requestRangeTestDialog(detailNode.nodeId) }
+                                                } else null
                                             )
                                         } else {
                                             Box(
@@ -1106,6 +1112,131 @@ fun MainScreen(
                             viewModel.disconnect()
                         }
                     ) {
+                        Text(if (spanish) "Desconectar" else "Disconnect", color = TextMuted)
+                    }
+                },
+                containerColor = SurfaceDark
+            )
+        }
+
+        // First-setup region wizard — shown after auth when the node has never
+        // had a confirmed LoRa region (factory-fresh or wiped settings).
+        if (isConnected && isDeviceAuthenticated && needsRegionSetup) {
+            val spanish = appLanguage == "Spanish"
+            val nodeKey = viewModel.connectedNodeId
+            val nodePrefs = remember(nodeKey) {
+                context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
+            }
+            AlertDialog(
+                onDismissRequest = { /* Force region choice */ },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Public,
+                            contentDescription = null,
+                            tint = AccentCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            if (spanish) "Elegir región LoRa" else "Choose LoRa Region",
+                            color = TextLight,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                text = {
+                    Column {
+                        Text(
+                            if (spanish)
+                                "Cada país usa una frecuencia distinta. Elige la región correcta antes de usar el mesh. El radio usará alcance largo (SF11) por defecto. Esto solo configura el nodo conectado por BLE — los demás nodos deben igualarse con Configuración remota o conectándote a cada uno."
+                            else
+                                "Every country uses a different frequency. Pick the correct region before using the mesh. The radio defaults to Long range (SF11). This only configures the BLE-connected node — match other nodes via Remote Config or by connecting to each one.",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        listOf(
+                            0 to "US915 (North America)",
+                            1 to "EU868 (Europe)"
+                        ).forEach { (value, label) ->
+                            val selected = setupRegion == value
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) AccentCyan.copy(alpha = 0.18f) else Color.Transparent)
+                                    .clickable { setupRegion = value }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (selected) AccentCyan else BorderDark)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(label, color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+                        Text(
+                            if (spanish)
+                                "Al confirmar, el nodo reinicia con esta región."
+                            else
+                                "Confirming reboots the node with this region.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val name = nodePrefs.getString("node_name", "")
+                                ?.takeIf { it.isNotBlank() }
+                                ?: nodes.find { it.nodeId == nodeKey }?.name
+                                    ?.replace("AetherMesh-", "")
+                                    ?.replace("Node ", "")
+                                ?: ""
+                            val shortName = nodePrefs.getString("node_short_name", null)
+                                ?: nodes.find { it.nodeId == nodeKey }?.shortName
+                                ?: name.replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
+                                    .ifEmpty { String.format("%04X", (nodeKey and 0xFFFFL).toInt()) }
+                            val sent = viewModel.sendNodeConfig(
+                                name = name,
+                                shortName = shortName,
+                                sf = nodePrefs.getInt("lora_sf", 11),
+                                bw = nodePrefs.getFloat("lora_bw", 125f),
+                                txPower = nodePrefs.getInt("lora_tx_power", 22),
+                                region = setupRegion,
+                                role = nodePrefs.getInt("node_role", 0),
+                                telemetryInterval = nodePrefs.getInt("telemetry_interval", 60),
+                                screenTimeout = nodePrefs.getInt("screen_timeout", 30),
+                                powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
+                                positionPrecision = nodePrefs.getInt("position_precision", 0),
+                                gpsMode = nodePrefs.getInt("gps_mode", 0),
+                                fixedPosition = nodePrefs.getBoolean("fixed_position", false),
+                                fixedLatitude = nodePrefs.getFloat("fixed_latitude", 0f),
+                                fixedLongitude = nodePrefs.getFloat("fixed_longitude", 0f),
+                                fixedAltitude = nodePrefs.getInt("fixed_altitude", 0)
+                            )
+                            if (sent) {
+                                nodePrefs.edit()
+                                    .putInt("region", setupRegion)
+                                    .putBoolean("region_configured", true)
+                                    .apply()
+                                viewModel.clearRegionSetupPrompt()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
+                    ) {
+                        Text(if (spanish) "Confirmar región" else "Confirm Region")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.disconnect() }) {
                         Text(if (spanish) "Desconectar" else "Disconnect", color = TextMuted)
                     }
                 },
@@ -2226,7 +2357,7 @@ fun NodesView(
         )
     }
 
-    val remoteNodes = nodes.filter { it.nodeId != connectedNodeId && matchesQuery(it) }
+    val remoteNodes = nodes.filter { !sameMeshNodeId(it.nodeId, connectedNodeId) && matchesQuery(it) }
     val activeNodes = sortNodes(remoteNodes.filter { !isNodeStale(it.lastActive) })
     val staleNodes = sortNodes(remoteNodes.filter { isNodeStale(it.lastActive) })
     val showSelf = connectedNode != null && matchesQuery(connectedNode)
@@ -2782,15 +2913,23 @@ fun stabilizeMapPoint(
 }
 
 /** Resolve the BLE-connected radio in the node list despite provisional ID mismatches. */
+/** True when two IDs refer to the same node (full 32-bit or BLE-name 16-bit form). */
+fun sameMeshNodeId(a: Long, b: Long): Boolean {
+    if (a == 0L || b == 0L) return false
+    val a32 = a and 0xFFFFFFFFL
+    val b32 = b and 0xFFFFFFFFL
+    if (a32 == b32) return true
+    // Pre-auth BLE often only knows the 16-bit suffix from "AetherMesh-XXXX".
+    return (a32 and 0xFFFFL) == (b32 and 0xFFFFL)
+}
+
 fun resolveConnectedMeshNode(
     nodes: List<MeshNode>,
     connectedId: Long,
     deviceName: String?
 ): MeshNode? {
     if (connectedId != 0L) {
-        nodes.find { it.nodeId == connectedId }?.let { return it }
-        nodes.find { (it.nodeId and 0xFFFFFFFFL) == (connectedId and 0xFFFFFFFFL) }?.let { return it }
-        nodes.find { (it.nodeId and 0xFFFFL) == (connectedId and 0xFFFFL) }?.let { return it }
+        nodes.find { sameMeshNodeId(it.nodeId, connectedId) }?.let { return it }
     }
     val name = deviceName?.trim().orEmpty()
     if (name.isNotEmpty()) {
@@ -4513,18 +4652,27 @@ fun DiagnosticCard(
 
 data class RadioProfile(val label: String, val sf: Int, val bw: Float, val hint: String)
 
-val radioProfiles = listOf(
+val RADIO_PROFILES = listOf(
     RadioProfile("Fast", 9, 125f, "Baseline. Quick messages, shortest range."),
     RadioProfile("Balanced", 10, 125f, "+2.5 dB range vs Fast, 2x airtime."),
     RadioProfile("Long range", 11, 125f, "+5 dB range vs Fast, 4x airtime."),
     RadioProfile("Max range", 12, 125f, "+7.5 dB range vs Fast, 8x airtime. Use 10s+ ping intervals.")
 )
 
+fun radioProfileLabel(sf: Int): String =
+    RADIO_PROFILES.firstOrNull { it.sf == sf }?.label ?: if (sf in 7..12) "SF$sf" else "Unknown"
+
+fun radioRegionLabel(region: Int): String = when (region) {
+    0 -> "US915"
+    1 -> "EU868"
+    else -> "Unknown"
+}
+
 @Composable
 fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile) -> Unit) {
-    val selectedProfile = radioProfiles.firstOrNull { it.sf == currentSf && it.bw == currentBw }
+    val selectedProfile = RADIO_PROFILES.firstOrNull { it.sf == currentSf && it.bw == currentBw }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        radioProfiles.forEach { p ->
+        RADIO_PROFILES.forEach { p ->
             val isSel = selectedProfile == p
             Box(
                 modifier = Modifier
@@ -4696,7 +4844,7 @@ fun SettingsView(
 
     var nodeName by remember { mutableStateOf("") }
     var nodeShortName by remember { mutableStateOf("") }
-    var sf by remember { mutableIntStateOf(9) }
+    var sf by remember { mutableIntStateOf(11) }
     var bw by remember { mutableFloatStateOf(125f) }
     var txPower by remember { mutableIntStateOf(22) }
     var region by remember { mutableIntStateOf(0) } // 0 = US915, 1 = EU868
@@ -4865,17 +5013,23 @@ fun SettingsView(
     // used to clobber in-progress edits (name, sliders) every time a telemetry
     // packet refreshed the node list.
     var configLoadedForNode by remember { mutableStateOf(0L) }
-    LaunchedEffect(viewModel.connectedNodeId, nodes) {
+    var lastDeviceConfigSyncEpoch by remember { mutableIntStateOf(-1) }
+    val deviceConfigSyncEpoch by viewModel.deviceConfigSyncEpoch.collectAsStateWithLifecycle()
+    LaunchedEffect(viewModel.connectedNodeId, nodes, deviceConfigSyncEpoch) {
         channelsList = viewModel.getChannelsList()
         ecdhKeys = viewModel.getOrCreateEcdhKeys()
         val nodeKey = viewModel.connectedNodeId
-        if (nodeKey != 0L && nodeKey != configLoadedForNode) {
+        val shouldReloadConfig = nodeKey != 0L && (
+            nodeKey != configLoadedForNode || deviceConfigSyncEpoch != lastDeviceConfigSyncEpoch
+        )
+        if (shouldReloadConfig) {
             configLoadedForNode = nodeKey
+            lastDeviceConfigSyncEpoch = deviceConfigSyncEpoch
             val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
             val matchedNode = nodes.find { it.nodeId == nodeKey }
             nodeName = matchedNode?.name?.replace("AetherMesh-", "")?.replace("Node ", "") ?: ""
             nodeShortName = matchedNode?.shortName ?: ""
-            sf = nodePrefs.getInt("lora_sf", 9)
+            sf = nodePrefs.getInt("lora_sf", 11)
             bw = nodePrefs.getFloat("lora_bw", 125f)
             txPower = nodePrefs.getInt("lora_tx_power", 22)
             region = nodePrefs.getInt("region", 0)
@@ -4885,9 +5039,6 @@ fun SettingsView(
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
             positionPrecisionM = nodePrefs.getInt("position_precision", 0)
             nodeGpsEnabled = nodePrefs.getInt("gps_mode", 0) == 0
-            // Fixed position isn't carried in telemetry, so it loads from the
-            // last config this phone pushed (node_settings prefs), same as the
-            // radio sliders. 0/blank shows as empty rather than "0.0".
             fixedPositionEnabled = nodePrefs.getBoolean("fixed_position", false)
             val fLat = nodePrefs.getFloat("fixed_latitude", 0f)
             val fLon = nodePrefs.getFloat("fixed_longitude", 0f)
@@ -4926,6 +5077,7 @@ fun SettingsView(
                     putFloat("lora_bw", bw)
                     putInt("lora_tx_power", txPower)
                     putInt("region", region)
+                    putBoolean("region_configured", true)
                     putInt("node_role", role)
                     putInt("telemetry_interval", telemetryIntervalSecs)
                     putInt("screen_timeout", screenTimeoutSecs)
@@ -4939,7 +5091,13 @@ fun SettingsView(
                     apply()
                 }
             }
-            AppUiFeedback.show(if (appLanguage == "Spanish") "¡Ajustes enviados! El nodo se reiniciará." else "Config sent! Node will reboot now.", duration = SnackbarDuration.Long)
+            AppUiFeedback.show(
+                if (appLanguage == "Spanish")
+                    "¡Ajustes enviados! El nodo se reiniciará. Otros nodos no cambian — usa Configuración remota para igualar el perfil de radio."
+                else
+                    "Config sent! Node will reboot. Other nodes are unchanged — use Remote Config to match the radio profile.",
+                duration = SnackbarDuration.Long
+            )
         } else {
             AppUiFeedback.show(if (appLanguage == "Spanish") "Error al enviar la configuración." else "Failed to send configuration.", duration = SnackbarDuration.Short)
         }
@@ -5514,6 +5672,15 @@ fun SettingsView(
                         sf = profile.sf
                         bw = profile.bw
                     }
+                    Text(
+                        text = if (appLanguage == "Spanish")
+                            "Solo afecta este nodo. Iguala los demás con Configuración remota o el range test fallará en silencio."
+                        else
+                            "Applies to this node only. Match other nodes via Remote Config or range tests will fail silently.",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -7957,11 +8124,18 @@ fun ConnectionView(
     val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
     val bleReconnectAttempt by viewModel.bleReconnectAttempt.collectAsStateWithLifecycle()
     val bleReconnectGaveUp by viewModel.bleReconnectGaveUp.collectAsStateWithLifecycle()
-    val connectedNode = nodes.find { it.nodeId == viewModel.connectedNodeId }
-    val displayName = connectedNode?.name ?: viewModel.connectedDeviceName ?: "Wolf Base"
-    val shortName = getShortName(displayName, viewModel.connectedNodeId ?: 0L)
+    val connectedNode = resolveConnectedMeshNode(
+        nodes = nodes,
+        connectedId = viewModel.connectedNodeId,
+        deviceName = viewModel.connectedDeviceName
+    )
+    val displayName = connectedNode?.name?.takeIf { it.isNotBlank() }
+        ?: viewModel.connectedDeviceName
+        ?: "Wolf Base"
+    val shortName = connectedNode?.shortName?.takeIf { it.isNotBlank() }
+        ?: getShortName(displayName, connectedNode?.nodeId ?: viewModel.connectedNodeId)
     val badgeColor = getBadgeColor(displayName)
-    val batteryVal = connectedNode?.battery ?: 98
+    val batteryVal = connectedNode?.battery ?: 0
     
     Column(
         modifier = Modifier
@@ -8066,13 +8240,15 @@ fun ConnectionView(
                     ) {
                         GraphicStatTile(
                             label = "ID",
-                            value = "0x${viewModel.connectedNodeId.toString(16).uppercase().takeLast(4)}",
+                            value = "0x${(connectedNode?.nodeId ?: viewModel.connectedNodeId).toString(16).uppercase().takeLast(4)}",
                             accent = AccentCyan,
                             modifier = Modifier.weight(1f)
                         )
                         GraphicStatTile(
                             label = if (appLanguage == "Spanish") "Modelo" else "Model",
-                            value = connectedNode?.model?.takeIf { it.isNotEmpty() }?.take(8) ?: "—",
+                            value = connectedNode?.model?.takeIf { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) }
+                                ?.take(12)
+                                ?: "—",
                             accent = AccentSteel,
                             modifier = Modifier.weight(1f)
                         )
@@ -8530,6 +8706,7 @@ fun rangeTestFailureShort(reason: String?, appLanguage: String = "English"): Str
         "ble_send_fail" -> if (spanish) "fallo BLE" else "BLE fail"
         "auth_blocked" -> if (spanish) "auth" else "auth"
         "test_stopped" -> if (spanish) "detenido" else "stopped"
+        "self_target" -> if (spanish) "mismo nodo" else "self"
         else -> if (spanish) "timeout" else "timeout"
     }
 }
@@ -8549,6 +8726,10 @@ fun rangeTestFailureLabel(reason: String?, appLanguage: String = "English"): Str
             "Prueba detenida."
         else
             "Test stopped."
+        "self_target" -> if (spanish)
+            "Ese es el nodo conectado por BLE — conéctate a otro nodo para probar este."
+        else
+            "That's the BLE-connected node — connect to a different node to range-test this one."
         else -> if (spanish)
             "Sin respuesta (timeout)."
         else

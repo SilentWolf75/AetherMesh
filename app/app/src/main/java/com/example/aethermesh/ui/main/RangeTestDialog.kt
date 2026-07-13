@@ -66,9 +66,22 @@ fun RangeTestDialog(
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
     val isRangeTestActive by viewModel.isRangeTestActive.collectAsStateWithLifecycle()
     val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
+    val targetingConnectedNode = sameMeshNodeId(targetNode.nodeId, viewModel.connectedNodeId)
     val toolsPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
-    var pingIntervalSec by remember {
-        mutableFloatStateOf(toolsPrefs.getFloat("range_test_interval_sec", 5f).coerceIn(2f, 30f))
+    val nodePrefs = remember { context.getSharedPreferences("node_settings_${viewModel.connectedNodeId}", Context.MODE_PRIVATE) }
+    // SF11+ airtime is ~1.4s/packet; target sends up to 3 spaced PONGs. A 5s
+    // interval collides the next PING with those replies (0% success).
+    val loraSf = nodePrefs.getInt("lora_sf", 11).coerceIn(7, 12)
+    val minIntervalSec = if (loraSf >= 11) 10f else if (loraSf >= 10) 8f else 5f
+    val defaultIntervalSec = if (loraSf >= 11) 12f else 8f
+    var pingIntervalSec by remember(loraSf) {
+        mutableFloatStateOf(
+            toolsPrefs.getFloat("range_test_interval_sec", defaultIntervalSec)
+                .coerceIn(minIntervalSec, 30f)
+        )
+    }
+    LaunchedEffect(loraSf, minIntervalSec) {
+        if (pingIntervalSec < minIntervalSec) pingIntervalSec = minIntervalSec
     }
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasLocationPermission by remember {
@@ -172,6 +185,67 @@ fun RangeTestDialog(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
+                if (targetingConnectedNode) {
+                    Text(
+                        if (spanish)
+                            "Ese es el nodo conectado por BLE. Conéctate a otro nodo para probar el alcance hacia este."
+                        else
+                            "That's the BLE-connected node. Connect to a different node to range-test this one.",
+                        color = AccentAmber,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+                val targetStaleMs = System.currentTimeMillis() - targetNode.lastActive
+                val targetStale = !targetingConnectedNode &&
+                    (targetNode.lastActive <= 0L || targetStaleMs > 120_000L)
+                if (targetStale) {
+                    val staleLabel = if (targetNode.lastActive <= 0L) {
+                        if (spanish) "nunca" else "never"
+                    } else {
+                        "${(targetStaleMs / 1000L).toInt()}s"
+                    }
+                    Text(
+                        if (spanish)
+                            "${targetNode.name} no está en el aire (última telemetría: $staleLabel). " +
+                                "Enciéndelo, verifica misma región/SF que el nodo BLE, y espera a ver batería/RSSI actualizados antes de probar."
+                        else
+                            "${targetNode.name} is not on the air (last telemetry: $staleLabel ago). " +
+                                "Power it on, match region/SF with the BLE-connected node, and wait until battery/RSSI update before testing.",
+                        color = AccentAmber,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+                val localSf = loraSf
+                val localRegion = nodePrefs.getInt("region", -1)
+                val profileMismatch = !targetingConnectedNode &&
+                    targetNode.loraSf in 7..12 &&
+                    localSf in 7..12 &&
+                    (targetNode.loraSf != localSf ||
+                        (targetNode.region >= 0 && localRegion >= 0 && targetNode.region != localRegion))
+                if (profileMismatch) {
+                    Text(
+                        if (spanish)
+                            "Perfil de radio distinto: este nodo ${radioProfileLabel(localSf)}" +
+                                (if (localRegion >= 0) "/${radioRegionLabel(localRegion)}" else "") +
+                                ", ${targetNode.name} ${radioProfileLabel(targetNode.loraSf)}" +
+                                (if (targetNode.region >= 0) "/${radioRegionLabel(targetNode.region)}" else "") +
+                                ". Iguala Región/SF o el range test dará 0%."
+                        else
+                            "Radio profile mismatch: this node ${radioProfileLabel(localSf)}" +
+                                (if (localRegion >= 0) "/${radioRegionLabel(localRegion)}" else "") +
+                                ", ${targetNode.name} ${radioProfileLabel(targetNode.loraSf)}" +
+                                (if (targetNode.region >= 0) "/${radioRegionLabel(targetNode.region)}" else "") +
+                                ". Match Region/SF or range test will be 0%.",
+                        color = AccentAmber,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
                 if (!hasLocationPermission) {
                     Text(
                         if (spanish)
@@ -218,11 +292,22 @@ fun RangeTestDialog(
                         color = TextMuted,
                         fontSize = 12.sp
                     )
+                    if (loraSf >= 11) {
+                        Text(
+                            if (spanish)
+                                "Alcance largo (SF$loraSf): usa ≥${minIntervalSec.toInt()}s para no solapar con las respuestas."
+                            else
+                                "Long range (SF$loraSf): use ≥${minIntervalSec.toInt()}s so replies are not stepped on.",
+                            color = AccentAmber,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+                        )
+                    }
                     Slider(
                         value = pingIntervalSec,
-                        onValueChange = { pingIntervalSec = it },
-                        valueRange = 2f..30f,
-                        steps = 27,
+                        onValueChange = { pingIntervalSec = it.coerceIn(minIntervalSec, 30f) },
+                        valueRange = minIntervalSec..30f,
+                        steps = ((30f - minIntervalSec).toInt() - 1).coerceAtLeast(0),
                         colors = SliderDefaults.colors(
                             thumbColor = AccentCyan,
                             activeTrackColor = AccentCyan,
@@ -234,7 +319,8 @@ fun RangeTestDialog(
                         onClick = {
                             viewModel.startRangeTest(targetNode.nodeId, pingIntervalSec.toInt())
                         },
-                        enabled = isConnected && isDeviceAuthenticated,
+                        enabled = isConnected && isDeviceAuthenticated &&
+                            !targetingConnectedNode && !targetStale,
                         modifier = Modifier.fillMaxWidth().height(40.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
                         shape = RoundedCornerShape(8.dp)
@@ -245,7 +331,23 @@ fun RangeTestDialog(
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    if (!isDeviceAuthenticated) {
+                    if (targetingConnectedNode) {
+                        Text(
+                            if (spanish) "No se puede hacer ping al nodo al que ya estás conectado"
+                            else "Can't ping the node you're already connected to",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    } else if (targetStale) {
+                        Text(
+                            if (spanish) "Bloqueado hasta oír telemetría del objetivo"
+                            else "Locked until the target is heard on the mesh",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    } else if (!isDeviceAuthenticated) {
                         Text(
                             if (spanish) "Bloqueado hasta autenticar" else "Locked until authenticated",
                             color = TextMuted,
@@ -309,13 +411,40 @@ fun RangeTestDialog(
                         }
                     }
                 } else {
-                    val totalPings = rangeTestLogs.size
-                    val successfulPings = rangeTestLogs.count { it.success }
+                    val sessionStart by viewModel.rangeTestSessionStartMs.collectAsStateWithLifecycle()
+                    val diagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
+                    val sessionLogs = if (sessionStart > 0L) {
+                        rangeTestLogs.filter { it.timestamp >= sessionStart }
+                    } else {
+                        rangeTestLogs
+                    }
+                    val totalPings = sessionLogs.size
+                    val successfulPings = sessionLogs.count { it.success }
                     val successRate = if (totalPings > 0) (successfulPings * 100 / totalPings) else 0
-                    val failBuckets = rangeTestLogs
+                    val failBuckets = sessionLogs
                         .filter { !it.success }
                         .groupingBy { it.failureReason ?: "timeout" }
                         .eachCount()
+                    val rxSilent = diagnostics != null &&
+                        diagnostics.quietMode &&
+                        totalPings >= 3 &&
+                        successfulPings == 0
+
+                    if (rxSilent) {
+                        Text(
+                            if (spanish)
+                                "La radio local no oye respuestas. Conecta por BLE a ${targetNode.name}, abre Ajustes y iguala Región/SF con este nodo; luego vuelve a probar."
+                            else
+                                "Local radio is hearing no replies. BLE-connect to ${targetNode.name}, open Settings, match Region/SF with this node, then retry.",
+                            color = AccentAmber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -350,7 +479,7 @@ fun RangeTestDialog(
                             modifier = Modifier.fillMaxWidth(),
                             textAlign = TextAlign.Center
                         )
-                        rangeTestLogs.lastOrNull { !it.success }?.let { miss ->
+                        sessionLogs.lastOrNull { !it.success }?.let { miss ->
                             Text(
                                 rangeTestFailureLabel(miss.failureReason, appLanguage),
                                 color = AccentAmber,
@@ -389,7 +518,7 @@ fun RangeTestDialog(
                         }
                     }
 
-                    rangeTestLogs.lastOrNull { it.success }?.let { latest ->
+                    sessionLogs.lastOrNull { it.success }?.let { latest ->
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -493,8 +622,8 @@ fun RangeTestDialog(
                                     strokeWidth = 1f
                                 )
                             }
-                            if (rangeTestLogs.isNotEmpty()) {
-                                val points = rangeTestLogs.takeLast(15)
+                            if (sessionLogs.isNotEmpty()) {
+                                val points = sessionLogs.takeLast(15)
                                 val stepX = if (points.size > 1) width / (points.size - 1) else width
                                 var lastPointX = 0f
                                 var lastPointY = 0f
