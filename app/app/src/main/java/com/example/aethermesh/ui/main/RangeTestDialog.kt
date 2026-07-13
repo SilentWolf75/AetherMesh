@@ -425,8 +425,9 @@ fun RangeTestDialog(
                         .filter { !it.success }
                         .groupingBy { it.failureReason ?: "timeout" }
                         .eachCount()
-                    val rxSilent = diagnostics != null &&
-                        diagnostics.quietMode &&
+                    val diagnosticsSnapshot = diagnostics
+                    val rxSilent = diagnosticsSnapshot != null &&
+                        diagnosticsSnapshot.quietMode &&
                         totalPings >= 3 &&
                         successfulPings == 0
 
