@@ -90,6 +90,17 @@ public:
     MeshRouter(RadioManager* radioMgr);
     void init(uint32_t localId);
     void loop();
+
+    // 0 = Client (no LoRa relay — MeshCore-style companion)
+    // 1 = Router (relay + BLE/UI)
+    // 2 = Low-Power Repeater (relay, BLE off)
+    void setNodeRole(uint32_t role);
+    uint32_t getNodeRole() const { return nodeRole; }
+    bool canRelay() const { return nodeRole != 0; }
+
+    // Default hop_limit for locally originated packets (1–8).
+    void setDefaultHopLimit(uint8_t hops);
+    uint8_t getDefaultHopLimit() const { return defaultHopLimit; }
     
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
@@ -130,6 +141,8 @@ private:
     uint32_t localNodeId;
     uint32_t packetSequenceCounter;
     uint64_t sessionId;
+    uint32_t nodeRole;
+    uint8_t defaultHopLimit;
     
     // Data structures
     RouteEntry routingTable[MAX_ROUTE_TABLE_ENTRIES];
@@ -191,6 +204,10 @@ private:
     void maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, float rssi, float snr);
     void queuePongReply(uint32_t recipientId, const char* pingId, float rssi, float snr, bool directOnly);
     void drainPendingPongReplies();
+
+    // True when a unicast with no route table entry should still be flooded
+    // by relay roles (DM / config discovery — MeshCore flood-then-direct).
+    bool shouldFloodUnknownUnicast(const aethermesh_MeshPacket& packet) const;
     
     // Buffer serialization helpers
     bool serializeAndSend(aethermesh_MeshPacket* packet, bool urgent = false);

@@ -111,6 +111,15 @@ fun MeshRoutingDiagnosticsPanel(
         title = t("Mesh Routing Diagnostics", appLanguage),
         modifier = Modifier.padding(bottom = 8.dp)
     )
+    Text(
+        if (spanish)
+            "Cliente no reenvía LoRa. Router/Repetidor reenvían y descubren rutas (flood → camino directo). Las rutas observadas abajo se aprenden de ACKs y traceroute."
+        else
+            "Client nodes do not relay LoRa. Router/Repeater nodes forward and discover paths (flood → direct). Observed routes below are learned from ACKs and traceroute.",
+        color = TextMuted,
+        fontSize = 11.sp,
+        modifier = Modifier.padding(bottom = 12.dp)
+    )
     Card(
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
         shape = RoundedCornerShape(16.dp),
@@ -318,7 +327,10 @@ fun MeshRoutingDiagnosticsPanel(
 
             if (observedRoutes.isEmpty()) {
                 Text(
-                    text = t("No routing paths observed yet.\nPaths are dynamically built as nodes transmit.", appLanguage),
+                    text = if (spanish)
+                        "Aún no hay rutas aprendidas.\nEnvía un DM o ejecuta traceroute; los relays descubren el camino y luego usan enrutamiento directo."
+                    else
+                        "No learned paths yet.\nSend a DM or run traceroute; relays flood to discover, then use direct routing.",
                     color = TextMuted,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
@@ -368,20 +380,39 @@ fun MeshRoutingDiagnosticsPanel(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(targetName, color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                Text(nextHopName, color = TextMuted, fontSize = 11.sp)
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(SurfaceDark)
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
                                 Text(
-                                    text = "${route.hops} ${if (route.hops == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
-                                    color = AccentCyan,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                                    if (spanish) "Siguiente: $nextHopName" else "Via: $nextHopName",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
                                 )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(SurfaceDark)
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "${route.hops} ${if (route.hops == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
+                                        color = AccentCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                if (isConnected && isDeviceAuthenticated) {
+                                    TextButton(
+                                        onClick = { viewModel.startTraceRoute(route.targetId) },
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            if (spanish) "Redescubrir" else "Rediscover",
+                                            color = AccentMint,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

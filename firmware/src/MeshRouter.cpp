@@ -40,6 +40,8 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     localNodeId = 0;
     packetSequenceCounter = 0;
     sessionId = 0;
+    nodeRole = 0;
+    defaultHopLimit = DEFAULT_HOP_LIMIT;
     seenPacketsIndex = 0;
     textCallback = nullptr;
     telemetryCallback = nullptr;
@@ -95,6 +97,38 @@ void MeshRouter::init(uint32_t localId) {
     
     Serial.print("MeshRouter initialized. Local Node ID: 0x");
     Serial.println(localNodeId, HEX);
+    Serial.printf("  Role: %u (%s) hop_limit=%u\n",
+                  nodeRole,
+                  nodeRole == 0 ? "Client/no-relay" : (nodeRole == 2 ? "Repeater" : "Router"),
+                  defaultHopLimit);
+}
+
+void MeshRouter::setNodeRole(uint32_t role) {
+    nodeRole = (role > 2) ? 0 : role;
+    Serial.printf("MeshRouter role set to %u (%s)\n",
+                  nodeRole,
+                  canRelay() ? "relay enabled" : "Client — will not relay");
+}
+
+void MeshRouter::setDefaultHopLimit(uint8_t hops) {
+    if (hops < 1) hops = 1;
+    if (hops > 8) hops = 8;
+    defaultHopLimit = hops;
+}
+
+bool MeshRouter::shouldFloodUnknownUnicast(const aethermesh_MeshPacket& packet) const {
+    // Diagnostics always flood; DMs/config/acks need flood-to-learn-path
+    // on Router/Repeater roles (MeshCore-style discovery).
+    switch (packet.which_payload) {
+        case aethermesh_MeshPacket_text_tag:
+        case aethermesh_MeshPacket_trace_route_tag:
+        case aethermesh_MeshPacket_config_tag:
+        case aethermesh_MeshPacket_ack_tag:
+        case aethermesh_MeshPacket_route_discovery_tag:
+            return true;
+        default:
+            return false;
+    }
 }
 
 void MeshRouter::loop() {
@@ -569,16 +603,22 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 break;
         }
         
-        // Rebroadcast if hops remaining and not resolved
-        if (shouldRebroadcast && packet.hop_limit > 1) {
+        // Rebroadcast only on Router/Repeater roles (Client = companion, no relay).
+        if (canRelay() && shouldRebroadcast && packet.hop_limit > 1) {
             packet.hop_limit--;
             packet.prev_hop_id = localNodeId;
             
             // Queue rebroadcast with SNR-based delay (pure math in MeshMath.h)
             queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr));
+        } else if (!canRelay() && packet.hop_limit > 1) {
+            // Still learn topology from broadcasts we hear, but do not forward.
         }
     } else {
-        // Unicast packet for someone else (we are a relay node)
+        // Unicast packet for someone else — only Router/Repeater relay.
+        if (!canRelay()) {
+            // Clients may still learn a route to the sender from the RF hop.
+            return;
+        }
         if (packet.hop_limit > 1) {
             RouteEntry* route = getRoute(packet.recipient_id);
             if (route) {
@@ -608,15 +648,12 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 // are triggered by the same packet). Wait out the ACK airtime with
                 // jitter; if a duplicate arrives meanwhile, the relay is cancelled.
                 queueRebroadcast(packet, millis() + random(300, 700));
-            } else if ((packet.which_payload == aethermesh_MeshPacket_text_tag &&
-                        (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
-                         strncmp(packet.payload.text.content, "PONG_", 5) == 0)) ||
-                       packet.which_payload == aethermesh_MeshPacket_trace_route_tag) {
-                // Diagnostics must still discover a path when the route table is
-                // cold. Duplicate suppression and jitter bound this fallback flood.
+            } else if (shouldFloodUnknownUnicast(packet)) {
+                // Flood-then-direct: discover a path when the route table is cold.
+                // Duplicate suppression and jitter bound this fallback flood.
                 Serial.print("No route to 0x");
                 Serial.print(packet.recipient_id, HEX);
-                Serial.println("; flooding diagnostic packet.");
+                Serial.println("; flooding for path discovery.");
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
                 queueRebroadcast(packet, millis() + random(300, 700));
@@ -634,7 +671,7 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.hop_limit = defaultHopLimit;
     packet.want_ack = (recipientId != 0xFFFFFFFF);
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_text_tag;
@@ -648,11 +685,16 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     if (recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
         Serial.print("No route to recipient 0x");
         Serial.print(recipientId, HEX);
-        Serial.println(". Sending direct; retry path will discover a route if needed...");
+        Serial.println(". Sending; relays will flood-discover if needed...");
     }
 
     trackForAck(packet);
-    return serializeAndSend(&packet);
+    bool sent = serializeAndSend(&packet);
+    // After the payload is on the air, ask the mesh for a path (flood-then-direct).
+    if (sent && recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
+        sendRouteRequest(recipientId);
+    }
+    return sent;
 }
 
 bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urgent, uint8_t hopLimit) {

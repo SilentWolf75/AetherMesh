@@ -5835,6 +5835,25 @@ fun SettingsView(
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = when (role) {
+                            1 -> if (appLanguage == "Spanish")
+                                "Router: reenvía mensajes LoRa y mantiene BLE/pantalla."
+                            else
+                                "Router: relays LoRa traffic and keeps BLE/display on."
+                            2 -> if (appLanguage == "Spanish")
+                                "Repetidor: solo infraestructura LoRa; apaga BLE para ahorrar batería."
+                            else
+                                "Repeater: LoRa infrastructure only; turns BLE off to save power."
+                            else -> if (appLanguage == "Spanish")
+                                "Cliente: no reenvía LoRa (como companion MeshCore). Usa un Router/Repetidor para cobertura."
+                            else
+                                "Client: does not relay LoRa (MeshCore-style companion). Use a Router/Repeater for coverage."
+                        },
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
                     Box(modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { isExpandedRole = true },

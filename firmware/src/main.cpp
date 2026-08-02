@@ -3837,6 +3837,7 @@ void setup() {
     
     // 5. Initialize Mesh Router
     router.init(localNodeId);
+    router.setNodeRole(nodeRole);
     router.onReceivedTextMessage(onReceivedTextMessage);
     router.onReceivedConfig(onReceivedConfig);
     router.onDeliveryStatus(sendDeliveryStatusToPhone);
