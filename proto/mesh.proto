@@ -36,6 +36,7 @@ message MeshPacket {
     TraceRoute trace_route = 21;
     MeshDiagnostics diagnostics = 22;
     RangeTestControl range_test_control = 27;
+    ConfigResult config_result = 28;
   }
 }
 
@@ -196,6 +197,7 @@ message DeliveryStatus {
     QUEUED = 4;
     STORED = 5;
     EXPIRED = 6;
+    HEARD = 7;  // Channel/broadcast: another node ACKed; see heard_count
   }
   enum Reason {
     REASON_UNSPECIFIED = 0;
@@ -211,6 +213,10 @@ message DeliveryStatus {
   State state = 3;
   Reason reason = 4;
   uint32 retry_count = 5;
+  // For HEARD: unique nodes that have ACKed this broadcast so far (at originator).
+  uint32 heard_count = 6;
+  // For HEARD: node id of the hearer that just ACKed.
+  uint32 from_node_id = 7;
 }
 
 // Configuration settings sync
@@ -227,9 +233,12 @@ message NodeConfig {
   string config_password = 10;    // Node admin password authorizing a remote (over-LoRa) config change.
                                   // Empty for local BLE config (the BLE session is already authenticated).
   uint32 position_precision = 11; // Privacy blur radius (meters) for broadcast positions; 0 = precise.
-  uint32 gps_mode = 12;           // 0 = onboard GPS powered (default), 1 = GPS off to save power
-                                  // (position falls back to phone-shared GPS). uint32 so the
+  uint32 gps_mode = 12;           // 0 = onboard GPS always on (default), 1 = always off,
+                                  // 2 = duty-cycle: power on periodically for a fix, then off.
+                                  // Position falls back to phone-shared GPS when no fix.
                                   // proto3 zero-default means "on" for configs that omit it.
+  // Seconds between GPS wake attempts when gps_mode == 2. 0 = firmware default (900).
+  uint32 gps_duty_interval_secs = 25;
   bool fixed_position = 13;       // True if using a static fixed position instead of GPS
   float fixed_latitude = 14;      // Static latitude
   float fixed_longitude = 15;     // Static longitude
@@ -246,6 +255,31 @@ message NodeConfig {
   // Mesh routing knobs (Router/Repeater). 0 = use firmware defaults.
   uint32 mesh_hop_limit = 20;              // 1–8; default 4 when 0
   uint32 rebroadcast_txdelay_x100 = 21;    // 50–200 (=0.5x–2.0x); default 100 when 0
+  // Authenticated GET: target replies with report_only NodeConfig over LoRa (no apply).
+  bool request_report = 22;
+  // Sparse apply bitmask. 0 = legacy full apply (local BLE Settings).
+  // Non-zero = only apply bits set (remote). See APPLY_* in firmware/app.
+  uint32 apply_mask = 23;
+  // Compact badge label (max 4 chars). Empty = derive from node_name on receivers.
+  string node_short_name = 24;
+}
+
+// Outcome of a remote NodeConfig apply/request. Sent over LoRa back to the
+// requester (then forwarded to the phone over BLE). Distinct from ACK, which
+// only means the request packet reached the node.
+message ConfigResult {
+  enum Status {
+    UNKNOWN = 0;
+    APPLIED = 1;            // Applied without reboot (e.g. name-only)
+    APPLIED_REBOOTING = 2;  // Settings saved; node reboots next
+    AUTH_FAILED = 3;
+    REJECTED_ROLE2 = 4;     // Refused entering Low-Power Repeater over LoRa
+    REJECTED_FIXED_POS = 5; // Invalid fixed coordinates
+    REPORT_OK = 6;          // request_report handled (snapshot sent separately)
+  }
+  Status status = 1;
+  uint32 request_packet_id = 2; // echoes the NodeConfig MeshPacket.packet_id
+  string message = 3;
 }
 
 // Authentication request sent by companion app to LoRa node

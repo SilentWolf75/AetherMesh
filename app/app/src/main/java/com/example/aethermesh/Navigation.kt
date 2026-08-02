@@ -209,7 +209,6 @@ fun MainNavigation() {
                     node = target,
                     viewModel = viewModel,
                     appLanguage = appLanguage,
-                    useImperialUnits = useImperialUnits,
                     onDismiss = { viewModel.dismissRemoteConfigDialog() }
                 )
             } else {

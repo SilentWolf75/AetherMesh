@@ -20,19 +20,24 @@ object NodeNamePolicy {
             existingName.isNotBlank() -> existingName
             else -> defaultName
         }
-        val shortName = if (advertised.isBlank() && existingIsCustom && existingShortName.isNotBlank()) {
-            existingShortName
+        // Keep a user-chosen short name across telemetry / device hydrates.
+        // Long name still follows the mesh-advertised value when present.
+        val derivedShort = longName.replace("AetherMesh-", "").replace("Node ", "")
+            .replace(Regex("[^a-zA-Z0-9]"), "")
+            .take(4)
+            .uppercase()
+            .ifEmpty { String.format("%04X", (nodeId and 0xFFFF).toInt()) }
+        val shortName = if (existingIsCustom && existingShortName.isNotBlank()) {
+            existingShortName.take(4).uppercase()
         } else {
-            longName.replace("AetherMesh-", "").replace("Node ", "")
-                .replace(Regex("[^a-zA-Z0-9]"), "")
-                .take(4)
-                .uppercase()
-                .ifEmpty { String.format("%04X", (nodeId and 0xFFFF).toInt()) }
+            derivedShort
         }
         return CanonicalNodeName(
             longName = longName,
             shortName = shortName,
-            isCustom = existingIsCustom && advertised.isBlank()
+            // Stick once the user (or Settings apply) chose a short name.
+            isCustom = existingIsCustom ||
+                (existingShortName.isNotBlank() && existingShortName.take(4).uppercase() != derivedShort)
         )
     }
 }

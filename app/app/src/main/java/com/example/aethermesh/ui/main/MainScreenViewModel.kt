@@ -37,6 +37,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val traceRouteState = repository.traceRouteState
     val isDeviceAuthenticated: StateFlow<Boolean> = repository.isDeviceAuthenticated
     val authenticationRequired: StateFlow<Boolean?> = repository.authenticationRequired
+    val authFailureTick: StateFlow<Int> = repository.authFailureTick
     val needsRegionSetup: StateFlow<Boolean> = repository.needsRegionSetup
     val deviceConfigSyncEpoch: StateFlow<Int> = repository.deviceConfigSyncEpoch
 
@@ -288,6 +289,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
         gpsMode: Int = 0,
+        gpsDutyIntervalSecs: Int = 900,
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
@@ -298,6 +300,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.sendNodeConfig(
             name, shortName, sf, bw, txPower, region, role,
             telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
+            gpsDutyIntervalSecs,
             fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude,
             meshHopLimit, rebroadcastTxdelayX100
         )
@@ -318,8 +321,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         val short = shortName.trim().take(4).ifEmpty {
             clipped.replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
         }
-        if (nodeId == connectedNodeId) {
-            val meshOk = repository.sendNameOnlyConfig(nodeId, clipped)
+        if (com.example.aethermesh.ui.main.sameMeshNodeId(nodeId, connectedNodeId)) {
+            val meshOk = repository.sendNameOnlyConfig(nodeId, clipped, shortName = short)
             if (!meshOk) {
                 // Keep a local rename so the UI updates; caller can toast "phone only".
                 repository.updateNodeNameAndShortName(nodeId, clipped, short)
@@ -327,20 +330,30 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
             return meshOk
         }
         if (adminPassword.isNotBlank()) {
-            return repository.sendNameOnlyConfig(nodeId, clipped, adminPassword)
+            return repository.sendNameOnlyConfig(nodeId, clipped, adminPassword, short)
         }
         repository.updateNodeNameAndShortName(nodeId, clipped, short)
         return false
     }
 
-    fun sendNameOnlyConfig(nodeId: Long, name: String, adminPassword: String = ""): Boolean =
-        repository.sendNameOnlyConfig(nodeId, name, adminPassword)
+    fun sendNameOnlyConfig(
+        nodeId: Long,
+        name: String,
+        adminPassword: String = "",
+        shortName: String = ""
+    ): Boolean = repository.sendNameOnlyConfig(nodeId, name, adminPassword, shortName)
 
     fun startTraceRoute(nodeId: Long): Boolean = repository.startTraceRoute(nodeId)
 
     fun clearTraceRouteResult() = repository.clearTraceRouteResult()
 
     fun hideTraceRouteDialog() = repository.hideTraceRouteDialog()
+
+    val remoteConfigReport = repository.remoteConfigReport
+    val remoteConfigResult = repository.remoteConfigResult
+
+    fun requestRemoteConfigReport(nodeId: Long, password: String): Int? =
+        repository.requestRemoteConfigReport(nodeId, password)
 
     fun sendRemoteConfig(
         nodeId: Long,
@@ -356,18 +369,21 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
         gpsMode: Int = 0,
+        gpsDutyIntervalSecs: Int = 900,
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
         fixedAltitude: Int = 0,
         meshHopLimit: Int = 0,
-        rebroadcastTxdelayX100: Int = 0
-    ): Boolean {
+        rebroadcastTxdelayX100: Int = 0,
+        applyMask: Int
+    ): Int? {
         return repository.sendRemoteConfig(
             nodeId, name, password, sf, bw, txPower, region, role,
             telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
+            gpsDutyIntervalSecs,
             fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude,
-            meshHopLimit, rebroadcastTxdelayX100
+            meshHopLimit, rebroadcastTxdelayX100, applyMask
         )
     }
 

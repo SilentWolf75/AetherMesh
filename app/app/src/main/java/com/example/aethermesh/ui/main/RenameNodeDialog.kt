@@ -111,13 +111,17 @@ fun RenameNodeDialog(
                         shortName.trim(),
                         adminPassword
                     )
-                    if (!persisted && isRemote) {
-                        AppUiFeedback.show(
+                    when {
+                        !persisted && isRemote -> AppUiFeedback.show(
                             if (spanish)
                                 "Nombre guardado solo en el teléfono. Conéctate al nodo o usa Config remota."
                             else
                                 "Name saved on phone only. Connect to that node or use Remote Config.",
                             duration = SnackbarDuration.Long
+                        )
+                        else -> AppUiFeedback.show(
+                            t("Node renamed.", appLanguage),
+                            duration = SnackbarDuration.Short
                         )
                     }
                     onDismiss()

@@ -45,10 +45,15 @@ PB_BIND(aethermesh_DeliveryStatus, aethermesh_DeliveryStatus, AUTO)
 PB_BIND(aethermesh_NodeConfig, aethermesh_NodeConfig, AUTO)
 
 
+PB_BIND(aethermesh_ConfigResult, aethermesh_ConfigResult, AUTO)
+
+
 PB_BIND(aethermesh_AuthRequest, aethermesh_AuthRequest, AUTO)
 
 
 PB_BIND(aethermesh_AuthResponse, aethermesh_AuthResponse, AUTO)
+
+
 
 
 

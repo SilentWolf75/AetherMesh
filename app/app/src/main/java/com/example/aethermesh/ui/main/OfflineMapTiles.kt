@@ -6,7 +6,6 @@ import org.osmdroid.tileprovider.MapTileProviderBasic
 import org.osmdroid.tileprovider.modules.OfflineTileProvider
 import org.osmdroid.tileprovider.tilesource.FileBasedTileSource
 import org.osmdroid.tileprovider.tilesource.ITileSource
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.tileprovider.util.SimpleRegisterReceiver
 import org.osmdroid.views.MapView
 import java.io.File
@@ -47,10 +46,15 @@ object OfflineMapTiles {
     }
 
     /**
-     * Apply offline tiles when an archive is present; otherwise use online MAPNIK/Carto.
+     * Apply offline tiles when an archive is present; otherwise use the selected online basemap.
      * @return true if offline provider is active
      */
-    fun applyTileSource(mapView: MapView, context: Context, darkOnline: Boolean): Boolean {
+    fun applyTileSource(
+        mapView: MapView,
+        context: Context,
+        basemap: MapBasemap = MapBasemap.load(context)
+    ): Boolean {
+        OsmMapConfig.configure(context)
         val offline = archiveFile(context)
         if (offline.exists() && offline.length() > 0L) {
             try {
@@ -58,7 +62,7 @@ object OfflineMapTiles {
                     SimpleRegisterReceiver(context),
                     arrayOf(offline)
                 )
-                // Zip folders rarely match MAPNIK/Carto names — load any tiles in the archive.
+                // Zip folders rarely match online source names — load any tiles in the archive.
                 provider.archives?.forEach { it.setIgnoreTileSource(true) }
                 mapView.setTileProvider(provider)
                 val tileSource = resolveOfflineTileSource(provider, offline)
@@ -69,19 +73,18 @@ object OfflineMapTiles {
                 Log.e(TAG, "Failed to enable offline tiles; falling back to online", e)
             }
         }
-        applyOnlineTileSource(mapView, context, darkOnline)
+        applyOnlineTileSource(mapView, context, basemap)
         return false
     }
 
-    fun applyOnlineTileSource(mapView: MapView, context: Context, darkOnline: Boolean) {
+    fun applyOnlineTileSource(mapView: MapView, context: Context, basemap: MapBasemap) {
+        OsmMapConfig.configure(context)
         try {
             mapView.setTileProvider(MapTileProviderBasic(context))
         } catch (e: Exception) {
             Log.w(TAG, "Could not reset online tile provider", e)
         }
-        val source: ITileSource =
-            if (darkOnline) cartoDarkTileSource() else TileSourceFactory.MAPNIK
-        mapView.setTileSource(source)
+        mapView.setTileSource(basemap.tileSource())
         mapView.overlayManager.tilesOverlay.setColorFilter(null)
     }
 

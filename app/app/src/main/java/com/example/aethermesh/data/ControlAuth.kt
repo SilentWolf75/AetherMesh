@@ -66,6 +66,12 @@ object ControlAuth {
         output.write(if (config.applyNameOnly) 1 else 0)
         output.putU32(config.meshHopLimit.toLong())
         output.putU32(config.rebroadcastTxdelayX100.toLong())
+        output.write(if (config.requestReport) 1 else 0)
+        output.putU32(config.applyMask.toLong())
+        val shortName = config.nodeShortName.takeUtf8Bytes(4).toByteArray(Charsets.UTF_8)
+        output.write(shortName.size)
+        output.write(shortName)
+        output.putU32(config.gpsDutyIntervalSecs.toLong())
         return output.toByteArray()
     }
 

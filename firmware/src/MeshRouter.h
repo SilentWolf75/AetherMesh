@@ -13,6 +13,9 @@
 #define MAX_PENDING_REBROADCASTS 6
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
+#define MAX_CHANNEL_RECEIPTS 4
+#define MAX_CHANNEL_HEARERS 16
+#define CHANNEL_RECEIPT_TTL_MS 120000UL
 #define SEEN_PACKET_TIMEOUT_MS 120000
 // Direct-range (_D) PONGs: a few CAD-skipped copies after each PING.
 // startTransmit() returns before TX completes — spacing MUST include the
@@ -29,6 +32,8 @@
 #define STORE_FORWARD_RETRY_MS 60000UL
 #define ROUTE_DISCOVERY_COOLDOWN_MS 5000
 #define PROXY_ROUTE_MAX_AGE_MS 60000
+// Hard cap so a forgotten range-test START cannot soft-stall a leave-behind node.
+#define QUIET_MODE_MAX_MS (5UL * 60UL * 1000UL)
 
 struct RouteEntry {
     uint32_t targetId;
@@ -65,6 +70,17 @@ struct PendingAck {
     uint32_t expiresAt;
     uint8_t retriesLeft;
     bool stored;
+    bool active;
+};
+
+// Locally-originated channel/broadcast text awaiting optional hearer ACKs.
+// Unlike PendingAck, this does not retransmit on timeout — it only aggregates
+// unique ACK senders and reports HEARD counts to the companion app.
+struct ChannelReceiptTrack {
+    uint32_t packetId;
+    uint32_t hearers[MAX_CHANNEL_HEARERS];
+    uint8_t heardCount;
+    uint32_t expiresAt;
     bool active;
 };
 
@@ -120,7 +136,7 @@ public:
     void onReceivedTextMessage(void (*callback)(uint32_t senderId, const char* text));
     void onReceivedTelemetry(void (*callback)(uint32_t senderId, uint8_t battery, float lat, float lon));
     void onReceivedConfig(void (*callback)(const aethermesh_MeshPacket& packet));
-    void onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr));
+    void onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId));
     
     // Routing Table Diagnostics
     uint32_t getLocalId() { return localNodeId; }
@@ -129,6 +145,7 @@ public:
 
     // Quiet mesh during phone-driven direct range tests: pause store-forward
     // retries and expose session counters via MeshDiagnostics.
+    // Auto-clears after QUIET_MODE_MAX_MS; callers should also clear on BLE disconnect.
     void setQuietMode(bool enabled);
     bool isQuietMode() const { return quietMode; }
     void resetRangeTestCounters();
@@ -155,6 +172,7 @@ private:
     uint8_t seenPacketsIndex;
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
+    ChannelReceiptTrack channelReceipts[MAX_CHANNEL_RECEIPTS];
     PendingPongReply pendingPongs[MAX_PENDING_PONGS];
     RouteDiscoveryState routeDiscoveries[6];
     uint32_t relayedPackets;
@@ -169,12 +187,13 @@ private:
     uint32_t rangePongsSent;
     uint32_t rangePongTxFailures;
     bool quietMode;
+    uint32_t quietModeStartedAt;
     
     // Telemetry/text callbacks
     void (*textCallback)(uint32_t senderId, const char* text);
     void (*telemetryCallback)(uint32_t senderId, uint8_t battery, float lat, float lon);
     void (*configCallback)(const aethermesh_MeshPacket& packet);
-    void (*deliveryStatusCallback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr);
+    void (*deliveryStatusCallback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId);
     
     // Private Helpers
     void addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric);
@@ -203,8 +222,10 @@ private:
     // ACK/retransmit helpers
     void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
     void trackForAck(const aethermesh_MeshPacket& packet);
+    void trackChannelReceipt(uint32_t packetId);
+    void noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId, float ackRssi = 0.0f, float ackSnr = 0.0f);
     void clearPendingAck(uint32_t ackedPacketId, float ackRssi = 0.0f, float ackSnr = 0.0f);
-    void emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi = 0.0f, float ackSnr = 0.0f);
+    void emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi = 0.0f, float ackSnr = 0.0f, uint32_t heardCount = 0, uint32_t fromNodeId = 0);
 
     void maybeQueuePongForPingText(const aethermesh_MeshPacket& packet, float rssi, float snr);
     void queuePongReply(uint32_t recipientId, const char* pingId, float rssi, float snr, bool directOnly);

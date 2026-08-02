@@ -42,6 +42,57 @@ struct NodeSettings {
     bool regionConfigured; // v10+: user confirmed LoRa region
     uint32_t meshHopLimit; // v11+: 1–8, 0→default 4
     uint32_t rebroadcastTxdelayX100; // v11+: 50–200, 0→100
+    char shortName[5]; // v12+: 4-char badge label + NUL
+    uint32_t gpsDutyIntervalSecs; // v13+: wake period for gps_mode==2
+};
+
+// v12 layout (no gpsDutyIntervalSecs) for InternalFS migration.
+struct NodeSettingsV12 {
+    uint32_t version;
+    char name[17];
+    uint32_t sf;
+    float bw;
+    int32_t txPower;
+    uint32_t region;
+    char password[33];
+    uint32_t role;
+    uint32_t telemetryInterval;
+    uint32_t screenTimeoutSecs;
+    bool powerSaveMode;
+    uint32_t positionPrecisionM;
+    uint32_t gpsMode;
+    bool fixedPosition;
+    float fixedLat;
+    float fixedLon;
+    int32_t fixedAlt;
+    bool regionConfigured;
+    uint32_t meshHopLimit;
+    uint32_t rebroadcastTxdelayX100;
+    char shortName[5];
+};
+
+// v11 layout (no shortName) for InternalFS migration.
+struct NodeSettingsV11 {
+    uint32_t version;
+    char name[17];
+    uint32_t sf;
+    float bw;
+    int32_t txPower;
+    uint32_t region;
+    char password[33];
+    uint32_t role;
+    uint32_t telemetryInterval;
+    uint32_t screenTimeoutSecs;
+    bool powerSaveMode;
+    uint32_t positionPrecisionM;
+    uint32_t gpsMode;
+    bool fixedPosition;
+    float fixedLat;
+    float fixedLon;
+    int32_t fixedAlt;
+    bool regionConfigured;
+    uint32_t meshHopLimit;
+    uint32_t rebroadcastTxdelayX100;
 };
 
 // v9 layout (without regionConfigured) for InternalFS migration.
@@ -773,6 +824,7 @@ void updateChargingState(float voltage) {
 
 // Node Settings and NVS Configuration
 char nodeCustomName[17] = ""; // Max 16 chars + null terminator
+char nodeShortName[5] = "";   // Max 4 chars + null terminator (badge)
 char nodePassword[33] = "";   // Max 32 chars + null terminator
 bool isBleClientAuthenticated = false;
 
@@ -796,10 +848,17 @@ bool powerSaveMode = false;
 // Persisted by saveSettings() directly from this global (not a parameter) so a
 // call site can't accidentally reset it by omitting a trailing argument.
 uint32_t positionPrecisionM = 0;
-// GPS power mode: 0 = onboard GNSS powered (default), 1 = off to save power
-// (~25% of total draw; position falls back to phone-shared GPS). Persisted
-// from the global by saveSettings(), same rationale as positionPrecisionM.
+// GPS power mode: 0 = always on, 1 = always off, 2 = duty-cycle (wake for a
+// fix every gpsDutyIntervalSecs, then power down). Persisted from globals.
 uint32_t gpsMode = 0;
+uint32_t gpsDutyIntervalSecs = 900; // default 15 minutes between wakes
+static constexpr uint32_t GPS_DUTY_FIX_TIMEOUT_MS = 90000UL;
+static constexpr uint32_t GPS_DUTY_MIN_INTERVAL_SECS = 300;  // 5 min
+static constexpr uint32_t GPS_DUTY_MAX_INTERVAL_SECS = 3600; // 60 min
+static bool gpsRailPowered = false;
+static uint8_t gpsDutyState = 0; // 0 = sleeping, 1 = acquiring
+static uint32_t gpsDutyWakeAtMs = 0;
+static uint32_t gpsDutyOnSinceMs = 0;
 float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
 bool hasInheritedLocation = false;
@@ -808,11 +867,97 @@ bool hasOnboardGps = true;
 uint32_t totalGpsBytesReceived = 0;
 bool gpsChecked = false;
 static constexpr uint32_t GPS_DETECT_TIMEOUT_MS = 15000;
+#if defined(RAK4631) || defined(RAK3401_1W)
+// WisBlock GPS modules differ by unit:
+//   RAK1910 (MAX-7Q)  — UART NMEA, factory default often 4800 baud
+//   RAK12500 (ZOE-M8Q)— UART and/or I2C NMEA at 0x42
+// Never feed both into TinyGPS at once — blind I2C reads corrupt the parser.
+static uint32_t uartGpsBytes = 0;
+static uint32_t i2cGpsBytes = 0;
+static uint32_t gpsUartBaud = 9600;
+static uint32_t gpsUartOnSinceMs = 0;
+static uint8_t gpsBaudProbePhase = 0; // 0=try 9600, 1=try 4800, 2=locked
+static uint8_t gpsIfaceMask = 0;     // bit0=UART, bit1=I2C
+static uint8_t gpsActiveIface = 0;   // 1=UART only, 2=I2C only (chosen after probe)
+static char gpsNmeaSample[100] = "";
+static char gpsNmeaBuilding[100];
+static uint8_t gpsNmeaBuildingLen = 0;
+
+static void noteGpsNmeaChar(char c) {
+    if (c == '$') {
+        gpsNmeaBuildingLen = 0;
+    }
+    if (gpsNmeaBuildingLen < sizeof(gpsNmeaBuilding) - 1) {
+        gpsNmeaBuilding[gpsNmeaBuildingLen++] = c;
+    }
+    if (c == '\n' && gpsNmeaBuildingLen > 6) {
+        gpsNmeaBuilding[gpsNmeaBuildingLen] = '\0';
+        // Prefer fix sentences; fall back to GSV (shows sat count).
+        const bool isFixSentence =
+            strstr(gpsNmeaBuilding, "GGA") || strstr(gpsNmeaBuilding, "RMC");
+        const bool isGsv = strstr(gpsNmeaBuilding, "GSV") != nullptr;
+        if (isFixSentence || (isGsv && gpsNmeaSample[0] == '\0')) {
+            // Keep a printable one-line sample (drop CR/LF).
+            size_t n = 0;
+            while (n < sizeof(gpsNmeaSample) - 1 &&
+                   gpsNmeaBuilding[n] != '\0' &&
+                   gpsNmeaBuilding[n] != '\r' &&
+                   gpsNmeaBuilding[n] != '\n') {
+                gpsNmeaSample[n] = gpsNmeaBuilding[n];
+                n++;
+            }
+            gpsNmeaSample[n] = '\0';
+        }
+        gpsNmeaBuildingLen = 0;
+    }
+}
+
+static void beginGpsUart(uint32_t baud) {
+    gpsUartBaud = baud;
+    Serial1.begin(baud);
+    gpsUartOnSinceMs = millis();
+    Serial.printf("GPS UART @ %lu baud\n", (unsigned long)baud);
+}
+
+// u-blox DDC: read available count at 0xFD/0xFE, then drain that many bytes.
+static void pollUbloxI2cNmea() {
+    Wire.beginTransmission(0x42);
+    Wire.write((uint8_t)0xFD);
+    if (Wire.endTransmission(false) != 0) return;
+    if (Wire.requestFrom((uint8_t)0x42, (uint8_t)2) != 2) return;
+    uint16_t available = ((uint16_t)Wire.read() << 8) | (uint16_t)Wire.read();
+    if (available == 0 || available >= 0xFF00) return;
+
+    // Cap per poll so the mesh loop stays responsive.
+    if (available > 128) available = 128;
+    while (available > 0) {
+        uint8_t chunk = (available > 32) ? 32 : (uint8_t)available;
+        uint8_t got = Wire.requestFrom((uint8_t)0x42, chunk);
+        if (got == 0) break;
+        for (uint8_t i = 0; i < got; i++) {
+            char c = (char)Wire.read();
+            if (gps.encode(c)) {
+                // encode() returns true on completed sentence
+            }
+            totalGpsBytesReceived++;
+            i2cGpsBytes++;
+        }
+        available -= got;
+    }
+}
+#endif
 bool fixedPosition = false;
 float fixedLat = 0.0f;
 float fixedLon = 0.0f;
 int32_t fixedAlt = 0;
-static const uint32_t SETTINGS_VERSION = 11;
+static const uint32_t SETTINGS_VERSION = 13;
+
+static uint32_t clampGpsDutyIntervalSecs(uint32_t secs) {
+    if (secs == 0) return 900;
+    if (secs < GPS_DUTY_MIN_INTERVAL_SECS) return GPS_DUTY_MIN_INTERVAL_SECS;
+    if (secs > GPS_DUTY_MAX_INTERVAL_SECS) return GPS_DUTY_MAX_INTERVAL_SECS;
+    return secs;
+}
 
 // OLED message popup state
 char lastMsgText[40] = "";
@@ -825,6 +970,75 @@ bool hasNewMsgPopup = false;
 uint8_t oledPage = 0;
 const uint8_t OLED_PAGE_COUNT = 5; // HOME, GPS, MESSAGES, NODES, SYSTEM
 bool displayIsOn = false;
+
+// Board-specific GNSS rail / UART bring-up. RAK shares WB_IO2 with the OLED
+// slot rail — never cut power while the display is supposed to be on.
+static void setOnboardGpsPowered(bool on) {
+    if (!hasOnboardGps) return;
+#if defined(HELTEC_V4) || defined(HELTEC_V3)
+    pinMode(34, OUTPUT);
+    pinMode(40, OUTPUT);
+    pinMode(42, OUTPUT);
+    if (on) {
+        digitalWrite(34, LOW);   // P-MOSFET enable
+        digitalWrite(40, HIGH);
+        digitalWrite(42, HIGH);
+        if (!gpsRailPowered) {
+            delay(50);
+            Serial1.begin(9600, SERIAL_8N1, 39, 38);
+        }
+    } else {
+        digitalWrite(34, HIGH);
+        digitalWrite(40, LOW);
+        digitalWrite(42, LOW);
+    }
+#elif defined(LILYGO_T_ECHO)
+    pinMode(37, OUTPUT);
+    pinMode(34, OUTPUT);
+    if (on) {
+        digitalWrite(37, HIGH);
+        digitalWrite(34, HIGH);
+        if (!gpsRailPowered) {
+            delay(100);
+            Serial1.setPins(41, 40);
+            Serial1.begin(9600);
+        }
+    } else {
+        digitalWrite(37, LOW);
+        digitalWrite(34, LOW);
+    }
+#elif defined(RAK4631) || defined(RAK3401_1W)
+    pinMode(34, OUTPUT); // WB_IO2 — powers Slot A/B (GPS + OLED share this rail)
+    if (on) {
+        // Do not pulse the rail low while OLED may be using it — just ensure on.
+        digitalWrite(34, HIGH);
+        if (!gpsRailPowered) {
+            delay(800); // RAK12500 cold settle
+            Wire.begin();
+            beginGpsUart(gpsUartBaud);
+            if (gpsBaudProbePhase < 2) gpsBaudProbePhase = 0;
+        }
+    } else if (!displayIsOn) {
+        digitalWrite(34, LOW);
+    }
+#else
+    (void)on;
+#endif
+    gpsRailPowered = on;
+}
+
+static bool gpsHardwareActive() {
+    return gpsMode == 0 || (gpsMode == 2 && gpsDutyState == 1);
+}
+
+static void gpsDutyResetSchedule(uint32_t delayMs = 0) {
+    gpsDutyState = 0;
+    gpsDutyOnSinceMs = 0;
+    gpsDutyWakeAtMs = millis() + delayMs;
+    if (gpsMode == 2) {
+        setOnboardGpsPowered(false);
+    }
+}
 
 // Ring of recently received chat messages for the MESSAGES screen page
 struct RecentMsg { uint32_t sender; char text[40]; uint32_t atMs; };
@@ -868,8 +1082,105 @@ static uint32_t tdeckLastRenderSig = 0;
 #endif
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
-void applyNodeNameOnly(const char* name);
+void applyNodeNameOnly(const char* name, const char* shortName = nullptr);
 void sendNodeConfigReportToPhone();
+void fillNodeConfigSnapshot(aethermesh_NodeConfig& cfg);
+void sendConfigResultTo(uint32_t recipientId, uint32_t requestPacketId,
+                        aethermesh_ConfigResult_Status status, const char* message);
+void sendNodeConfigReportTo(uint32_t recipientId);
+
+// Deferred MCU reset so BLE/config handlers can return cleanly before reboot.
+static uint32_t gPendingResetAtMs = 0;
+static void scheduleMcuReset(uint32_t delayMs) {
+    uint32_t at = millis() + delayMs;
+    if (gPendingResetAtMs == 0 || (int32_t)(at - gPendingResetAtMs) < 0) {
+        gPendingResetAtMs = at;
+    }
+}
+static void servicePendingMcuReset() {
+    if (gPendingResetAtMs == 0) return;
+    if ((int32_t)(millis() - gPendingResetAtMs) < 0) return;
+    Serial.println("Executing scheduled MCU reset...");
+#ifdef ESP32
+    ESP.restart();
+#else
+    sd_nvic_SystemReset();
+#endif
+}
+
+// USB serial: "DEPLOY_LB" applies leave-behind defaults (keeps name/radio/password).
+static void applyLeaveBehindDeployProfile() {
+    nodeRole = 1; // Router (relays mesh traffic)
+    gpsMode = 2;  // Periodic GPS
+    gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(900);
+    powerSaveMode = true;
+    if (telemetryIntervalSec < 300) telemetryIntervalSec = 300;
+    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword,
+                 nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
+    router.setNodeRole(nodeRole);
+    Serial.println("DEPLOY_LB applied: Router + GPS Periodic 15m + power-save + telemetry>=300s");
+    scheduleMcuReset(1500);
+}
+
+static void serviceSerialDeployCommand() {
+    static char cmdBuf[32];
+    static uint8_t cmdLen = 0;
+    while (Serial.available() > 0) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (cmdLen == 0) continue;
+            cmdBuf[cmdLen] = '\0';
+            cmdLen = 0;
+            // Trim trailing spaces/tabs
+            char* end = cmdBuf + strlen(cmdBuf);
+            while (end > cmdBuf && (end[-1] == ' ' || end[-1] == '\t')) {
+                *--end = '\0';
+            }
+            if (strcmp(cmdBuf, "DEPLOY_LB") == 0) {
+                applyLeaveBehindDeployProfile();
+            } else {
+                Serial.printf("Unknown serial cmd: '%s'\n", cmdBuf);
+            }
+        } else if (c >= 32 && c < 127 && cmdLen + 1 < sizeof(cmdBuf)) {
+            cmdBuf[cmdLen++] = c;
+        } else if (c < 32) {
+            // ignore other control chars
+        } else {
+            cmdLen = 0;
+        }
+    }
+}
+
+// Sparse NodeConfig apply_mask bits (must match app ConfigApplyMask).
+static const uint32_t CFG_APPLY_NAME = (1u << 0);
+static const uint32_t CFG_APPLY_SF = (1u << 1);
+static const uint32_t CFG_APPLY_BW = (1u << 2);
+static const uint32_t CFG_APPLY_TX = (1u << 3);
+static const uint32_t CFG_APPLY_REGION = (1u << 4);
+static const uint32_t CFG_APPLY_ROLE = (1u << 5);
+static const uint32_t CFG_APPLY_TELEMETRY = (1u << 6);
+static const uint32_t CFG_APPLY_SCREEN = (1u << 7);
+static const uint32_t CFG_APPLY_POWER_SAVE = (1u << 8);
+static const uint32_t CFG_APPLY_POS_PREC = (1u << 9);
+static const uint32_t CFG_APPLY_GPS_MODE = (1u << 10);
+static const uint32_t CFG_APPLY_FIXED = (1u << 11);
+static const uint32_t CFG_APPLY_HOP = (1u << 12);
+static const uint32_t CFG_APPLY_TXDELAY = (1u << 13);
+
+// Reject null-island / out-of-range fixed beacons (common "unset" mistake).
+static bool isSaneFixedLatLon(float lat, float lon) {
+    if (!(lat >= -90.0f && lat <= 90.0f)) return false;
+    if (!(lon >= -180.0f && lon <= 180.0f)) return false;
+    if (lat == 0.0f && lon == 0.0f) return false;
+    return true;
+}
+
+static void sanitizeFixedPositionGlobals() {
+    if (fixedPosition && !isSaneFixedLatLon(fixedLat, fixedLon)) {
+        Serial.println("Fixed position cleared: lat/lon invalid or (0,0).");
+        fixedPosition = false;
+    }
+}
 
 void loadSettings() {
 #ifdef ESP32
@@ -877,6 +1188,10 @@ void loadSettings() {
     String name = preferences.getString("node_name", "");
     strncpy(nodeCustomName, name.c_str(), sizeof(nodeCustomName) - 1);
     nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+
+    String shortName = preferences.getString("node_short", "");
+    strncpy(nodeShortName, shortName.c_str(), sizeof(nodeShortName) - 1);
+    nodeShortName[sizeof(nodeShortName) - 1] = '\0';
     
     String pass = preferences.getString("node_pass", "");
     strncpy(nodePassword, pass.c_str(), sizeof(nodePassword) - 1);
@@ -903,6 +1218,7 @@ void loadSettings() {
         powerSaveMode = preferences.getBool("power_save", false);
         positionPrecisionM = preferences.getUInt("pos_prec", 0);
         gpsMode = preferences.getUInt("gps_mode", 0);
+        gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(preferences.getUInt("gps_duty", 900));
         fixedPosition = preferences.getBool("fixed_pos", false);
         fixedLat = preferences.getFloat("fixed_lat", 0.0f);
         fixedLon = preferences.getFloat("fixed_lon", 0.0f);
@@ -936,6 +1252,8 @@ void loadSettings() {
     }
     preferences.end();
 
+    sanitizeFixedPositionGlobals();
+
     if (storedVersion != SETTINGS_VERSION) {
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
@@ -955,16 +1273,20 @@ void loadSettings() {
     Serial.printf("  Screen Timeout: %u sec\n", screenTimeoutSecs);
     Serial.printf("  Power Save Mode: %s\n", powerSaveMode ? "ON" : "OFF");
     Serial.printf("  Position Precision: %u m\n", positionPrecisionM);
-    Serial.printf("  GPS Mode: %s\n", (gpsMode == 0) ? "ON" : "OFF (power save)");
+    Serial.printf("  GPS Mode: %s",
+                  (gpsMode == 0) ? "ON" : (gpsMode == 2) ? "DUTY" : "OFF");
+    if (gpsMode == 2) Serial.printf(" (every %us)", (unsigned)gpsDutyIntervalSecs);
+    Serial.println();
     Serial.printf("  Fixed Position: %s (Lat=%.6f, Lon=%.6f, Alt=%d)\n", fixedPosition ? "YES" : "NO", fixedLat, fixedLon, fixedAlt);
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     InternalFS.begin();
-    File file(InternalFS);
     NodeSettings settings = {};
     bool loaded = false;
     bool needsRewrite = false;
-    
-    if (file.open("/settings.bin", FILE_O_READ)) {
+
+    auto tryLoadPath = [&](const char* path) -> bool {
+        File file(InternalFS);
+        if (!file.open(path, FILE_O_READ)) return false;
         size_t n = file.read((uint8_t*)&settings, sizeof(settings));
         file.close();
         if (n == sizeof(settings) && settings.version == SETTINGS_VERSION) {
@@ -992,8 +1314,77 @@ void loadSettings() {
             if (meshHopLimit > 8) meshHopLimit = 4;
             if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
             if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
-            loaded = true;
-        } else if (n >= sizeof(NodeSettingsV9)) {
+            strncpy(nodeShortName, settings.shortName, sizeof(nodeShortName) - 1);
+            nodeShortName[sizeof(nodeShortName) - 1] = '\0';
+            gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(settings.gpsDutyIntervalSecs);
+            return true;
+        }
+        if (n >= sizeof(NodeSettingsV12)) {
+            NodeSettingsV12 v12;
+            memcpy(&v12, &settings, sizeof(v12));
+            if (v12.version == 12) {
+                strncpy(nodeCustomName, v12.name, sizeof(nodeCustomName) - 1);
+                nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+                strncpy(nodePassword, v12.password, sizeof(nodePassword) - 1);
+                nodePassword[sizeof(nodePassword) - 1] = '\0';
+                loraSF = v12.sf;
+                loraBW = v12.bw;
+                loraTxPower = v12.txPower;
+                nodeRegion = v12.region;
+                nodeRole = v12.role;
+                telemetryIntervalSec = v12.telemetryInterval;
+                screenTimeoutSecs = v12.screenTimeoutSecs;
+                powerSaveMode = v12.powerSaveMode;
+                positionPrecisionM = v12.positionPrecisionM;
+                gpsMode = v12.gpsMode;
+                fixedPosition = v12.fixedPosition;
+                fixedLat = v12.fixedLat;
+                fixedLon = v12.fixedLon;
+                fixedAlt = v12.fixedAlt;
+                regionConfigured = v12.regionConfigured;
+                meshHopLimit = v12.meshHopLimit ? v12.meshHopLimit : 4;
+                rebroadcastTxdelayX100 = v12.rebroadcastTxdelayX100 ? v12.rebroadcastTxdelayX100 : 100;
+                strncpy(nodeShortName, v12.shortName, sizeof(nodeShortName) - 1);
+                nodeShortName[sizeof(nodeShortName) - 1] = '\0';
+                gpsDutyIntervalSecs = 900;
+                needsRewrite = true;
+                Serial.printf("Migrated %s v12 -> v13.\n", path);
+                return true;
+            }
+        }
+        if (n >= sizeof(NodeSettingsV11)) {
+            NodeSettingsV11 v11;
+            memcpy(&v11, &settings, sizeof(v11));
+            if (v11.version == 11) {
+                strncpy(nodeCustomName, v11.name, sizeof(nodeCustomName) - 1);
+                nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+                strncpy(nodePassword, v11.password, sizeof(nodePassword) - 1);
+                nodePassword[sizeof(nodePassword) - 1] = '\0';
+                loraSF = v11.sf;
+                loraBW = v11.bw;
+                loraTxPower = v11.txPower;
+                nodeRegion = v11.region;
+                nodeRole = v11.role;
+                telemetryIntervalSec = v11.telemetryInterval;
+                screenTimeoutSecs = v11.screenTimeoutSecs;
+                powerSaveMode = v11.powerSaveMode;
+                positionPrecisionM = v11.positionPrecisionM;
+                gpsMode = v11.gpsMode;
+                fixedPosition = v11.fixedPosition;
+                fixedLat = v11.fixedLat;
+                fixedLon = v11.fixedLon;
+                fixedAlt = v11.fixedAlt;
+                regionConfigured = v11.regionConfigured;
+                meshHopLimit = v11.meshHopLimit ? v11.meshHopLimit : 4;
+                rebroadcastTxdelayX100 = v11.rebroadcastTxdelayX100 ? v11.rebroadcastTxdelayX100 : 100;
+                nodeShortName[0] = '\0';
+                gpsDutyIntervalSecs = 900;
+                needsRewrite = true;
+                Serial.printf("Migrated %s v11 -> v13.\n", path);
+                return true;
+            }
+        }
+        if (n >= sizeof(NodeSettingsV9)) {
             NodeSettingsV9 v9;
             memcpy(&v9, &settings, sizeof(v9));
             if (v9.version == 9 || v9.version == 10) {
@@ -1015,22 +1406,30 @@ void loadSettings() {
                 fixedLat = v9.fixedLat;
                 fixedLon = v9.fixedLon;
                 fixedAlt = v9.fixedAlt;
-                regionConfigured = (v9.version >= 10) ? true : true; // grandfather
-                // Prefer regionConfigured from v10 file if we read enough bytes
-                if (v9.version == 10 && n >= sizeof(NodeSettingsV9) + sizeof(bool)) {
-                    // Already grandfathered; keep true for upgrades from field units
-                }
+                regionConfigured = true; // grandfather pre-v11 field units
                 meshHopLimit = 4;
                 rebroadcastTxdelayX100 = 100;
-                loaded = true;
+                nodeShortName[0] = '\0';
+                gpsDutyIntervalSecs = 900;
                 needsRewrite = true;
-                Serial.printf("Migrated settings.bin v%u -> v11.\n", v9.version);
+                Serial.printf("Migrated %s v%u -> v13.\n", path, v9.version);
+                return true;
             }
         }
+        return false;
+    };
+
+    // Prefer primary; fall back to .bak if a prior power-loss left .bin corrupt/missing.
+    loaded = tryLoadPath("/settings.bin");
+    if (!loaded) {
+        Serial.println("settings.bin missing/corrupt — trying settings.bak");
+        loaded = tryLoadPath("/settings.bak");
+        if (loaded) needsRewrite = true;
     }
     
     if (!loaded) {
         nodeCustomName[0] = '\0';
+        nodeShortName[0] = '\0';
         nodePassword[0] = '\0';
         loraSF = 11;
         loraBW = 125.0f;
@@ -1051,6 +1450,8 @@ void loadSettings() {
         fixedAlt = 0;
         needsRewrite = true;
     }
+
+    sanitizeFixedPositionGlobals();
     
     if (needsRewrite) {
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
@@ -1070,6 +1471,10 @@ void loadSettings() {
     Serial.print("  Screen Timeout: "); Serial.print(screenTimeoutSecs); Serial.println(" sec");
     Serial.print("  Power Save Mode: "); Serial.println(powerSaveMode ? "ON" : "OFF");
     Serial.print("  Position Precision: "); Serial.print(positionPrecisionM); Serial.println(" m");
+    Serial.printf("  GPS Mode: %s",
+                  (gpsMode == 0) ? "ON" : (gpsMode == 2) ? "DUTY" : "OFF");
+    if (gpsMode == 2) Serial.printf(" (every %us)", (unsigned)gpsDutyIntervalSecs);
+    Serial.println();
     Serial.print("  Fixed Position: "); Serial.print(fixedPosition ? "YES" : "NO");
     Serial.print(" (Lat="); Serial.print(fixedLat, 6); Serial.print(", Lon="); Serial.print(fixedLon, 6);
     Serial.print(", Alt="); Serial.print(fixedAlt); Serial.println(")");
@@ -1091,9 +1496,11 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     telemetryIntervalSec = telemetryInterval; // Update local global variable
     screenTimeoutSecs = screenTimeout; // Update local global variable
     powerSaveMode = powerSave; // Update local global variable
+    sanitizeFixedPositionGlobals();
 #ifdef ESP32
     preferences.begin("aethermesh", false); // Read-write mode
     preferences.putString("node_name", name);
+    preferences.putString("node_short", nodeShortName);
     preferences.putUInt("lora_sf", sf);
     preferences.putFloat("lora_bw", bw);
     preferences.putInt("lora_tx_power", txPower);
@@ -1108,6 +1515,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
     preferences.putUInt("pos_prec", positionPrecisionM);
     preferences.putUInt("gps_mode", gpsMode);
+    preferences.putUInt("gps_duty", gpsDutyIntervalSecs);
     preferences.putBool("fixed_pos", fixedPosition);
     preferences.putFloat("fixed_lat", fixedLat);
     preferences.putFloat("fixed_lon", fixedLon);
@@ -1117,48 +1525,79 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.end();
     Serial.println("Saved settings to NVS.");
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+    // Atomic commit: write temp → rotate previous to .bak → rename temp to .bin.
+    // LittleFS rename is atomic even across power loss (unlike delete-then-write).
+    sanitizeFixedPositionGlobals();
     InternalFS.begin();
-    InternalFS.remove("/settings.bin"); // Overwrite by deleting first
-    File file(InternalFS);
-    if (file.open("/settings.bin", FILE_O_WRITE)) {
-        NodeSettings settings;
-        settings.version = SETTINGS_VERSION;
-        strncpy(settings.name, name, sizeof(settings.name) - 1);
-        settings.name[sizeof(settings.name) - 1] = '\0';
-        settings.sf = sf;
-        settings.bw = bw;
-        settings.txPower = txPower;
-        settings.region = region;
-        strncpy(settings.password, password, sizeof(settings.password) - 1);
-        settings.password[sizeof(settings.password) - 1] = '\0';
-        settings.role = role;
-        settings.telemetryInterval = telemetryInterval;
-        settings.screenTimeoutSecs = screenTimeout;
-        settings.powerSaveMode = powerSave;
-        // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
-        settings.positionPrecisionM = positionPrecisionM;
-        settings.gpsMode = gpsMode;
-        settings.fixedPosition = fixedPosition;
-        settings.fixedLat = fixedLat;
-        settings.fixedLon = fixedLon;
-        settings.fixedAlt = fixedAlt;
-        settings.regionConfigured = regionConfigured;
-        settings.meshHopLimit = meshHopLimit;
-        settings.rebroadcastTxdelayX100 = rebroadcastTxdelayX100;
+    NodeSettings settings;
+    settings.version = SETTINGS_VERSION;
+    strncpy(settings.name, name, sizeof(settings.name) - 1);
+    settings.name[sizeof(settings.name) - 1] = '\0';
+    settings.sf = sf;
+    settings.bw = bw;
+    settings.txPower = txPower;
+    settings.region = region;
+    strncpy(settings.password, password, sizeof(settings.password) - 1);
+    settings.password[sizeof(settings.password) - 1] = '\0';
+    settings.role = role;
+    settings.telemetryInterval = telemetryInterval;
+    settings.screenTimeoutSecs = screenTimeout;
+    settings.powerSaveMode = powerSave;
+    // positionPrecisionM/gpsMode are persisted from the globals on purpose (see decls)
+    settings.positionPrecisionM = positionPrecisionM;
+    settings.gpsMode = gpsMode;
+    settings.fixedPosition = fixedPosition;
+    settings.fixedLat = fixedLat;
+    settings.fixedLon = fixedLon;
+    settings.fixedAlt = fixedAlt;
+    settings.regionConfigured = regionConfigured;
+    settings.meshHopLimit = meshHopLimit;
+    settings.rebroadcastTxdelayX100 = rebroadcastTxdelayX100;
+    strncpy(settings.shortName, nodeShortName, sizeof(settings.shortName) - 1);
+    settings.shortName[sizeof(settings.shortName) - 1] = '\0';
+    settings.gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(gpsDutyIntervalSecs);
 
-        file.write((const uint8_t*)&settings, sizeof(settings));
+    InternalFS.remove("/settings.tmp");
+    {
+        File file(InternalFS);
+        if (!file.open("/settings.tmp", FILE_O_WRITE)) {
+            Serial.println("Failed to open settings.tmp for writing.");
+            return;
+        }
+        size_t wrote = file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
-        Serial.println("Saved settings to InternalFS.");
-    } else {
-        Serial.println("Failed to open settings file for writing.");
+        if (wrote != sizeof(settings)) {
+            Serial.println("Incomplete settings.tmp write; keeping previous settings.bin.");
+            InternalFS.remove("/settings.tmp");
+            return;
+        }
     }
+    if (InternalFS.exists("/settings.bin")) {
+        InternalFS.remove("/settings.bak");
+        if (!InternalFS.rename("/settings.bin", "/settings.bak")) {
+            Serial.println("Warning: could not rotate settings.bin → settings.bak");
+        }
+    }
+    if (!InternalFS.rename("/settings.tmp", "/settings.bin")) {
+        Serial.println("Failed to commit settings.bin; restoring from .bak if present.");
+        InternalFS.remove("/settings.tmp");
+        if (InternalFS.exists("/settings.bak")) {
+            InternalFS.rename("/settings.bak", "/settings.bin");
+        }
+        return;
+    }
+    Serial.println("Saved settings to InternalFS (atomic).");
 #endif
 }
 
-void applyNodeNameOnly(const char* name) {
+void applyNodeNameOnly(const char* name, const char* shortName) {
     if (name == nullptr) name = "";
     strncpy(nodeCustomName, name, sizeof(nodeCustomName) - 1);
     nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
+    if (shortName != nullptr) {
+        strncpy(nodeShortName, shortName, sizeof(nodeShortName) - 1);
+        nodeShortName[sizeof(nodeShortName) - 1] = '\0';
+    }
     // Persist via the normal settings writer so ESP32 NVS and nRF InternalFS
     // stay in sync, but keep current radio settings and skip the reboot that
     // a full NodeConfig apply would trigger.
@@ -1166,7 +1605,7 @@ void applyNodeNameOnly(const char* name) {
         nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword,
         nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode
     );
-    Serial.printf("Node name updated to '%s' (no reboot)\n", nodeCustomName);
+    Serial.printf("Node name updated to '%s' / '%s' (no reboot)\n", nodeCustomName, nodeShortName);
 }
 
 // Helper to retrieve unique node ID based on hardware
@@ -1806,8 +2245,10 @@ static void drawTDeckHome() {
         snprintf(gpsText, sizeof(gpsText), "PHONE");
     } else if (!hasOnboardGps) {
         snprintf(gpsText, sizeof(gpsText), "NO GPS");
-    } else if (gpsMode != 0) {
+    } else if (gpsMode == 1) {
         snprintf(gpsText, sizeof(gpsText), "OFF");
+    } else if (gpsMode == 2) {
+        snprintf(gpsText, sizeof(gpsText), gpsDutyState == 1 ? "DUTY…" : "DUTY");
     } else {
         snprintf(gpsText, sizeof(gpsText), "NO LOCK");
     }
@@ -1883,8 +2324,10 @@ static void drawTDeckGpsPage() {
         snprintf(line, sizeof(line), "PHONE SHARED");
     } else if (!hasOnboardGps) {
         snprintf(line, sizeof(line), "NO ONBOARD GPS");
-    } else if (gpsMode != 0) {
+    } else if (gpsMode == 1) {
         snprintf(line, sizeof(line), "GPS OFF");
+    } else if (gpsMode == 2) {
+        snprintf(line, sizeof(line), gpsDutyState == 1 ? "GPS DUTY ACQUIRE" : "GPS DUTY SLEEP");
     } else {
         snprintf(line, sizeof(line), "NO LOCK");
     }
@@ -2140,12 +2583,20 @@ void drawGpsPage() {
         u8g2.setFont(u8g2_font_6x10_tf);
         u8g2.drawStr(0, 47, "Onboard module absent");
         u8g2.drawStr(0, 58, "Share phone GPS in app");
-    } else if (gpsMode != 0) {
+    } else if (gpsMode == 1) {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, "GPS DISABLED");
         u8g2.setFont(u8g2_font_6x10_tf);
         u8g2.drawStr(0, 47, "Off by config (power)");
         u8g2.drawStr(0, 58, "Uses phone GPS if shared");
+    } else if (gpsMode == 2) {
+        u8g2.setFont(u8g2_font_7x14_tf);
+        u8g2.drawStr(0, 32, gpsDutyState == 1 ? "GPS DUTY ON" : "GPS DUTY SLEEP");
+        u8g2.setFont(u8g2_font_6x10_tf);
+        snprintf(line, sizeof(line), "Every %um",
+                 (unsigned)((gpsDutyIntervalSecs + 59) / 60));
+        u8g2.drawStr(0, 47, line);
+        u8g2.drawStr(0, 58, gpsDutyState == 1 ? "Acquiring fix..." : "Waiting for wake");
     } else {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, "NO GPS LOCK");
@@ -2326,8 +2777,10 @@ void drawEchoStatus() {
         snprintf(line, sizeof(line), "Phone GPS:");
         epd.setCursor(6, y); epd.print(line); y += 12;
         snprintf(line, sizeof(line), "%.5f, %.5f", inheritedLat, inheritedLon);
-    } else if (gpsMode != 0) {
+    } else if (gpsMode == 1) {
         snprintf(line, sizeof(line), "GPS: disabled");
+    } else if (gpsMode == 2) {
+        snprintf(line, sizeof(line), gpsDutyState == 1 ? "GPS: duty acquire" : "GPS: duty sleep");
     } else if (!hasOnboardGps) {
         snprintf(line, sizeof(line), "GPS: none (share phone)");
     } else {
@@ -2401,8 +2854,10 @@ void updateDisplay() {
         setBacklight(false);
 #endif
 #if defined(RAK4631) || defined(RAK3401_1W)
-        if (gpsMode != 0) {
-            digitalWrite(34, LOW); // WisBlock slot power off if GPS also disabled
+        // Keep slot rail up while duty-cycle GPS is mid-acquire.
+        if (!gpsHardwareActive()) {
+            digitalWrite(34, LOW);
+            gpsRailPowered = false;
         }
 #endif
         displayIsOn = false;
@@ -2902,6 +3357,73 @@ void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
     }
 }
 
+void fillNodeConfigSnapshot(aethermesh_NodeConfig& cfg) {
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.node_name, nodeCustomName, sizeof(cfg.node_name) - 1);
+    cfg.node_name[sizeof(cfg.node_name) - 1] = '\0';
+    strncpy(cfg.node_short_name, nodeShortName, sizeof(cfg.node_short_name) - 1);
+    cfg.node_short_name[sizeof(cfg.node_short_name) - 1] = '\0';
+    cfg.lora_sf = loraSF;
+    cfg.lora_bw = loraBW;
+    cfg.lora_tx_power = loraTxPower;
+    cfg.region = nodeRegion;
+    cfg.node_role = nodeRole;
+    cfg.telemetry_interval = telemetryIntervalSec;
+    cfg.screen_timeout_secs = screenTimeoutSecs;
+    cfg.power_save_mode = powerSaveMode;
+    cfg.position_precision = positionPrecisionM;
+    cfg.gps_mode = gpsMode;
+    cfg.gps_duty_interval_secs = gpsDutyIntervalSecs;
+    cfg.fixed_position = fixedPosition;
+    cfg.fixed_latitude = fixedLat;
+    cfg.fixed_longitude = fixedLon;
+    cfg.fixed_altitude = fixedAlt;
+    cfg.apply_name_only = false;
+    cfg.report_only = true;
+    cfg.region_configured = regionConfigured;
+    cfg.mesh_hop_limit = meshHopLimit;
+    cfg.rebroadcast_txdelay_x100 = rebroadcastTxdelayX100;
+    cfg.request_report = false;
+    cfg.apply_mask = 0;
+}
+
+void sendConfigResultTo(uint32_t recipientId, uint32_t requestPacketId,
+                        aethermesh_ConfigResult_Status status, const char* message) {
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = recipientId;
+    packet.packet_id = random(1, 0x7FFFFFFF);
+    packet.hop_limit = 4;
+    packet.want_ack = false;
+    packet.prev_hop_id = localNodeId;
+    packet.protocol_version = 2;
+    packet.which_payload = aethermesh_MeshPacket_config_result_tag;
+    packet.payload.config_result.status = status;
+    packet.payload.config_result.request_packet_id = requestPacketId;
+    if (message) {
+        strncpy(packet.payload.config_result.message, message,
+                sizeof(packet.payload.config_result.message) - 1);
+    }
+    router.sendRawPacket(&packet, true);
+    Serial.printf("Sent ConfigResult status=%d to 0x%08X (req %u)\n",
+                  (int)status, recipientId, requestPacketId);
+}
+
+void sendNodeConfigReportTo(uint32_t recipientId) {
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = recipientId;
+    packet.packet_id = random(1, 0x7FFFFFFF);
+    packet.hop_limit = 4;
+    packet.want_ack = false;
+    packet.prev_hop_id = localNodeId;
+    packet.protocol_version = 2;
+    packet.which_payload = aethermesh_MeshPacket_config_tag;
+    fillNodeConfigSnapshot(packet.payload.config);
+    router.sendRawPacket(&packet, true);
+    Serial.printf("Sent NodeConfig report over LoRa to 0x%08X\n", recipientId);
+}
+
 // Push the node's persisted radio/GPS settings to the phone after BLE auth so
 // an app reinstall can hydrate Settings without overwriting the device.
 void sendNodeConfigReportToPhone() {
@@ -2918,29 +3440,7 @@ void sendNodeConfigReportToPhone() {
     packet.prev_hop_id = localNodeId;
     packet.protocol_version = 2;
     packet.which_payload = aethermesh_MeshPacket_config_tag;
-
-    aethermesh_NodeConfig& cfg = packet.payload.config;
-    strncpy(cfg.node_name, nodeCustomName, sizeof(cfg.node_name) - 1);
-    cfg.node_name[sizeof(cfg.node_name) - 1] = '\0';
-    cfg.lora_sf = loraSF;
-    cfg.lora_bw = loraBW;
-    cfg.lora_tx_power = loraTxPower;
-    cfg.region = nodeRegion;
-    cfg.node_role = nodeRole;
-    cfg.telemetry_interval = telemetryIntervalSec;
-    cfg.screen_timeout_secs = screenTimeoutSecs;
-    cfg.power_save_mode = powerSaveMode;
-    cfg.position_precision = positionPrecisionM;
-    cfg.gps_mode = gpsMode;
-    cfg.fixed_position = fixedPosition;
-    cfg.fixed_latitude = fixedLat;
-    cfg.fixed_longitude = fixedLon;
-    cfg.fixed_altitude = fixedAlt;
-    cfg.apply_name_only = false;
-    cfg.report_only = true;
-    cfg.region_configured = regionConfigured;
-    cfg.mesh_hop_limit = meshHopLimit;
-    cfg.rebroadcast_txdelay_x100 = rebroadcastTxdelayX100;
+    fillNodeConfigSnapshot(packet.payload.config);
 
     uint8_t buffer[256];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
@@ -2952,7 +3452,7 @@ void sendNodeConfigReportToPhone() {
     }
 }
 
-void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr) {
+void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId) {
     if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
         return;
     }
@@ -2972,8 +3472,10 @@ void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aetherme
     statusPacket.payload.delivery_status.state = state;
     statusPacket.payload.delivery_status.reason = reason;
     statusPacket.payload.delivery_status.retry_count = retryCount;
+    statusPacket.payload.delivery_status.heard_count = heardCount;
+    statusPacket.payload.delivery_status.from_node_id = fromNodeId;
 
-    uint8_t buffer[96];
+    uint8_t buffer[128];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     if (pb_encode(&stream, aethermesh_MeshPacket_fields, &statusPacket)) {
         bleMgr.sendToPhone(buffer, stream.bytes_written);
@@ -3347,8 +3849,12 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         // Intercept NodeConfig settings ONLY when addressed to this node. A config
         // aimed at a different node (remote config) must fall through to the LoRa
         // send path below, not reconfigure/reboot the phone's own connected node.
+        // recipient 0 = explicit local BLE apply. Also accept a 16-bit advertising
+        // ID mismatch (phone sometimes addresses AetherMesh-XXXX before auth).
         bool configForLocal = (packet.recipient_id == localNodeId ||
-                               packet.recipient_id == 0);
+                               packet.recipient_id == 0 ||
+                               (packet.recipient_id <= 0xFFFFu &&
+                                packet.recipient_id == (localNodeId & 0xFFFFu)));
         if (packet.which_payload == aethermesh_MeshPacket_config_tag && configForLocal) {
             Serial.println("Received local NodeConfig packet from phone via BLE.");
 
@@ -3359,16 +3865,31 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             }
 
             if (packet.payload.config.apply_name_only) {
-                applyNodeNameOnly(packet.payload.config.node_name);
+                const char* sn = packet.payload.config.node_short_name;
+                applyNodeNameOnly(packet.payload.config.node_name,
+                                  (sn != nullptr && sn[0] != '\0') ? sn : nullptr);
                 return;
+            }
+
+            if (packet.payload.config.node_short_name[0] != '\0') {
+                strncpy(nodeShortName, packet.payload.config.node_short_name, sizeof(nodeShortName) - 1);
+                nodeShortName[sizeof(nodeShortName) - 1] = '\0';
             }
 
             positionPrecisionM = packet.payload.config.position_precision;
             gpsMode = packet.payload.config.gps_mode;
+            if (packet.payload.config.gps_duty_interval_secs > 0) {
+                gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(
+                    packet.payload.config.gps_duty_interval_secs);
+            }
+            if (gpsMode == 2) gpsDutyResetSchedule(2000);
+            else if (gpsMode == 0) setOnboardGpsPowered(true);
+            else setOnboardGpsPowered(false);
             fixedPosition = packet.payload.config.fixed_position;
             fixedLat = packet.payload.config.fixed_latitude;
             fixedLon = packet.payload.config.fixed_longitude;
             fixedAlt = packet.payload.config.fixed_altitude;
+            sanitizeFixedPositionGlobals();
             // Any full Settings / first-setup apply confirms the LoRa region.
             regionConfigured = true;
             nodeRegion = packet.payload.config.region;
@@ -3382,7 +3903,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                 if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
             }
 
-            // Save to NVS
+            // Save to NVS / InternalFS
             saveSettings(
                 packet.payload.config.node_name,
                 packet.payload.config.lora_sf,
@@ -3395,14 +3916,11 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                 packet.payload.config.screen_timeout_secs,
                 packet.payload.config.power_save_mode
             );
-            
-            Serial.println("Applying settings and restarting MCU in 1.5 seconds...");
-            delay(1500);
-#ifdef ESP32
-            ESP.restart();
-#else
-            sd_nvic_SystemReset();
-#endif
+
+            // Defer reset to main loop — blocking delay/reset inside the BLE
+            // drain path can stall SoftDevice / skip the reboot entirely.
+            Serial.println("Settings saved. Scheduling MCU restart in 1.5 seconds...");
+            scheduleMcuReset(1500);
             return;
         }
 
@@ -3529,6 +4047,11 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
     Serial.print("Received RemoteConfig packet over LoRa from 0x");
     Serial.println(senderId, HEX);
 
+    if (config.report_only) {
+        Serial.println("Ignoring report_only NodeConfig on LoRa apply path.");
+        return;
+    }
+
     bool authenticated = false;
     if (packet.protocol_version >= 2) {
         authenticated = packetauth::verifyConfig(packet, nodePassword) &&
@@ -3538,54 +4061,139 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
                         strcmp(config.config_password, nodePassword) == 0;
     }
 
-    if (authenticated) {
-        Serial.println("Remote control authentication verified. Applying configuration...");
+    if (!authenticated) {
+        Serial.println("Remote config rejected: invalid authentication or replayed counter.");
+        sendConfigResultTo(senderId, packet.packet_id,
+                           aethermesh_ConfigResult_Status_AUTH_FAILED, "Auth failed");
+        return;
+    }
 
-        if (config.apply_name_only) {
-            applyNodeNameOnly(config.node_name);
+    Serial.println("Remote control authentication verified.");
+
+    if (config.request_report) {
+        sendNodeConfigReportTo(senderId);
+        sendConfigResultTo(senderId, packet.packet_id,
+                           aethermesh_ConfigResult_Status_REPORT_OK, "Report sent");
+        return;
+    }
+
+    if (config.apply_name_only) {
+        const char* sn = config.node_short_name;
+        applyNodeNameOnly(config.node_name, (sn != nullptr && sn[0] != '\0') ? sn : nullptr);
+        sendConfigResultTo(senderId, packet.packet_id,
+                           aethermesh_ConfigResult_Status_APPLIED, "Name updated");
+        return;
+    }
+
+    // apply_mask == 0 → legacy full apply; non-zero → sparse remote update.
+    const uint32_t mask = (config.apply_mask == 0) ? 0xFFFFFFFFu : config.apply_mask;
+    const bool sparse = (config.apply_mask != 0);
+
+    if ((mask & CFG_APPLY_ROLE) && config.node_role == 2 && nodeRole != 2) {
+        Serial.println("Remote config: refusing Role 2 (would disable BLE).");
+        if (sparse && mask == CFG_APPLY_ROLE) {
+            sendConfigResultTo(senderId, packet.packet_id,
+                               aethermesh_ConfigResult_Status_REJECTED_ROLE2, "Role 2 blocked");
             return;
         }
-
-        positionPrecisionM = config.position_precision;
-        gpsMode = config.gps_mode;
-        fixedPosition = config.fixed_position;
-        fixedLat = config.fixed_latitude;
-        fixedLon = config.fixed_longitude;
-        fixedAlt = config.fixed_altitude;
-        regionConfigured = true;
-        nodeRegion = config.region;
-        if (config.mesh_hop_limit > 0) {
-            meshHopLimit = config.mesh_hop_limit > 8 ? 8 : config.mesh_hop_limit;
-        }
-        if (config.rebroadcast_txdelay_x100 > 0) {
-            rebroadcastTxdelayX100 = config.rebroadcast_txdelay_x100;
-            if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
-            if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
-        }
-
-        saveSettings(
-            config.node_name,
-            config.lora_sf,
-            config.lora_bw,
-            config.lora_tx_power,
-            config.region,
-            nodePassword,
-            config.node_role,
-            config.telemetry_interval,
-            config.screen_timeout_secs,
-            config.power_save_mode
-        );
-
-        Serial.println("Remote settings applied. Restarting MCU in 1.5 seconds...");
-        delay(1500);
-#ifdef ESP32
-        ESP.restart();
-#else
-        sd_nvic_SystemReset();
-#endif
-    } else {
-        Serial.println("Remote config rejected: invalid authentication or replayed counter.");
+        // Fall through: apply other bits, keep current role.
     }
+
+    if ((mask & CFG_APPLY_FIXED) && config.fixed_position &&
+        !isSaneFixedLatLon(config.fixed_latitude, config.fixed_longitude)) {
+        Serial.println("Remote config: refusing invalid fixed position.");
+        if (sparse && mask == CFG_APPLY_FIXED) {
+            sendConfigResultTo(senderId, packet.packet_id,
+                               aethermesh_ConfigResult_Status_REJECTED_FIXED_POS, "Bad fixed pos");
+            return;
+        }
+    }
+
+    char applyName[17];
+    strncpy(applyName, nodeCustomName, sizeof(applyName) - 1);
+    applyName[sizeof(applyName) - 1] = '\0';
+    uint32_t applySf = loraSF;
+    float applyBw = loraBW;
+    int32_t applyTx = loraTxPower;
+    uint32_t applyRegion = nodeRegion;
+    uint32_t applyRole = nodeRole;
+    uint32_t applyTelemetry = telemetryIntervalSec;
+    uint32_t applyScreen = screenTimeoutSecs;
+    bool applyPowerSave = powerSaveMode;
+
+    if (mask & CFG_APPLY_NAME) {
+        strncpy(applyName, config.node_name, sizeof(applyName) - 1);
+        applyName[sizeof(applyName) - 1] = '\0';
+        if (config.node_short_name[0] != '\0') {
+            strncpy(nodeShortName, config.node_short_name, sizeof(nodeShortName) - 1);
+            nodeShortName[sizeof(nodeShortName) - 1] = '\0';
+        }
+    }
+    if (mask & CFG_APPLY_SF) applySf = config.lora_sf;
+    if (mask & CFG_APPLY_BW) applyBw = config.lora_bw;
+    if (mask & CFG_APPLY_TX) applyTx = config.lora_tx_power;
+    if (mask & CFG_APPLY_REGION) {
+        applyRegion = config.region;
+        regionConfigured = true;
+    }
+    if (mask & CFG_APPLY_ROLE) {
+        applyRole = config.node_role;
+        if (applyRole == 2 && nodeRole != 2) {
+            applyRole = nodeRole;
+        }
+    }
+    if (mask & CFG_APPLY_TELEMETRY) applyTelemetry = config.telemetry_interval;
+    if (mask & CFG_APPLY_SCREEN) applyScreen = config.screen_timeout_secs;
+    if (mask & CFG_APPLY_POWER_SAVE) applyPowerSave = config.power_save_mode;
+    if (mask & CFG_APPLY_POS_PREC) positionPrecisionM = config.position_precision;
+    if (mask & CFG_APPLY_GPS_MODE) {
+        gpsMode = config.gps_mode;
+        if (config.gps_duty_interval_secs > 0) {
+            gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(config.gps_duty_interval_secs);
+        }
+        if (gpsMode == 2) gpsDutyResetSchedule(2000);
+        else if (gpsMode == 0) setOnboardGpsPowered(true);
+        else setOnboardGpsPowered(false);
+    }
+    if (mask & CFG_APPLY_FIXED) {
+        if (config.fixed_position &&
+            isSaneFixedLatLon(config.fixed_latitude, config.fixed_longitude)) {
+            fixedPosition = true;
+            fixedLat = config.fixed_latitude;
+            fixedLon = config.fixed_longitude;
+            fixedAlt = config.fixed_altitude;
+        } else if (!config.fixed_position) {
+            fixedPosition = false;
+        }
+        // Invalid ON request: leave previous fixed settings unchanged.
+    }
+    if ((mask & CFG_APPLY_HOP) && config.mesh_hop_limit > 0) {
+        meshHopLimit = config.mesh_hop_limit > 8 ? 8 : config.mesh_hop_limit;
+    }
+    if ((mask & CFG_APPLY_TXDELAY) && config.rebroadcast_txdelay_x100 > 0) {
+        rebroadcastTxdelayX100 = config.rebroadcast_txdelay_x100;
+        if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
+        if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
+    }
+    sanitizeFixedPositionGlobals();
+
+    saveSettings(
+        applyName,
+        applySf,
+        applyBw,
+        applyTx,
+        applyRegion,
+        nodePassword,
+        applyRole,
+        applyTelemetry,
+        applyScreen,
+        applyPowerSave
+    );
+
+    sendConfigResultTo(senderId, packet.packet_id,
+                       aethermesh_ConfigResult_Status_APPLIED_REBOOTING, "Rebooting");
+    Serial.println("Remote settings applied. Scheduling MCU restart in 1.5 seconds...");
+    scheduleMcuReset(1500);
 }
 
 // Callback: Router -> Local output (e.g. debugging print)
@@ -3797,72 +4405,28 @@ void setup() {
     echoDisplayReady = true;
 #endif
 
-    // 3. Initialize GPS serial port and power toggle. gps_mode == 1 keeps the
-    // GNSS module UNPOWERED (~25% of total draw saved); position then falls
-    // back to phone-shared GPS automatically.
-#if defined(HELTEC_V4) || defined(HELTEC_V3)
+    // 3. Initialize GPS. Mode 0 = always on, 1 = always off, 2 = duty-cycle.
+    gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(gpsDutyIntervalSecs);
     if (gpsMode == 0) {
-        Serial.println("Initializing GNSS Module (Heltec V4)...");
-        pinMode(34, OUTPUT);
-        digitalWrite(34, LOW);   // Pull GPIO 34 LOW (P-channel MOSFET power enable)
-
-        pinMode(40, OUTPUT);
-        digitalWrite(40, HIGH);  // Wakeup pin (Active HIGH)
-
-        pinMode(42, OUTPUT);
-        digitalWrite(42, HIGH);  // Reset pin (Active HIGH to release reset)
-
-        delay(50);
-        Serial1.begin(9600, SERIAL_8N1, 39, 38); // RX=39, TX=38
+        Serial.println("Initializing GNSS (always on)...");
+        setOnboardGpsPowered(true);
+    } else if (gpsMode == 2) {
+        Serial.printf("GNSS duty-cycle every %u s (fix timeout %lu s).\n",
+                      (unsigned)gpsDutyIntervalSecs,
+                      (unsigned long)(GPS_DUTY_FIX_TIMEOUT_MS / 1000UL));
+        // First wake soon after boot so leave-behind nodes publish a fix quickly.
+        gpsDutyResetSchedule(5000);
     } else {
         Serial.println("GNSS disabled by config (gps_mode=1) - module unpowered.");
-        pinMode(34, OUTPUT);
-        digitalWrite(34, HIGH);  // P-MOSFET off -> GNSS unpowered
-        pinMode(40, OUTPUT);
-        digitalWrite(40, LOW);   // Wakeup inactive
-        pinMode(42, OUTPUT);
-        digitalWrite(42, LOW);   // Hold in reset
+        setOnboardGpsPowered(false);
     }
-#elif defined(LILYGO_T_ECHO)
-    if (gpsMode == 0) {
-        Serial.println("Initializing GNSS Module (Lilygo T-Echo L76K)...");
-        pinMode(37, OUTPUT); // P1.5 GPS reinit/reset (release)
-        pinMode(34, OUTPUT); // P1.2 GPS standby/enable
-        digitalWrite(37, HIGH);
-        digitalWrite(34, HIGH);
-        delay(100);
-        // The generic board profile's Serial1 defaults to the wrong pins; the
-        // T-Echo's L76K UART is RX=41 (P1.9), TX=40 (P1.8).
-        Serial1.setPins(41, 40);
-        Serial1.begin(9600);
-    } else {
-        Serial.println("GNSS disabled by config (gps_mode=1) - module unpowered.");
-        pinMode(37, OUTPUT);
-        pinMode(34, OUTPUT);
-        digitalWrite(37, LOW);
-        digitalWrite(34, LOW);
-    }
-#elif defined(RAK4631) || defined(RAK3401_1W)
-    // WisBlock GPS (RAK1910 UART, or RAK12500 in UART mode). Serial1 is mapped to
-    // the GPS UART by the RAK BSP; WB_IO2 (pin 34) powers the WisBlock sensor slots.
-    if (gpsMode == 0) {
-        Serial.println("Initializing GNSS Module (RAK WisBlock UART & I2C)...");
-        pinMode(34, OUTPUT);
-        digitalWrite(34, HIGH);   // WB_IO2 HIGH -> power the sensor slot rail (incl. GPS)
-        delay(500);               // give the GNSS module time to boot
-        Serial1.begin(9600);      // NMEA @ 9600 baud, BSP-mapped Serial1 pins
-        Wire.begin();             // Initialize I2C for ZOE-M8Q (RAK12500 I2C mode)
-    } else {
-        Serial.println("GNSS disabled by config (gps_mode=1) - sensor rail unpowered.");
-        pinMode(34, OUTPUT);
-        digitalWrite(34, LOW);    // WB_IO2 LOW -> sensor slot rail off
-    }
-#endif
 
     // 4. Initialize Radio Manager
+    // Leave-behind: never hang forever on a cold-boot radio glitch — blink then reboot.
     if (!radioMgr.init()) {
-        Serial.println("Failed to initialize Radio Manager. Halted.");
-        while (1) {
+        Serial.println("Failed to initialize Radio Manager. Rebooting in 8s...");
+        const uint32_t rebootAt = millis() + 8000UL;
+        while ((int32_t)(millis() - rebootAt) < 0) {
 #if defined(RAK4631) || defined(RAK3401_1W)
             // Rapid double-blink to visually indicate Radio init failure
             digitalWrite(LED_GREEN, HIGH);
@@ -3874,9 +4438,14 @@ void setup() {
             digitalWrite(LED_GREEN, LOW);
             delay(600);
 #else
-            delay(1000);
+            delay(200);
 #endif
         }
+#ifdef ESP32
+        ESP.restart();
+#else
+        sd_nvic_SystemReset();
+#endif
     }
     
     // Apply NVS radio parameters
@@ -3924,9 +4493,58 @@ void setup() {
 }
 
 void loop() {
+#if defined(RAK4631) || defined(RAK3401_1W)
+    // Auto-baud + pick ONE feed path. Dual UART+I2C into TinyGPS corrupts sentences.
+    if (gpsHardwareActive() && hasOnboardGps && gpsBaudProbePhase < 2 && gpsRailPowered) {
+        if (gpsBaudProbePhase == 0 && (int32_t)(millis() - gpsUartOnSinceMs) >= 4000) {
+            if (uartGpsBytes >= 16) {
+                gpsBaudProbePhase = 2;
+                gpsIfaceMask |= 0x01;
+                gpsActiveIface = 1; // UART preferred for RAK12500 + RAK1910
+                Serial.printf("GPS: using UART NMEA @ %lu baud.\n", (unsigned long)gpsUartBaud);
+            } else {
+                Serial.println("GPS: no UART@9600 — trying 4800 (RAK1910 default)...");
+                uartGpsBytes = 0;
+                beginGpsUart(4800);
+                gpsBaudProbePhase = 1;
+            }
+        } else if (gpsBaudProbePhase == 1 && (int32_t)(millis() - gpsUartOnSinceMs) >= 4000) {
+            gpsBaudProbePhase = 2;
+            if (uartGpsBytes >= 16) {
+                gpsIfaceMask |= 0x01;
+                gpsActiveIface = 1;
+                Serial.println("GPS: using UART NMEA @ 4800 baud (RAK1910-style).");
+            } else {
+                gpsActiveIface = 2; // fall back to proper u-blox I2C
+                Serial.println("GPS: UART silent — using I2C@0x42 (RAK12500).");
+            }
+        }
+    }
+#endif
+
     // Check if onboard GPS is present (run once after GPS_DETECT_TIMEOUT_MS)
     if (!gpsChecked && millis() > GPS_DETECT_TIMEOUT_MS) {
         gpsChecked = true;
+#if defined(RAK4631) || defined(RAK3401_1W)
+        if (uartGpsBytes >= 16) gpsIfaceMask |= 0x01;
+        if (i2cGpsBytes >= 16) gpsIfaceMask |= 0x02;
+        if (gpsActiveIface == 0) {
+            if (gpsIfaceMask & 0x01) gpsActiveIface = 1;
+            else if (gpsIfaceMask & 0x02) gpsActiveIface = 2;
+        }
+        if (gpsActiveIface == 0 && (gpsMode == 0 || gpsMode == 2) && totalGpsBytesReceived == 0) {
+            hasOnboardGps = false;
+            Serial.println("GPS Check: no UART/I2C NMEA — onboard GPS absent or unpowered.");
+        } else {
+            Serial.printf("GPS Check: active=%s uart_bytes=%lu i2c_bytes=%lu baud=%lu ok=%lu bad=%lu\n",
+                          (gpsActiveIface == 1) ? "UART" : (gpsActiveIface == 2) ? "I2C" : "none",
+                          (unsigned long)uartGpsBytes,
+                          (unsigned long)i2cGpsBytes,
+                          (unsigned long)gpsUartBaud,
+                          (unsigned long)gps.passedChecksum(),
+                          (unsigned long)gps.failedChecksum());
+        }
+#else
         if (gpsMode == 0 && totalGpsBytesReceived == 0) {
             hasOnboardGps = false;
             Serial.println("GPS Check: No serial or I2C bytes received from GNSS module. Concluding onboard GPS is absent.");
@@ -3938,6 +4556,7 @@ void loop() {
             digitalWrite(37, LOW); 
 #endif
         }
+#endif
     }
 
     static uint32_t lastBleActiveTime = millis();
@@ -4115,18 +4734,19 @@ void loop() {
             router.sendText(0xFFFFFFFF, "PING");
             echoNeedsRefresh = true;
         } else if (funcBtnClickCount == 3) {
-            // 3 Clicks: Toggle GPS Module Power
+            // 3 Clicks: Cycle GPS mode On -> Duty -> Off
             if (gpsMode == 0) {
+                gpsMode = 2;
+                gpsDutyResetSchedule(2000);
+                Serial.printf("Func Click 3x -> GPS DUTY every %us\n",
+                              (unsigned)gpsDutyIntervalSecs);
+            } else if (gpsMode == 2) {
                 gpsMode = 1;
-                digitalWrite(37, LOW); // GPS Reset LOW
-                digitalWrite(34, LOW); // GPS Standby LOW
+                setOnboardGpsPowered(false);
                 Serial.println("Func Click 3x -> GPS OFF");
             } else {
                 gpsMode = 0;
-                digitalWrite(37, HIGH);
-                digitalWrite(34, HIGH);
-                Serial1.setPins(41, 40);
-                Serial1.begin(9600);
+                setOnboardGpsPowered(true);
                 Serial.println("Func Click 3x -> GPS ON");
             }
             echoNeedsRefresh = true;
@@ -4165,10 +4785,17 @@ void loop() {
         otaAbort("Transfer timed out");
     }
 
+    serviceSerialDeployCommand();
     radioMgr.loop();
     router.loop();
+    // Always service deferred resets — Role 2 skips BLE but still accepts remote
+    // LoRa config that schedules a reboot after save.
+    servicePendingMcuReset();
     if (nodeRole != 2) {
-        if (bleMgr.isAdvertising) {
+        // Drain phone→node BLE packets while advertising OR connected.
+        // Gating on isAdvertising alone drops settings applies after connect
+        // when advertising was stopped for power-save.
+        if (bleMgr.isAdvertising || bleMgr.isDeviceConnected()) {
             bleMgr.loop();
         }
 
@@ -4187,6 +4814,12 @@ void loop() {
             } else {
                 isBleClientAuthenticated = false;
                 Serial.println("BLE client disconnected.");
+                // Range-test quiet mode is BLE-session scoped — never leave a
+                // remote node soft-stalled after the phone walks away.
+                if (router.isQuietMode()) {
+                    router.setQuietMode(false);
+                    Serial.println("Cleared range-test quiet mode (BLE disconnect).");
+                }
                 if (powerSaveMode) {
                     // Instantly ensure we are advertising, sleep timer starts now
                     if (!bleMgr.isAdvertising) {
@@ -4218,30 +4851,62 @@ void loop() {
     digitalWrite(LED_BLUE, bleMgr.isDeviceConnected() ? HIGH : LOW);
 #endif
 
-    // Read and parse NMEA stream from GPS (skipped entirely when the module
-    // is unpowered by gps_mode=1)
+    // GPS duty-cycle: wake → acquire fix (or timeout) → sleep until next interval.
+    if (gpsMode == 2 && hasOnboardGps) {
+        if (gpsDutyState == 0) {
+            if ((int32_t)(millis() - gpsDutyWakeAtMs) >= 0) {
+                Serial.println("GPS duty: powering on for fix...");
+                setOnboardGpsPowered(true);
+                gpsDutyState = 1;
+                gpsDutyOnSinceMs = millis();
+            }
+        } else {
+            bool gotFix = gps.location.isValid() && gps.location.age() < 5000;
+            bool timedOut = (int32_t)(millis() - gpsDutyOnSinceMs) >= (int32_t)GPS_DUTY_FIX_TIMEOUT_MS;
+            if (gotFix || timedOut) {
+                Serial.printf("GPS duty: %s — sleeping %us.\n",
+                              gotFix ? "fix OK" : "timeout",
+                              (unsigned)gpsDutyIntervalSecs);
+                setOnboardGpsPowered(false);
+                gpsDutyState = 0;
+                gpsDutyWakeAtMs = millis() + (gpsDutyIntervalSecs * 1000UL);
+            }
+        }
+    }
+
+    // Read and parse NMEA while the module is powered (always-on or duty acquire).
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
-    if (gpsMode == 0 && hasOnboardGps) {
-        while (Serial1.available() > 0) {
-            gps.encode(Serial1.read());
-            totalGpsBytesReceived++;
+    if (gpsHardwareActive() && hasOnboardGps) {
+#if defined(RAK4631) || defined(RAK3401_1W)
+        // During baud probe, count UART bytes; after probe, only feed the chosen iface.
+        const bool feedUart = (gpsActiveIface == 0 || gpsActiveIface == 1);
+#else
+        const bool feedUart = true;
+#endif
+        if (feedUart) {
+            while (Serial1.available() > 0) {
+                char c = (char)Serial1.read();
+                gps.encode(c);
+                totalGpsBytesReceived++;
+#if defined(RAK4631) || defined(RAK3401_1W)
+                uartGpsBytes++;
+                noteGpsNmeaChar(c);
+#endif
+            }
+        } else {
+            // Discard UART so TX FIFO doesn't back up while on I2C-only path.
+            while (Serial1.available() > 0) (void)Serial1.read();
         }
     }
 #endif
 
 #if defined(RAK4631) || defined(RAK3401_1W)
-    // Read and parse NMEA stream from I2C for ZOE-M8Q (RAK12500 default I2C address 0x42)
+    // RAK12500: proper u-blox I2C drain — only when UART is not the active feed.
     static uint32_t lastI2CGPSPoll = 0;
-    if (gpsMode == 0 && hasOnboardGps && millis() - lastI2CGPSPoll > 100) {
+    if (gpsHardwareActive() && hasOnboardGps && gpsActiveIface == 2 &&
+        millis() - lastI2CGPSPoll > 100) {
         lastI2CGPSPoll = millis();
-        Wire.requestFrom((uint8_t)0x42, (uint8_t)32);
-        while (Wire.available()) {
-            char c = Wire.read();
-            if (c != (char)0xFF) {
-                gps.encode(c);
-                totalGpsBytesReceived++;
-            }
-        }
+        pollUbloxI2cNmea();
     }
 #endif
 
@@ -4277,6 +4942,22 @@ void loop() {
         lastPrint = millis();
         // Print routing table to serial for monitoring/debug
         router.printRoutingTable();
+
+#if defined(RAK4631) || defined(RAK3401_1W)
+        Serial.printf(
+            "GPS status: valid=%d sats=%lu hdop=%.1f chars=%lu ok=%lu bad=%lu age=%lums iface=%u\n",
+            gps.location.isValid() ? 1 : 0,
+            (unsigned long)gps.satellites.value(),
+            gps.hdop.hdop(),
+            (unsigned long)gps.charsProcessed(),
+            (unsigned long)gps.passedChecksum(),
+            (unsigned long)gps.failedChecksum(),
+            (unsigned long)gps.location.age(),
+            (unsigned)gpsActiveIface);
+        if (gpsNmeaSample[0] != '\0') {
+            Serial.printf("GPS NMEA: %s\n", gpsNmeaSample);
+        }
+#endif
         
         // Periodic battery/solar telemetry broadcast
         // Let's broadcast our telemetry to the mesh based on configured interval

@@ -121,7 +121,7 @@ fun NodeDetailsScreen(
             IconButton(onClick = onDismiss) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
+                    contentDescription = if (appLanguage == "Spanish") "Volver" else "Back",
                     tint = TextLight
                 )
             }
@@ -196,7 +196,7 @@ fun NodeDetailsScreen(
                     if (!sameMeshNodeId(node.nodeId, connectedNodeId)) {
                         ToolRow(
                             icon = Icons.Default.AltRoute,
-                            label = if (appLanguage == "Spanish") "Traceroute" else "Traceroute",
+                            label = if (appLanguage == "Spanish") "Trazado de ruta" else "Traceroute",
                             subtitle = if (appLanguage == "Spanish") "Ruta en vivo hacia este nodo" else "Live forward and return path",
                             onClick = onTraceRoute,
                             trailingRefresh = true

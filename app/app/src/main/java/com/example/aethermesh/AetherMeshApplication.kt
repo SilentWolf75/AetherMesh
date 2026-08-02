@@ -2,6 +2,7 @@ package com.example.aethermesh
 
 import android.app.Application
 import com.example.aethermesh.data.AetherMeshRepository
+import com.example.aethermesh.ui.main.OsmMapConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -55,6 +56,8 @@ class AetherMeshApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Before any MapView is created — OSM blocks bad / com.example User-Agents.
+        OsmMapConfig.configure(applicationContext)
         repository = AetherMeshRepository(applicationContext)
     }
 }

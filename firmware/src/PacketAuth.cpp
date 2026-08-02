@@ -44,9 +44,13 @@ size_t buildConfigCanonical(const aethermesh_MeshPacket& packet,
     size_t nameLength = strnlen(config.node_name, sizeof(config.node_name));
     if (nameLength > 16) nameLength = 16;
     uint8_t nameSize = (uint8_t)nameLength;
+    size_t shortLength = strnlen(config.node_short_name, sizeof(config.node_short_name));
+    if (shortLength > 4) shortLength = 4;
+    uint8_t shortSize = (uint8_t)shortLength;
     uint8_t powerSave = config.power_save_mode ? 1 : 0;
     uint8_t fixedPosition = config.fixed_position ? 1 : 0;
     uint8_t applyNameOnly = config.apply_name_only ? 1 : 0;
+    uint8_t requestReport = config.request_report ? 1 : 0;
 
     if (!appendBytes(cursor, remaining, domain, sizeof(domain)) ||
         !appendU32(cursor, remaining, packet.sender_id) ||
@@ -71,7 +75,12 @@ size_t buildConfigCanonical(const aethermesh_MeshPacket& packet,
         !appendU32(cursor, remaining, (uint32_t)config.fixed_altitude) ||
         !appendBytes(cursor, remaining, &applyNameOnly, 1) ||
         !appendU32(cursor, remaining, config.mesh_hop_limit) ||
-        !appendU32(cursor, remaining, config.rebroadcast_txdelay_x100)) {
+        !appendU32(cursor, remaining, config.rebroadcast_txdelay_x100) ||
+        !appendBytes(cursor, remaining, &requestReport, 1) ||
+        !appendU32(cursor, remaining, config.apply_mask) ||
+        !appendBytes(cursor, remaining, &shortSize, 1) ||
+        !appendBytes(cursor, remaining, config.node_short_name, shortLength) ||
+        !appendU32(cursor, remaining, config.gps_duty_interval_secs)) {
         return 0;
     }
     return capacity - remaining;
@@ -81,7 +90,7 @@ bool verifyConfig(const aethermesh_MeshPacket& packet, const char* password) {
     if (packet.protocol_version < 2 || packet.auth_counter == 0 ||
         packet.session_id == 0 || packet.auth_tag.size != 16 ||
         password == nullptr || password[0] == '\0') return false;
-    uint8_t canonical[160];
+    uint8_t canonical[256];
     size_t length = buildConfigCanonical(packet, canonical, sizeof(canonical));
     if (length == 0) return false;
     uint8_t expected[SHA256::HASH_SIZE];

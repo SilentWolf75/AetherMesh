@@ -183,14 +183,32 @@ class MainActivity : ComponentActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            val deniedCount = grantResults.filter { it == PackageManager.PERMISSION_DENIED }.size
-            if (deniedCount > 0) {
-                Log.w(TAG, "$deniedCount permissions were denied by the user.")
-            } else {
-                Log.d(TAG, "All requested permissions granted by user.")
-            }
+        if (requestCode != PERMISSION_REQUEST_CODE) return
+
+        val denied = permissions.zip(grantResults.toTypedArray())
+            .filter { it.second == PackageManager.PERMISSION_DENIED }
+            .map { it.first }
+        if (denied.isNotEmpty()) {
+            Log.w(TAG, "Permissions denied: $denied")
+        }
+
+        // Only start BLE service / scanner when the radio permissions we need are present.
+        val bleReady = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+        if (bleReady) {
+            Log.d(TAG, "BLE permissions ready — starting service.")
             onBlePermissionsReady()
+        } else {
+            Log.w(TAG, "BLE permissions incomplete; service not started. User can grant via Connection / banner.")
         }
     }
 }

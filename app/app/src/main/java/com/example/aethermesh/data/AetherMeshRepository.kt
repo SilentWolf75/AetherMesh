@@ -17,8 +17,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
@@ -210,6 +213,10 @@ class AetherMeshRepository(private val context: Context) {
     private val _authenticationRequired = MutableStateFlow<Boolean?>(null)
     val authenticationRequired: StateFlow<Boolean?> = _authenticationRequired.asStateFlow()
 
+    /** Bumped when an AuthResponse reports failure (wrong password / rejected). */
+    private val _authFailureTick = MutableStateFlow(0)
+    val authFailureTick: StateFlow<Int> = _authFailureTick.asStateFlow()
+
     // After auth, device reports whether the user has confirmed LoRa region.
     private val _needsRegionSetup = MutableStateFlow(false)
     val needsRegionSetup: StateFlow<Boolean> = _needsRegionSetup.asStateFlow()
@@ -217,6 +224,19 @@ class AetherMeshRepository(private val context: Context) {
     // Bumped when a device→app NodeConfig report hydrates SharedPreferences.
     private val _deviceConfigSyncEpoch = MutableStateFlow(0)
     val deviceConfigSyncEpoch: StateFlow<Int> = _deviceConfigSyncEpoch.asStateFlow()
+
+    data class RemoteConfigReport(val nodeId: Long, val config: NodeConfig)
+    data class RemoteConfigResultEvent(
+        val nodeId: Long,
+        val requestPacketId: Int,
+        val status: com.example.aethermesh.proto.ConfigResult.Status,
+        val message: String
+    )
+
+    private val _remoteConfigReport = MutableSharedFlow<RemoteConfigReport>(extraBufferCapacity = 4)
+    val remoteConfigReport: SharedFlow<RemoteConfigReport> = _remoteConfigReport.asSharedFlow()
+    private val _remoteConfigResult = MutableSharedFlow<RemoteConfigResultEvent>(extraBufferCapacity = 4)
+    val remoteConfigResult: SharedFlow<RemoteConfigResultEvent> = _remoteConfigResult.asSharedFlow()
 
     private var pendingAuthPassword: String? = null
 
@@ -546,6 +566,7 @@ class AetherMeshRepository(private val context: Context) {
                 
                 _isDeviceAuthenticated.value = true
                 _authenticationRequired.value = null
+                _authFailureTick.value = 0
                 
                 // Remember this node so reconnect unlocks without retyping.
                 val mac = bleManager.getConnectedDeviceAddress()
@@ -592,16 +613,32 @@ class AetherMeshRepository(private val context: Context) {
                         val mac = bleManager.getConnectedDeviceAddress()
                         clearSavedPassword(mac, senderId)
                     }
+                    _authFailureTick.value = _authFailureTick.value + 1
                 }
                 pendingAuthPassword = null
             }
             return
         }
 
-        // Device → phone config snapshot (after auth). Hydrate local prefs so a
-        // fresh app install matches the node's NVS without pushing defaults.
+        // Device → phone config snapshot (after auth / remote report). Hydrate
+        // local prefs and notify Remote Config UI when it is a live read-back.
         if (packet.payloadCase == MeshPacket.PayloadCase.CONFIG && packet.config.reportOnly) {
             hydrateNodeSettingsFromDevice(senderId, packet.config)
+            _remoteConfigReport.tryEmit(RemoteConfigReport(senderId, packet.config))
+            return
+        }
+
+        if (packet.payloadCase == MeshPacket.PayloadCase.CONFIG_RESULT) {
+            val result = packet.configResult
+            Log.d(TAG, "ConfigResult from 0x${senderId.toString(16)} status=${result.status} req=${result.requestPacketId}")
+            _remoteConfigResult.tryEmit(
+                RemoteConfigResultEvent(
+                    nodeId = senderId,
+                    requestPacketId = result.requestPacketId,
+                    status = result.status,
+                    message = result.message.orEmpty()
+                )
+            )
             return
         }
 
@@ -610,19 +647,47 @@ class AetherMeshRepository(private val context: Context) {
                 return
             }
             val delivery = packet.deliveryStatus
-            val newStatus = when (delivery.state) {
-                DeliveryStatus.State.DELIVERED -> "DELIVERED"
-                DeliveryStatus.State.FAILED -> "FAILED"
-                DeliveryStatus.State.RETRYING -> "PENDING"
-                DeliveryStatus.State.QUEUED, DeliveryStatus.State.STORED -> "QUEUED"
-                DeliveryStatus.State.EXPIRED -> "EXPIRED"
-                else -> null
+            when (delivery.state) {
+                DeliveryStatus.State.HEARD -> {
+                    val fromId = delivery.fromNodeId.toLong() and 0xFFFFFFFFL
+                    val count = if (fromId != 0L) {
+                        dbHelper.recordChannelHearing(delivery.packetId, fromId, delivery.heardCount)
+                    } else {
+                        dbHelper.setMessageHeardCount(delivery.packetId, delivery.heardCount)
+                        delivery.heardCount
+                    }
+                    Log.d(TAG, "Channel HEARD for packet ${delivery.packetId}: count=$count from=0x${fromId.toString(16)}")
+                    refreshData()
+                }
+                DeliveryStatus.State.DELIVERED -> {
+                    if (!dbHelper.isChannelMessage(delivery.packetId)) {
+                        dbHelper.updateMessageStatus(delivery.packetId, "DELIVERED")
+                        refreshData()
+                    }
+                }
+                DeliveryStatus.State.FAILED -> {
+                    dbHelper.updateMessageStatus(delivery.packetId, "FAILED")
+                    refreshData()
+                }
+                DeliveryStatus.State.RETRYING -> {
+                    dbHelper.updateMessageStatus(delivery.packetId, "PENDING")
+                    refreshData()
+                }
+                DeliveryStatus.State.QUEUED, DeliveryStatus.State.STORED -> {
+                    dbHelper.updateMessageStatus(delivery.packetId, "QUEUED")
+                    refreshData()
+                }
+                DeliveryStatus.State.EXPIRED -> {
+                    dbHelper.updateMessageStatus(delivery.packetId, "EXPIRED")
+                    refreshData()
+                }
+                else -> Unit
             }
-            if (newStatus != null) {
-                Log.d(TAG, "DeliveryStatus for packet ${delivery.packetId}: $newStatus, reason=${delivery.reason}, retry=${delivery.retryCount}")
-                dbHelper.updateMessageStatus(delivery.packetId, newStatus)
-                refreshData()
-            }
+            Log.d(
+                TAG,
+                "DeliveryStatus for packet ${delivery.packetId}: ${delivery.state}, " +
+                    "reason=${delivery.reason}, retry=${delivery.retryCount}, heard=${delivery.heardCount}"
+            )
             return
         }
 
@@ -881,8 +946,12 @@ class AetherMeshRepository(private val context: Context) {
             }
             MeshPacket.PayloadCase.ACK -> {
                 val ackedId = packet.ack.ackedPacketId
-                Log.d(TAG, "ACK received for packet: $ackedId")
-                dbHelper.updateMessageStatus(ackedId, "DELIVERED")
+                Log.d(TAG, "ACK received for packet: $ackedId from 0x${senderId.toString(16)}")
+                if (dbHelper.isChannelMessage(ackedId)) {
+                    dbHelper.recordChannelHearing(ackedId, senderId)
+                } else {
+                    dbHelper.updateMessageStatus(ackedId, "DELIVERED")
+                }
                 val pending = pendingRangePings[ackedId]
                 if (_isRangeTestActive.value && pending != null && pending.targetId == senderId &&
                     pendingRangePings.remove(ackedId, pending)
@@ -975,12 +1044,14 @@ class AetherMeshRepository(private val context: Context) {
             .setChannel(if (recipientId == 0xFFFFFFFFL) boundedChannel else "")
             .setIsEncrypted(isEncrypted)
 
+        // DMs: end-to-end node ACK. Channel: want_ack asks each hearer to ACK so
+        // the originator can report "heard by N" (not a single DELIVERED).
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(recipientId.toInt())
             .setPacketId(generatedPacketId)
             .setHopLimit(4)
-            .setWantAck(recipientId != 0xFFFFFFFFL)
+            .setWantAck(true)
             .setPrevHopId(localNodeId.toInt())
             .setText(textBuilder)
             .build()
@@ -1068,6 +1139,7 @@ class AetherMeshRepository(private val context: Context) {
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
         gpsMode: Int = 0,
+        gpsDutyIntervalSecs: Int = 900,
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
@@ -1083,10 +1155,16 @@ class AetherMeshRepository(private val context: Context) {
             rebroadcastTxdelayX100 <= 0 -> 100
             else -> rebroadcastTxdelayX100.coerceIn(50, 200)
         }
+        val dutySecs = when {
+            gpsDutyIntervalSecs <= 0 -> 900
+            else -> gpsDutyIntervalSecs.coerceIn(300, 3600)
+        }
 
         // Build NodeConfig message
+        val clippedShort = shortName.trim().take(4).uppercase()
         val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
             .setNodeName(name)
+            .setNodeShortName(clippedShort)
             .setLoraSf(sf)
             .setLoraBw(bw)
             .setLoraTxPower(txPower)
@@ -1096,7 +1174,8 @@ class AetherMeshRepository(private val context: Context) {
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
-            .setGpsMode(gpsMode)
+            .setGpsMode(gpsMode.coerceIn(0, 2))
+            .setGpsDutyIntervalSecs(dutySecs)
             .setFixedPosition(fixedPosition)
             .setFixedLatitude(fixedLatitude)
             .setFixedLongitude(fixedLongitude)
@@ -1104,10 +1183,12 @@ class AetherMeshRepository(private val context: Context) {
             .setMeshHopLimit(hops)
             .setRebroadcastTxdelayX100(txdelay)
 
-        // Build MeshPacket wrapper
+        // recipient_id=0 means "apply on the BLE-connected node". Do not address by
+        // connectedNodeId — a MAC/advertising placeholder mismatch would make the
+        // firmware forward the config over LoRa and never save/reboot locally.
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
-            .setRecipientId(localNodeId.toInt())
+            .setRecipientId(0)
             .setPacketId(PacketIdGenerator.next())
             .setHopLimit(1)
             .setWantAck(false)
@@ -1119,7 +1200,14 @@ class AetherMeshRepository(private val context: Context) {
         val success = bleManager.sendPacket(packet.toByteArray())
         if (success) {
             // Update node name and short name locally in our DB so it matches right away
-            dbHelper.updateNodeNameAndShortName(localNodeId, name, shortName)
+            dbHelper.updateNodeNameAndShortName(localNodeId, name, clippedShort)
+            if (localNodeId != 0L) {
+                context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("node_name", name)
+                    .putString("node_short_name", clippedShort)
+                    .apply()
+            }
             refreshData()
         }
         return success
@@ -1131,6 +1219,10 @@ class AetherMeshRepository(private val context: Context) {
         val prefs = context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
         prefs.edit()
             .putString("node_name", config.nodeName)
+            .apply {
+                val short = config.nodeShortName.trim().take(4).uppercase()
+                if (short.isNotEmpty()) putString("node_short_name", short)
+            }
             .putInt("lora_sf", if (config.loraSf in 7..12) config.loraSf else 11)
             .putFloat("lora_bw", if (config.loraBw > 0f) config.loraBw else 125f)
             .putInt("lora_tx_power", if (config.loraTxPower != 0) config.loraTxPower else 22)
@@ -1140,7 +1232,14 @@ class AetherMeshRepository(private val context: Context) {
             .putInt("screen_timeout", config.screenTimeoutSecs)
             .putBoolean("power_save_mode", config.powerSaveMode)
             .putInt("position_precision", config.positionPrecision)
-            .putInt("gps_mode", config.gpsMode)
+            .putInt("gps_mode", config.gpsMode.coerceIn(0, 2))
+            .putInt(
+                "gps_duty_interval_secs",
+                when {
+                    config.gpsDutyIntervalSecs <= 0 -> 900
+                    else -> config.gpsDutyIntervalSecs.coerceIn(300, 3600)
+                }
+            )
             .putBoolean("fixed_position", config.fixedPosition)
             .putFloat("fixed_latitude", config.fixedLatitude)
             .putFloat("fixed_longitude", config.fixedLongitude)
@@ -1157,14 +1256,21 @@ class AetherMeshRepository(private val context: Context) {
             .putBoolean("device_synced", true)
             .apply()
 
-        if (config.nodeName.isNotBlank()) {
-            val short = config.nodeName.replace("AetherMesh-", "")
-                .replace("Node ", "")
-                .replace(Regex("[^a-zA-Z0-9]"), "")
-                .take(4)
-                .uppercase()
-                .ifEmpty { String.format("%04X", (nodeId and 0xFFFFL).toInt()) }
-            dbHelper.updateNodeNameAndShortName(nodeId, config.nodeName, short)
+        if (config.nodeName.isNotBlank() || config.nodeShortName.isNotBlank()) {
+            val prefsShort = prefs.getString("node_short_name", null)?.takeIf { it.isNotBlank() }
+            val deviceShort = config.nodeShortName.trim().take(4).uppercase().takeIf { it.isNotBlank() }
+            val existing = dbHelper.getNodes().firstOrNull { sameMeshNodeId(it.nodeId, nodeId) }
+            val short = deviceShort
+                ?: prefsShort
+                ?: existing?.shortName?.takeIf { it.isNotBlank() }
+                ?: deriveShortName(config.nodeName.ifBlank { existing?.name.orEmpty() }, nodeId)
+            if (deviceShort != null) {
+                prefs.edit().putString("node_short_name", deviceShort).apply()
+            }
+            val longName = config.nodeName.ifBlank { existing?.name.orEmpty() }
+            if (longName.isNotBlank()) {
+                dbHelper.updateNodeNameAndShortName(nodeId, longName, short)
+            }
         }
 
         _needsRegionSetup.value = !config.regionConfigured
@@ -1182,32 +1288,49 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
-        dbHelper.updateNodeNameAndShortName(nodeId, name, shortName)
+        val short = shortName.trim().take(4).uppercase()
+        dbHelper.updateNodeNameAndShortName(nodeId, name, short)
+        if (nodeId != 0L) {
+            context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
+                .edit()
+                .putString("node_name", name)
+                .putString("node_short_name", short)
+                .apply()
+        }
         refreshData()
         // Push onto the connected node so the name lives in mesh telemetry
         // (survives a fresh app install). Remote nodes need Remote Config +
         // admin password — phone-only renames are temporary until then.
         if (bleManager.isConnected && _isDeviceAuthenticated.value &&
-            nodeId == bleManager.connectedNodeId
+            sameMeshNodeId(nodeId, bleManager.connectedNodeId)
         ) {
-            sendNameOnlyConfig(nodeId, name)
+            sendNameOnlyConfig(nodeId, name, shortName = short)
         }
     }
 
     /**
-     * Writes only [name] onto a node (no radio reboot). Local BLE when
+     * Writes only name/short-name onto a node (no radio reboot). Local BLE when
      * [nodeId] is the connected node; otherwise authenticated remote config.
      */
-    fun sendNameOnlyConfig(nodeId: Long, name: String, adminPassword: String = ""): Boolean {
+    fun sendNameOnlyConfig(
+        nodeId: Long,
+        name: String,
+        adminPassword: String = "",
+        shortName: String = ""
+    ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
         val localNodeId = bleManager.connectedNodeId
         val clipped = name.trim().take(16)
-        val isLocal = nodeId == localNodeId
+        val clippedShort = shortName.trim().take(4).uppercase().ifEmpty {
+            deriveShortName(clipped, nodeId)
+        }
+        val isLocal = sameMeshNodeId(nodeId, localNodeId)
         if (!isLocal && adminPassword.isBlank()) return false
 
         val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
         val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
             .setNodeName(clipped)
+            .setNodeShortName(clippedShort)
             .setApplyNameOnly(true)
         if (!isLocal && !supportsV2) {
             configBuilder.setConfigPassword(adminPassword)
@@ -1216,7 +1339,8 @@ class AetherMeshRepository(private val context: Context) {
 
         val packetBuilder = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
-            .setRecipientId(nodeId.toInt())
+            // Local BLE rename must use recipient 0 (same reason as sendNodeConfig).
+            .setRecipientId(if (isLocal) 0 else nodeId.toInt())
             .setPacketId(PacketIdGenerator.next())
             .setHopLimit(if (isLocal) 1 else 4)
             .setWantAck(!isLocal)
@@ -1235,12 +1359,12 @@ class AetherMeshRepository(private val context: Context) {
 
         val success = bleManager.sendPacket(packetBuilder.build().toByteArray())
         if (success) {
-            dbHelper.updateNodeNameAndShortName(
-                nodeId,
-                clipped,
-                deriveShortName(clipped, nodeId),
-                fromMesh = true
-            )
+            dbHelper.updateNodeNameAndShortName(nodeId, clipped, clippedShort)
+            context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
+                .edit()
+                .putString("node_name", clipped)
+                .putString("node_short_name", clippedShort)
+                .apply()
             refreshData()
         }
         return success
@@ -1316,6 +1440,44 @@ class AetherMeshRepository(private val context: Context) {
         )
     }
 
+    /**
+     * @return packet_id of the sent request, or null if not sent.
+     */
+    fun requestRemoteConfigReport(nodeId: Long, password: String): Int? {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return null
+        if (password.isBlank()) return null
+        val localNodeId = bleManager.connectedNodeId
+        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val config = NodeConfig.newBuilder()
+            .setRequestReport(true)
+            .setConfigPassword(if (supportsV2) "" else password)
+            .setApplyMask(0)
+            .build()
+        val packetId = PacketIdGenerator.next()
+        val packetBuilder = MeshPacket.newBuilder()
+            .setSenderId(localNodeId.toInt())
+            .setRecipientId(nodeId.toInt())
+            .setPacketId(packetId)
+            .setHopLimit(4)
+            .setWantAck(true)
+            .setPrevHopId(localNodeId.toInt())
+            .setConfig(config)
+        if (supportsV2) {
+            val identity = ControlAuthSession.next()
+            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, password)
+            packetBuilder
+                .setProtocolVersion(2)
+                .setSessionId(identity.sessionId)
+                .setAuthCounter(identity.counter)
+                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
+        }
+        return if (bleManager.sendPacket(packetBuilder.build().toByteArray())) packetId else null
+    }
+
+    /**
+     * @param applyMask non-zero sparse bitmask ([ConfigApplyMask]); required for safe remote updates.
+     * @return packet_id if sent, null otherwise.
+     */
     fun sendRemoteConfig(
         nodeId: Long,
         name: String,
@@ -1330,15 +1492,17 @@ class AetherMeshRepository(private val context: Context) {
         powerSaveMode: Boolean = false,
         positionPrecision: Int = 0,
         gpsMode: Int = 0,
+        gpsDutyIntervalSecs: Int = 900,
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
         fixedAltitude: Int = 0,
-        // 0 = leave unchanged on the remote node (firmware ignores 0)
         meshHopLimit: Int = 0,
-        rebroadcastTxdelayX100: Int = 0
-    ): Boolean {
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
+        rebroadcastTxdelayX100: Int = 0,
+        applyMask: Int
+    ): Int? {
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return null
+        if (password.isBlank() || applyMask == 0) return null
 
         val localNodeId = bleManager.connectedNodeId
 
@@ -1351,7 +1515,11 @@ class AetherMeshRepository(private val context: Context) {
             rebroadcastTxdelayX100 <= 0 -> 0
             else -> rebroadcastTxdelayX100.coerceIn(50, 200)
         }
-        val config = com.example.aethermesh.proto.NodeConfig.newBuilder()
+        val dutySecs = when {
+            gpsDutyIntervalSecs <= 0 -> 900
+            else -> gpsDutyIntervalSecs.coerceIn(300, 3600)
+        }
+        val config = NodeConfig.newBuilder()
             .setNodeName(name)
             .setConfigPassword(if (supportsV2) "" else password)
             .setLoraSf(sf)
@@ -1363,19 +1531,23 @@ class AetherMeshRepository(private val context: Context) {
             .setScreenTimeoutSecs(screenTimeout)
             .setPowerSaveMode(powerSaveMode)
             .setPositionPrecision(positionPrecision)
-            .setGpsMode(gpsMode)
+            .setGpsMode(gpsMode.coerceIn(0, 2))
+            .setGpsDutyIntervalSecs(dutySecs)
             .setFixedPosition(fixedPosition)
             .setFixedLatitude(fixedLatitude)
             .setFixedLongitude(fixedLongitude)
             .setFixedAltitude(fixedAltitude)
             .setMeshHopLimit(hops)
             .setRebroadcastTxdelayX100(txdelay)
+            .setRequestReport(false)
+            .setApplyMask(applyMask)
             .build()
 
+        val packetId = PacketIdGenerator.next()
         val packetBuilder = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(nodeId.toInt())
-            .setPacketId(PacketIdGenerator.next())
+            .setPacketId(packetId)
             .setHopLimit(4)
             .setWantAck(true)
             .setPrevHopId(localNodeId.toInt())
@@ -1391,7 +1563,7 @@ class AetherMeshRepository(private val context: Context) {
                 .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
         }
 
-        return bleManager.sendPacket(packetBuilder.build().toByteArray())
+        return if (bleManager.sendPacket(packetBuilder.build().toByteArray())) packetId else null
     }
 
     // --- BLE firmware update (OTA) sender ---

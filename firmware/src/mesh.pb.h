@@ -47,7 +47,8 @@ typedef enum _aethermesh_DeliveryStatus_State {
     aethermesh_DeliveryStatus_State_RETRYING = 3,
     aethermesh_DeliveryStatus_State_QUEUED = 4,
     aethermesh_DeliveryStatus_State_STORED = 5,
-    aethermesh_DeliveryStatus_State_EXPIRED = 6
+    aethermesh_DeliveryStatus_State_EXPIRED = 6,
+    aethermesh_DeliveryStatus_State_HEARD = 7 /* Channel/broadcast: another node ACKed; see heard_count */
 } aethermesh_DeliveryStatus_State;
 
 typedef enum _aethermesh_DeliveryStatus_Reason {
@@ -58,6 +59,16 @@ typedef enum _aethermesh_DeliveryStatus_Reason {
     aethermesh_DeliveryStatus_Reason_STORE_FULL = 4,
     aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED = 5
 } aethermesh_DeliveryStatus_Reason;
+
+typedef enum _aethermesh_ConfigResult_Status {
+    aethermesh_ConfigResult_Status_UNKNOWN = 0,
+    aethermesh_ConfigResult_Status_APPLIED = 1, /* Applied without reboot (e.g. name-only) */
+    aethermesh_ConfigResult_Status_APPLIED_REBOOTING = 2, /* Settings saved; node reboots next */
+    aethermesh_ConfigResult_Status_AUTH_FAILED = 3,
+    aethermesh_ConfigResult_Status_REJECTED_ROLE2 = 4, /* Refused entering Low-Power Repeater over LoRa */
+    aethermesh_ConfigResult_Status_REJECTED_FIXED_POS = 5, /* Invalid fixed coordinates */
+    aethermesh_ConfigResult_Status_REPORT_OK = 6 /* request_report handled (snapshot sent separately) */
+} aethermesh_ConfigResult_Status;
 
 /* Struct definitions */
 /* Local node health snapshot. This payload is emitted to the authenticated BLE
@@ -187,6 +198,10 @@ typedef struct _aethermesh_DeliveryStatus {
     aethermesh_DeliveryStatus_State state;
     aethermesh_DeliveryStatus_Reason reason;
     uint32_t retry_count;
+    /* For HEARD: unique nodes that have ACKed this broadcast so far (at originator). */
+    uint32_t heard_count;
+    /* For HEARD: node id of the hearer that just ACKed. */
+    uint32_t from_node_id;
 } aethermesh_DeliveryStatus;
 
 /* Configuration settings sync */
@@ -203,9 +218,7 @@ typedef struct _aethermesh_NodeConfig {
     char config_password[33]; /* Node admin password authorizing a remote (over-LoRa) config change. */
     /* Empty for local BLE config (the BLE session is already authenticated). */
     uint32_t position_precision; /* Privacy blur radius (meters) for broadcast positions; 0 = precise. */
-    uint32_t gps_mode; /* 0 = onboard GPS powered (default), 1 = GPS off to save power */
-    /* (position falls back to phone-shared GPS). uint32 so the
- proto3 zero-default means "on" for configs that omit it. */
+    uint32_t gps_mode; /* 0 = onboard GPS always on (default), 1 = always off, */
     bool fixed_position; /* True if using a static fixed position instead of GPS */
     float fixed_latitude; /* Static latitude */
     float fixed_longitude; /* Static longitude */
@@ -222,7 +235,28 @@ typedef struct _aethermesh_NodeConfig {
     /* Mesh routing knobs (Router/Repeater). 0 = use firmware defaults. */
     uint32_t mesh_hop_limit; /* 1–8; default 4 when 0 */
     uint32_t rebroadcast_txdelay_x100; /* 50–200 (=0.5x–2.0x); default 100 when 0 */
+    /* Authenticated GET: target replies with report_only NodeConfig over LoRa (no apply). */
+    bool request_report;
+    /* Sparse apply bitmask. 0 = legacy full apply (local BLE Settings).
+ Non-zero = only apply bits set (remote). See APPLY_* in firmware/app. */
+    uint32_t apply_mask;
+    /* Compact badge label (max 4 chars). Empty = derive from node_name on receivers. */
+    char node_short_name[5];
+    /* 2 = duty-cycle: power on periodically for a fix, then off.
+ Position falls back to phone-shared GPS when no fix.
+ proto3 zero-default means "on" for configs that omit it.
+ Seconds between GPS wake attempts when gps_mode == 2. 0 = firmware default (900). */
+    uint32_t gps_duty_interval_secs;
 } aethermesh_NodeConfig;
+
+/* Outcome of a remote NodeConfig apply/request. Sent over LoRa back to the
+ requester (then forwarded to the phone over BLE). Distinct from ACK, which
+ only means the request packet reached the node. */
+typedef struct _aethermesh_ConfigResult {
+    aethermesh_ConfigResult_Status status;
+    uint32_t request_packet_id; /* echoes the NodeConfig MeshPacket.packet_id */
+    char message[40];
+} aethermesh_ConfigResult;
 
 /* Authentication request sent by companion app to LoRa node */
 typedef struct _aethermesh_AuthRequest {
@@ -262,6 +296,7 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_TraceRoute trace_route;
         aethermesh_MeshDiagnostics diagnostics;
         aethermesh_RangeTestControl range_test_control;
+        aethermesh_ConfigResult config_result;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
@@ -300,12 +335,16 @@ extern "C" {
 #define _aethermesh_RouteDiscovery_Type_ARRAYSIZE ((aethermesh_RouteDiscovery_Type)(aethermesh_RouteDiscovery_Type_REPLY+1))
 
 #define _aethermesh_DeliveryStatus_State_MIN aethermesh_DeliveryStatus_State_UNKNOWN
-#define _aethermesh_DeliveryStatus_State_MAX aethermesh_DeliveryStatus_State_EXPIRED
-#define _aethermesh_DeliveryStatus_State_ARRAYSIZE ((aethermesh_DeliveryStatus_State)(aethermesh_DeliveryStatus_State_EXPIRED+1))
+#define _aethermesh_DeliveryStatus_State_MAX aethermesh_DeliveryStatus_State_HEARD
+#define _aethermesh_DeliveryStatus_State_ARRAYSIZE ((aethermesh_DeliveryStatus_State)(aethermesh_DeliveryStatus_State_HEARD+1))
 
 #define _aethermesh_DeliveryStatus_Reason_MIN aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED
 #define _aethermesh_DeliveryStatus_Reason_MAX aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED
 #define _aethermesh_DeliveryStatus_Reason_ARRAYSIZE ((aethermesh_DeliveryStatus_Reason)(aethermesh_DeliveryStatus_Reason_MESSAGE_EXPIRED+1))
+
+#define _aethermesh_ConfigResult_Status_MIN aethermesh_ConfigResult_Status_UNKNOWN
+#define _aethermesh_ConfigResult_Status_MAX aethermesh_ConfigResult_Status_REPORT_OK
+#define _aethermesh_ConfigResult_Status_ARRAYSIZE ((aethermesh_ConfigResult_Status)(aethermesh_ConfigResult_Status_REPORT_OK+1))
 
 
 
@@ -327,6 +366,8 @@ extern "C" {
 #define aethermesh_DeliveryStatus_reason_ENUMTYPE aethermesh_DeliveryStatus_Reason
 
 
+#define aethermesh_ConfigResult_status_ENUMTYPE aethermesh_ConfigResult_Status
+
 
 
 
@@ -342,8 +383,9 @@ extern "C" {
 #define aethermesh_TraceRoute_init_default       {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
-#define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
+#define aethermesh_ConfigResult_init_default     {_aethermesh_ConfigResult_Status_MIN, 0, ""}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
@@ -357,8 +399,9 @@ extern "C" {
 #define aethermesh_TraceRoute_init_zero          {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
-#define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
+#define aethermesh_ConfigResult_init_zero        {_aethermesh_ConfigResult_Status_MIN, 0, ""}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -434,6 +477,8 @@ extern "C" {
 #define aethermesh_DeliveryStatus_state_tag      3
 #define aethermesh_DeliveryStatus_reason_tag     4
 #define aethermesh_DeliveryStatus_retry_count_tag 5
+#define aethermesh_DeliveryStatus_heard_count_tag 6
+#define aethermesh_DeliveryStatus_from_node_id_tag 7
 #define aethermesh_NodeConfig_node_name_tag      1
 #define aethermesh_NodeConfig_lora_sf_tag        2
 #define aethermesh_NodeConfig_lora_bw_tag        3
@@ -455,6 +500,13 @@ extern "C" {
 #define aethermesh_NodeConfig_region_configured_tag 19
 #define aethermesh_NodeConfig_mesh_hop_limit_tag 20
 #define aethermesh_NodeConfig_rebroadcast_txdelay_x100_tag 21
+#define aethermesh_NodeConfig_request_report_tag 22
+#define aethermesh_NodeConfig_apply_mask_tag     23
+#define aethermesh_NodeConfig_node_short_name_tag 24
+#define aethermesh_NodeConfig_gps_duty_interval_secs_tag 25
+#define aethermesh_ConfigResult_status_tag       1
+#define aethermesh_ConfigResult_request_packet_id_tag 2
+#define aethermesh_ConfigResult_message_tag      3
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -480,6 +532,7 @@ extern "C" {
 #define aethermesh_MeshPacket_trace_route_tag    21
 #define aethermesh_MeshPacket_diagnostics_tag    22
 #define aethermesh_MeshPacket_range_test_control_tag 27
+#define aethermesh_MeshPacket_config_result_tag  28
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
@@ -517,7 +570,8 @@ X(a, STATIC,   SINGULAR, UINT32,   protocol_version,  23) \
 X(a, STATIC,   SINGULAR, UINT64,   session_id,       24) \
 X(a, STATIC,   SINGULAR, UINT32,   auth_counter,     25) \
 X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_test_control),  27)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_test_control),  27) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,config_result,payload.config_result),  28)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -534,6 +588,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_tes
 #define aethermesh_MeshPacket_payload_trace_route_MSGTYPE aethermesh_TraceRoute
 #define aethermesh_MeshPacket_payload_diagnostics_MSGTYPE aethermesh_MeshDiagnostics
 #define aethermesh_MeshPacket_payload_range_test_control_MSGTYPE aethermesh_RangeTestControl
+#define aethermesh_MeshPacket_payload_config_result_MSGTYPE aethermesh_ConfigResult
 
 #define aethermesh_MeshDiagnostics_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   tx_packets,        1) \
@@ -646,7 +701,9 @@ X(a, STATIC,   SINGULAR, UINT32,   packet_id,         1) \
 X(a, STATIC,   SINGULAR, UINT32,   recipient_id,      2) \
 X(a, STATIC,   SINGULAR, UENUM,    state,             3) \
 X(a, STATIC,   SINGULAR, UENUM,    reason,            4) \
-X(a, STATIC,   SINGULAR, UINT32,   retry_count,       5)
+X(a, STATIC,   SINGULAR, UINT32,   retry_count,       5) \
+X(a, STATIC,   SINGULAR, UINT32,   heard_count,       6) \
+X(a, STATIC,   SINGULAR, UINT32,   from_node_id,      7)
 #define aethermesh_DeliveryStatus_CALLBACK NULL
 #define aethermesh_DeliveryStatus_DEFAULT NULL
 
@@ -671,9 +728,20 @@ X(a, STATIC,   SINGULAR, BOOL,     apply_name_only,  17) \
 X(a, STATIC,   SINGULAR, BOOL,     report_only,      18) \
 X(a, STATIC,   SINGULAR, BOOL,     region_configured,  19) \
 X(a, STATIC,   SINGULAR, UINT32,   mesh_hop_limit,   20) \
-X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_txdelay_x100,  21)
+X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_txdelay_x100,  21) \
+X(a, STATIC,   SINGULAR, BOOL,     request_report,   22) \
+X(a, STATIC,   SINGULAR, UINT32,   apply_mask,       23) \
+X(a, STATIC,   SINGULAR, STRING,   node_short_name,  24) \
+X(a, STATIC,   SINGULAR, UINT32,   gps_duty_interval_secs,  25)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
+
+#define aethermesh_ConfigResult_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    status,            1) \
+X(a, STATIC,   SINGULAR, UINT32,   request_packet_id,   2) \
+X(a, STATIC,   SINGULAR, STRING,   message,           3)
+#define aethermesh_ConfigResult_CALLBACK NULL
+#define aethermesh_ConfigResult_DEFAULT NULL
 
 #define aethermesh_AuthRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   password,          1) \
@@ -702,6 +770,7 @@ extern const pb_msgdesc_t aethermesh_RouteDiscovery_msg;
 extern const pb_msgdesc_t aethermesh_Ack_msg;
 extern const pb_msgdesc_t aethermesh_DeliveryStatus_msg;
 extern const pb_msgdesc_t aethermesh_NodeConfig_msg;
+extern const pb_msgdesc_t aethermesh_ConfigResult_msg;
 extern const pb_msgdesc_t aethermesh_AuthRequest_msg;
 extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 
@@ -719,6 +788,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_Ack_fields &aethermesh_Ack_msg
 #define aethermesh_DeliveryStatus_fields &aethermesh_DeliveryStatus_msg
 #define aethermesh_NodeConfig_fields &aethermesh_NodeConfig_msg
+#define aethermesh_ConfigResult_fields &aethermesh_ConfigResult_msg
 #define aethermesh_AuthRequest_fields &aethermesh_AuthRequest_msg
 #define aethermesh_AuthResponse_fields &aethermesh_AuthResponse_msg
 
@@ -727,10 +797,11 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_Ack_size                      16
 #define aethermesh_AuthRequest_size              68
 #define aethermesh_AuthResponse_size             37
-#define aethermesh_DeliveryStatus_size           22
+#define aethermesh_ConfigResult_size             49
+#define aethermesh_DeliveryStatus_size           34
 #define aethermesh_MeshDiagnostics_size          135
 #define aethermesh_MeshPacket_size               411
-#define aethermesh_NodeConfig_size               159
+#define aethermesh_NodeConfig_size               183
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49

@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 19
+        private const val DATABASE_VERSION = 20
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -43,6 +43,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_MSG_PACKET_ID = "packet_id"
         const val COL_MSG_STATUS = "status"
         const val COL_MSG_IS_ENCRYPTED = "is_encrypted"
+        const val COL_MSG_HEARD_COUNT = "heard_count"
+        const val COL_MSG_HEARD_NODES = "heard_nodes"
 
         // Nodes Table
         const val TABLE_NODES = "nodes"
@@ -120,7 +122,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_MSG_CHANNEL TEXT,
                 $COL_MSG_PACKET_ID INTEGER DEFAULT 0,
                 $COL_MSG_STATUS TEXT DEFAULT 'SENT',
-                $COL_MSG_IS_ENCRYPTED INTEGER DEFAULT 0
+                $COL_MSG_IS_ENCRYPTED INTEGER DEFAULT 0,
+                $COL_MSG_HEARD_COUNT INTEGER DEFAULT 0,
+                $COL_MSG_HEARD_NODES TEXT DEFAULT ''
             )
         """.trimIndent()
 
@@ -407,6 +411,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 android.util.Log.e("DatabaseHelper", "Failed to add radio profile columns: ${e.message}")
             }
         }
+        if (oldVersion < 20) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MSG_HEARD_COUNT INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MSG_HEARD_NODES TEXT DEFAULT ''")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add message heard columns: ${e.message}")
+            }
+        }
     }
 
     private fun meshDiagnosticsTableSql() = """
@@ -624,6 +636,70 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
     }
 
+    fun isChannelMessage(packetId: Int): Boolean {
+        if (packetId == 0) return false
+        val db = this.readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT $COL_MSG_CHANNEL, $COL_MSG_RECIPIENT FROM $TABLE_MESSAGES WHERE $COL_MSG_PACKET_ID = ? LIMIT 1",
+            arrayOf(packetId.toString())
+        )
+        val channel = if (cursor.moveToFirst()) {
+            val ch = cursor.getString(0).orEmpty()
+            val recipient = cursor.getLong(1)
+            ch.isNotEmpty() || (recipient and 0xFFFFFFFFL) == 0xFFFFFFFFL
+        } else {
+            false
+        }
+        cursor.close()
+        return channel
+    }
+
+    /**
+     * Record a unique channel hearer for [packetId]. Returns the new heard count,
+     * or -1 if the packet is unknown / already counted.
+     */
+    fun recordChannelHearing(packetId: Int, fromNodeId: Long, heardCountHint: Int = 0): Int {
+        if (packetId == 0 || fromNodeId == 0L) return -1
+        val db = this.writableDatabase
+        val cursor = db.rawQuery(
+            "SELECT $COL_MSG_HEARD_COUNT, $COL_MSG_HEARD_NODES FROM $TABLE_MESSAGES WHERE $COL_MSG_PACKET_ID = ? LIMIT 1",
+            arrayOf(packetId.toString())
+        )
+        if (!cursor.moveToFirst()) {
+            cursor.close()
+            return -1
+        }
+        val prevCount = cursor.getInt(0)
+        val nodesRaw = cursor.getString(1).orEmpty()
+        cursor.close()
+        val nodeKey = (fromNodeId and 0xFFFFFFFFL).toString(16)
+        val existing = if (nodesRaw.isBlank()) {
+            emptySet()
+        } else {
+            nodesRaw.split(',').filter { it.isNotBlank() }.toSet()
+        }
+        val updatedNodes = existing + nodeKey
+        val count = maxOf(prevCount, updatedNodes.size, heardCountHint)
+        if (count == prevCount && nodeKey in existing) return prevCount
+        val values = ContentValues().apply {
+            put(COL_MSG_HEARD_COUNT, count)
+            put(COL_MSG_HEARD_NODES, updatedNodes.joinToString(","))
+            put(COL_MSG_STATUS, "HEARD")
+        }
+        db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
+        return count
+    }
+
+    fun setMessageHeardCount(packetId: Int, heardCount: Int) {
+        if (packetId == 0 || heardCount <= 0) return
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COL_MSG_HEARD_COUNT, heardCount)
+            put(COL_MSG_STATUS, "HEARD")
+        }
+        db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
+    }
+
     fun updateMessageStatusById(messageId: Long, status: String) {
         val db = this.writableDatabase
         val values = ContentValues().apply {
@@ -663,17 +739,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val cursor = db.rawQuery(query, args)
         if (cursor.moveToFirst()) {
             do {
-                list.add(ChatMessage(
-                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_ID)),
-                    senderId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_SENDER)),
-                    recipientId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_RECIPIENT)),
-                    content = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CONTENT)),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_TIMESTAMP)),
-                    channel = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CHANNEL)),
-                    packetId = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_PACKET_ID)),
-                    status = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_STATUS)) ?: "SENT",
-                    isEncrypted = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_IS_ENCRYPTED)) != 0
-                ))
+                list.add(chatMessageFromCursor(cursor))
             } while (cursor.moveToNext())
         }
         cursor.close()
@@ -697,21 +763,27 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         )
         if (cursor.moveToFirst()) {
             do {
-                list.add(ChatMessage(
-                    id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_ID)),
-                    senderId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_SENDER)),
-                    recipientId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_RECIPIENT)),
-                    content = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CONTENT)),
-                    timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_TIMESTAMP)),
-                    channel = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CHANNEL)),
-                    packetId = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_PACKET_ID)),
-                    status = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_STATUS)) ?: "SENT",
-                    isEncrypted = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_IS_ENCRYPTED)) != 0
-                ))
+                list.add(chatMessageFromCursor(cursor))
             } while (cursor.moveToNext())
         }
         cursor.close()
         return list
+    }
+
+    private fun chatMessageFromCursor(cursor: android.database.Cursor): ChatMessage {
+        val heardIdx = cursor.getColumnIndex(COL_MSG_HEARD_COUNT)
+        return ChatMessage(
+            id = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_ID)),
+            senderId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_SENDER)),
+            recipientId = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_RECIPIENT)),
+            content = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CONTENT)),
+            timestamp = cursor.getLong(cursor.getColumnIndexOrThrow(COL_MSG_TIMESTAMP)),
+            channel = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_CHANNEL)),
+            packetId = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_PACKET_ID)),
+            status = cursor.getString(cursor.getColumnIndexOrThrow(COL_MSG_STATUS)) ?: "SENT",
+            isEncrypted = cursor.getInt(cursor.getColumnIndexOrThrow(COL_MSG_IS_ENCRYPTED)) != 0,
+            heardCount = if (heardIdx >= 0) cursor.getInt(heardIdx) else 0
+        )
     }
 
     // Save or update chat encryption passcode
@@ -1334,7 +1406,8 @@ data class ChatMessage(
     val channel: String,
     val packetId: Int = 0,
     val status: String = "SENT",
-    val isEncrypted: Boolean = false
+    val isEncrypted: Boolean = false,
+    val heardCount: Int = 0
 )
 
 /** Lightweight last-message summary for the Chats inbox. */

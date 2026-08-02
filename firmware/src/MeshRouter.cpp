@@ -4,6 +4,7 @@
 #include "pb_common.h"
 #include "pb_encode.h"
 #include "pb_decode.h"
+#include <string.h>
 
 static void terminateTextFields(aethermesh_TextMessage& text) {
     text.content[sizeof(text.content) - 1] = '\0';
@@ -14,6 +15,16 @@ static bool isRangeTestTextPacket(const aethermesh_MeshPacket& packet) {
     return packet.which_payload == aethermesh_MeshPacket_text_tag &&
            (strncmp(packet.payload.text.content, "PING_", 5) == 0 ||
             strncmp(packet.payload.text.content, "PONG_", 5) == 0);
+}
+
+// Keep remote-config control plane moving even during range-test quiet mode.
+static bool isUrgentControlPacket(const aethermesh_MeshPacket& packet) {
+    if (isRangeTestTextPacket(packet)) return true;
+    if (packet.which_payload == aethermesh_MeshPacket_config_result_tag) return true;
+    if (packet.which_payload == aethermesh_MeshPacket_config_tag) {
+        return packet.payload.config.report_only || packet.payload.config.request_report;
+    }
+    return false;
 }
 
 // startTransmit() returns as soon as TX begins. Schedule the next direct PONG
@@ -60,6 +71,7 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     rangePongsSent = 0;
     rangePongTxFailures = 0;
     quietMode = false;
+    quietModeStartedAt = 0;
     
     // Clear tables
     for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
@@ -77,6 +89,11 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     }
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         pendingAcks[i].active = false;
+    }
+    for (int i = 0; i < MAX_CHANNEL_RECEIPTS; i++) {
+        channelReceipts[i].active = false;
+        channelReceipts[i].heardCount = 0;
+        channelReceipts[i].packetId = 0;
     }
     for (int i = 0; i < MAX_PENDING_PONGS; i++) {
         pendingPongs[i].active = false;
@@ -131,6 +148,7 @@ bool MeshRouter::shouldFloodUnknownUnicast(const aethermesh_MeshPacket& packet) 
         case aethermesh_MeshPacket_text_tag:
         case aethermesh_MeshPacket_trace_route_tag:
         case aethermesh_MeshPacket_config_tag:
+        case aethermesh_MeshPacket_config_result_tag:
         case aethermesh_MeshPacket_ack_tag:
         case aethermesh_MeshPacket_route_discovery_tag:
             return true;
@@ -141,12 +159,19 @@ bool MeshRouter::shouldFloodUnknownUnicast(const aethermesh_MeshPacket& packet) 
 
 void MeshRouter::loop() {
     uint32_t now = millis();
+    // Leave-behind safeguard: never stay quiet indefinitely if the phone
+    // disconnects without sending STOP (or the app crashes mid-test).
+    if (quietMode && quietModeStartedAt != 0 &&
+        (uint32_t)(now - quietModeStartedAt) >= QUIET_MODE_MAX_MS) {
+        Serial.println("Range-test quiet mode auto-cleared after timeout.");
+        setQuietMode(false);
+    }
     drainPendingPongReplies();
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (pendingRebroadcasts[i].active &&
             (int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
-            bool urgent = isRangeTestTextPacket(pendingRebroadcasts[i].packet);
-            // Quiet mode: only emit range-test control traffic; hold other relays.
+            bool urgent = isUrgentControlPacket(pendingRebroadcasts[i].packet);
+            // Quiet mode: only emit range-test / remote-config control; hold other relays.
             if (quietMode && !urgent) {
                 pendingRebroadcasts[i].transmitTime = now + 1000;
                 continue;
@@ -248,6 +273,15 @@ void MeshRouter::loop() {
                 pendingAcks[i].nextRetryTime = now +
                     meshmath::radioBusyRetryDelayMs(random(0, 181));
             }
+        }
+    }
+
+    // Expire channel receipt aggregation windows (no FAILED — broadcast is best-effort).
+    for (int i = 0; i < MAX_CHANNEL_RECEIPTS; i++) {
+        if (channelReceipts[i].active && (int32_t)(now - channelReceipts[i].expiresAt) >= 0) {
+            Serial.printf("Channel receipt window closed for packet %u (heard=%u).\n",
+                          channelReceipts[i].packetId, channelReceipts[i].heardCount);
+            channelReceipts[i].active = false;
         }
     }
 }
@@ -570,6 +604,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 Serial.print("Received ACK for packet_id: ");
                 Serial.println(packet.payload.ack.acked_packet_id);
                 clearPendingAck(packet.payload.ack.acked_packet_id, rssi, snr);
+                noteChannelHearing(packet.payload.ack.acked_packet_id, packet.sender_id, rssi, snr);
                 break;
             case aethermesh_MeshPacket_config_tag:
                 if (configCallback) {
@@ -589,7 +624,13 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         bool shouldRebroadcast = true;
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
-                if (textCallback) {
+                // Channel receipts: each node that first hears a want_ack broadcast
+                // text ACKs the originator. Insurance retries share packet_id, so
+                // packetIdSeenBefore prevents ACK storms.
+                if (packet.want_ack && !packetIdSeenBefore) {
+                    sendAck(packet.sender_id, packet.packet_id, rssi, snr);
+                }
+                if (!packetIdSeenBefore && textCallback) {
                     textCallback(packet.sender_id, packet.payload.text.content);
                 }
                 break;
@@ -937,7 +978,7 @@ void MeshRouter::onReceivedConfig(void (*callback)(const aethermesh_MeshPacket& 
     configCallback = callback;
 }
 
-void MeshRouter::onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr)) {
+void MeshRouter::onDeliveryStatus(void (*callback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId)) {
     deliveryStatusCallback = callback;
 }
 
@@ -962,8 +1003,14 @@ void MeshRouter::printRoutingTable() {
 bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
     // Only track for ACK/retransmit when the sender requested it (DMs, etc.).
     // Range-test PINGs set want_ack=false and are scored via PONG replies.
+    // Broadcast want_ack text uses channel receipt aggregation (no retransmit).
     if (packet->want_ack) {
-        trackForAck(*packet);
+        if (packet->recipient_id == 0xFFFFFFFFu &&
+            packet->which_payload == aethermesh_MeshPacket_text_tag) {
+            trackChannelReceipt(packet->packet_id);
+        } else {
+            trackForAck(*packet);
+        }
     }
     bool sent = serializeAndSend(packet, urgent);
 
@@ -1213,9 +1260,67 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
     serializeAndSend(&ackPacket);
 }
 
-void MeshRouter::emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr) {
+void MeshRouter::emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId) {
     if (deliveryStatusCallback) {
-        deliveryStatusCallback(packetId, recipientId, state, reason, retryCount, ackRssi, ackSnr);
+        deliveryStatusCallback(packetId, recipientId, state, reason, retryCount, ackRssi, ackSnr, heardCount, fromNodeId);
+    }
+}
+
+void MeshRouter::trackChannelReceipt(uint32_t packetId) {
+    if (packetId == 0) return;
+    int slot = -1;
+    for (int i = 0; i < MAX_CHANNEL_RECEIPTS; i++) {
+        if (channelReceipts[i].active && channelReceipts[i].packetId == packetId) {
+            channelReceipts[i].expiresAt = millis() + CHANNEL_RECEIPT_TTL_MS;
+            return;
+        }
+        if (slot == -1 && !channelReceipts[i].active) slot = i;
+    }
+    if (slot == -1) {
+        // Evict the oldest window.
+        slot = 0;
+        for (int i = 1; i < MAX_CHANNEL_RECEIPTS; i++) {
+            if ((int32_t)(channelReceipts[i].expiresAt - channelReceipts[slot].expiresAt) < 0) {
+                slot = i;
+            }
+        }
+    }
+    channelReceipts[slot].packetId = packetId;
+    channelReceipts[slot].heardCount = 0;
+    memset(channelReceipts[slot].hearers, 0, sizeof(channelReceipts[slot].hearers));
+    channelReceipts[slot].expiresAt = millis() + CHANNEL_RECEIPT_TTL_MS;
+    channelReceipts[slot].active = true;
+}
+
+void MeshRouter::noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId, float ackRssi, float ackSnr) {
+    if (ackedPacketId == 0 || fromNodeId == 0 || fromNodeId == localNodeId) return;
+    for (int i = 0; i < MAX_CHANNEL_RECEIPTS; i++) {
+        if (!channelReceipts[i].active || channelReceipts[i].packetId != ackedPacketId) {
+            continue;
+        }
+        for (uint8_t h = 0; h < channelReceipts[i].heardCount; h++) {
+            if (channelReceipts[i].hearers[h] == fromNodeId) {
+                return; // already counted
+            }
+        }
+        if (channelReceipts[i].heardCount >= MAX_CHANNEL_HEARERS) {
+            return;
+        }
+        channelReceipts[i].hearers[channelReceipts[i].heardCount++] = fromNodeId;
+        Serial.printf("Channel packet %u heard by 0x%08X (total %u).\n",
+                      ackedPacketId, fromNodeId, channelReceipts[i].heardCount);
+        emitDeliveryStatus(
+            ackedPacketId,
+            0xFFFFFFFFu,
+            aethermesh_DeliveryStatus_State_HEARD,
+            aethermesh_DeliveryStatus_Reason_REASON_UNSPECIFIED,
+            0,
+            ackRssi,
+            ackSnr,
+            channelReceipts[i].heardCount,
+            fromNodeId
+        );
+        return;
     }
 }
 
@@ -1316,6 +1421,7 @@ void MeshRouter::getDiagnostics(aethermesh_MeshDiagnostics& diagnostics) const {
 
 void MeshRouter::setQuietMode(bool enabled) {
     quietMode = enabled;
+    quietModeStartedAt = enabled ? millis() : 0;
     Serial.printf("Range-test quiet mode %s\n", enabled ? "ON" : "OFF");
 }
 
