@@ -1071,11 +1071,18 @@ class AetherMeshRepository(private val context: Context) {
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
-        fixedAltitude: Int = 0
+        fixedAltitude: Int = 0,
+        meshHopLimit: Int = 4,
+        rebroadcastTxdelayX100: Int = 100
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
+        val hops = meshHopLimit.coerceIn(1, 8)
+        val txdelay = when {
+            rebroadcastTxdelayX100 <= 0 -> 100
+            else -> rebroadcastTxdelayX100.coerceIn(50, 200)
+        }
 
         // Build NodeConfig message
         val configBuilder = com.example.aethermesh.proto.NodeConfig.newBuilder()
@@ -1094,6 +1101,8 @@ class AetherMeshRepository(private val context: Context) {
             .setFixedLatitude(fixedLatitude)
             .setFixedLongitude(fixedLongitude)
             .setFixedAltitude(fixedAltitude)
+            .setMeshHopLimit(hops)
+            .setRebroadcastTxdelayX100(txdelay)
 
         // Build MeshPacket wrapper
         val packet = MeshPacket.newBuilder()
@@ -1137,6 +1146,14 @@ class AetherMeshRepository(private val context: Context) {
             .putFloat("fixed_longitude", config.fixedLongitude)
             .putInt("fixed_altitude", config.fixedAltitude)
             .putBoolean("region_configured", config.regionConfigured)
+            .putInt("mesh_hop_limit", if (config.meshHopLimit in 1..8) config.meshHopLimit else 4)
+            .putInt(
+                "rebroadcast_txdelay_x100",
+                when {
+                    config.rebroadcastTxdelayX100 <= 0 -> 100
+                    else -> config.rebroadcastTxdelayX100.coerceIn(50, 200)
+                }
+            )
             .putBoolean("device_synced", true)
             .apply()
 
@@ -1316,13 +1333,24 @@ class AetherMeshRepository(private val context: Context) {
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
-        fixedAltitude: Int = 0
+        fixedAltitude: Int = 0,
+        // 0 = leave unchanged on the remote node (firmware ignores 0)
+        meshHopLimit: Int = 0,
+        rebroadcastTxdelayX100: Int = 0
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
 
         val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val hops = when {
+            meshHopLimit <= 0 -> 0
+            else -> meshHopLimit.coerceIn(1, 8)
+        }
+        val txdelay = when {
+            rebroadcastTxdelayX100 <= 0 -> 0
+            else -> rebroadcastTxdelayX100.coerceIn(50, 200)
+        }
         val config = com.example.aethermesh.proto.NodeConfig.newBuilder()
             .setNodeName(name)
             .setConfigPassword(if (supportsV2) "" else password)
@@ -1340,6 +1368,8 @@ class AetherMeshRepository(private val context: Context) {
             .setFixedLatitude(fixedLatitude)
             .setFixedLongitude(fixedLongitude)
             .setFixedAltitude(fixedAltitude)
+            .setMeshHopLimit(hops)
+            .setRebroadcastTxdelayX100(txdelay)
             .build()
 
         val packetBuilder = MeshPacket.newBuilder()

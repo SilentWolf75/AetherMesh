@@ -69,7 +69,9 @@ size_t buildConfigCanonical(const aethermesh_MeshPacket& packet,
         !appendFloat(cursor, remaining, config.fixed_latitude) ||
         !appendFloat(cursor, remaining, config.fixed_longitude) ||
         !appendU32(cursor, remaining, (uint32_t)config.fixed_altitude) ||
-        !appendBytes(cursor, remaining, &applyNameOnly, 1)) {
+        !appendBytes(cursor, remaining, &applyNameOnly, 1) ||
+        !appendU32(cursor, remaining, config.mesh_hop_limit) ||
+        !appendU32(cursor, remaining, config.rebroadcast_txdelay_x100)) {
         return 0;
     }
     return capacity - remaining;
@@ -79,7 +81,7 @@ bool verifyConfig(const aethermesh_MeshPacket& packet, const char* password) {
     if (packet.protocol_version < 2 || packet.auth_counter == 0 ||
         packet.session_id == 0 || packet.auth_tag.size != 16 ||
         password == nullptr || password[0] == '\0') return false;
-    uint8_t canonical[128];
+    uint8_t canonical[160];
     size_t length = buildConfigCanonical(packet, canonical, sizeof(canonical));
     if (length == 0) return false;
     uint8_t expected[SHA256::HASH_SIZE];

@@ -22,6 +22,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +38,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.ui.components.AetherSectionHeader
+import com.example.aethermesh.ui.AppUiFeedback
+import androidx.compose.material3.SnackbarDuration
 
 @Composable
 fun MeshRoutingDiagnosticsPanel(
@@ -45,7 +48,12 @@ fun MeshRoutingDiagnosticsPanel(
     isConnected: Boolean,
     isDeviceAuthenticated: Boolean,
     appLanguage: String = "English",
-    onUnlockDevice: (() -> Unit)? = null
+    onUnlockDevice: (() -> Unit)? = null,
+    meshHopLimit: Int = 4,
+    onMeshHopLimitChange: (Int) -> Unit = {},
+    rebroadcastTxdelayX100: Int = 100,
+    onRebroadcastTxdelayChange: (Int) -> Unit = {},
+    onApplyRoutingSettings: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
@@ -120,6 +128,115 @@ fun MeshRoutingDiagnosticsPanel(
         fontSize = 11.sp,
         modifier = Modifier.padding(bottom = 12.dp)
     )
+
+    if (isConnected && isDeviceAuthenticated && onApplyRoutingSettings != null) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            border = BorderStroke(1.dp, BorderDark)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    if (spanish) "Ajustes de enrutamiento" else "Routing settings",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    if (spanish)
+                        "Afectan Router/Repetidor. Aplicar reinicia el nodo."
+                    else
+                        "Applies to Router/Repeater nodes. Apply reboots the node.",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (spanish) "Límite de saltos" else "Hop limit",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("$meshHopLimit", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+                Slider(
+                    value = meshHopLimit.toFloat(),
+                    onValueChange = { onMeshHopLimitChange(it.toInt().coerceIn(1, 8)) },
+                    valueRange = 1f..8f,
+                    steps = 6,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (spanish) "Ritmo de reenvío" else "Rebroadcast pace",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        when {
+                            rebroadcastTxdelayX100 <= 70 -> if (spanish) "Rápido" else "Fast"
+                            rebroadcastTxdelayX100 >= 140 -> if (spanish) "Lento" else "Slow"
+                            else -> if (spanish) "Normal" else "Normal"
+                        } + " (${rebroadcastTxdelayX100}%)",
+                        color = AccentCyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Slider(
+                    value = rebroadcastTxdelayX100.toFloat(),
+                    onValueChange = { onRebroadcastTxdelayChange(it.toInt().coerceIn(50, 200)) },
+                    valueRange = 50f..200f,
+                    steps = 5,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    if (spanish)
+                        "Más lento = menos colisiones en mallas densas (estilo MeshCore txdelay)."
+                    else
+                        "Slower = fewer collisions on dense meshes (MeshCore-style txdelay).",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        onApplyRoutingSettings()
+                        AppUiFeedback.show(
+                            if (spanish)
+                                "Ajustes de enrutamiento enviados. El nodo se reiniciará."
+                            else
+                                "Routing settings sent. Node will reboot.",
+                            duration = SnackbarDuration.Long
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentMint),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        if (spanish) "Aplicar al nodo" else "Apply to node",
+                        color = DarkBackground,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
         shape = RoundedCornerShape(16.dp),

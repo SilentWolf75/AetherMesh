@@ -243,6 +243,9 @@ message NodeConfig {
   // True once the user has confirmed LoRa region (first-setup wizard or Settings).
   // False on factory-fresh nodes so the app can prompt before the radio is used.
   bool region_configured = 19;
+  // Mesh routing knobs (Router/Repeater). 0 = use firmware defaults.
+  uint32 mesh_hop_limit = 20;              // 1–8; default 4 when 0
+  uint32 rebroadcast_txdelay_x100 = 21;    // 50–200 (=0.5x–2.0x); default 100 when 0
 }
 
 // Authentication request sent by companion app to LoRa node

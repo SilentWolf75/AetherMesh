@@ -291,12 +291,15 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
-        fixedAltitude: Int = 0
+        fixedAltitude: Int = 0,
+        meshHopLimit: Int = 4,
+        rebroadcastTxdelayX100: Int = 100
     ): Boolean {
         return repository.sendNodeConfig(
             name, shortName, sf, bw, txPower, region, role,
             telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
-            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude
+            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude,
+            meshHopLimit, rebroadcastTxdelayX100
         )
     }
 
@@ -356,12 +359,15 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         fixedPosition: Boolean = false,
         fixedLatitude: Float = 0f,
         fixedLongitude: Float = 0f,
-        fixedAltitude: Int = 0
+        fixedAltitude: Int = 0,
+        meshHopLimit: Int = 0,
+        rebroadcastTxdelayX100: Int = 0
     ): Boolean {
         return repository.sendRemoteConfig(
             nodeId, name, password, sf, bw, txPower, region, role,
             telemetryInterval, screenTimeout, powerSaveMode, positionPrecision, gpsMode,
-            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude
+            fixedPosition, fixedLatitude, fixedLongitude, fixedAltitude,
+            meshHopLimit, rebroadcastTxdelayX100
         )
     }
 

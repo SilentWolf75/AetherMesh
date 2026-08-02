@@ -219,6 +219,9 @@ typedef struct _aethermesh_NodeConfig {
     /* True once the user has confirmed LoRa region (first-setup wizard or Settings).
  False on factory-fresh nodes so the app can prompt before the radio is used. */
     bool region_configured;
+    /* Mesh routing knobs (Router/Repeater). 0 = use firmware defaults. */
+    uint32_t mesh_hop_limit; /* 1–8; default 4 when 0 */
+    uint32_t rebroadcast_txdelay_x100; /* 50–200 (=0.5x–2.0x); default 100 when 0 */
 } aethermesh_NodeConfig;
 
 /* Authentication request sent by companion app to LoRa node */
@@ -340,7 +343,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
@@ -355,7 +358,7 @@ extern "C" {
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
 
@@ -450,6 +453,8 @@ extern "C" {
 #define aethermesh_NodeConfig_apply_name_only_tag 17
 #define aethermesh_NodeConfig_report_only_tag    18
 #define aethermesh_NodeConfig_region_configured_tag 19
+#define aethermesh_NodeConfig_mesh_hop_limit_tag 20
+#define aethermesh_NodeConfig_rebroadcast_txdelay_x100_tag 21
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
@@ -664,7 +669,9 @@ X(a, STATIC,   SINGULAR, FLOAT,    fixed_longitude,  15) \
 X(a, STATIC,   SINGULAR, INT32,    fixed_altitude,   16) \
 X(a, STATIC,   SINGULAR, BOOL,     apply_name_only,  17) \
 X(a, STATIC,   SINGULAR, BOOL,     report_only,      18) \
-X(a, STATIC,   SINGULAR, BOOL,     region_configured,  19)
+X(a, STATIC,   SINGULAR, BOOL,     region_configured,  19) \
+X(a, STATIC,   SINGULAR, UINT32,   mesh_hop_limit,   20) \
+X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_txdelay_x100,  21)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -723,7 +730,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_DeliveryStatus_size           22
 #define aethermesh_MeshDiagnostics_size          135
 #define aethermesh_MeshPacket_size               411
-#define aethermesh_NodeConfig_size               145
+#define aethermesh_NodeConfig_size               159
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49

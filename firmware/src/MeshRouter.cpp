@@ -42,6 +42,7 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     sessionId = 0;
     nodeRole = 0;
     defaultHopLimit = DEFAULT_HOP_LIMIT;
+    rebroadcastTxdelayX100 = 100;
     seenPacketsIndex = 0;
     textCallback = nullptr;
     telemetryCallback = nullptr;
@@ -114,6 +115,13 @@ void MeshRouter::setDefaultHopLimit(uint8_t hops) {
     if (hops < 1) hops = 1;
     if (hops > 8) hops = 8;
     defaultHopLimit = hops;
+}
+
+void MeshRouter::setRebroadcastTxdelayX100(uint32_t x100) {
+    if (x100 == 0) x100 = 100;
+    if (x100 < 50) x100 = 50;
+    if (x100 > 200) x100 = 200;
+    rebroadcastTxdelayX100 = x100;
 }
 
 bool MeshRouter::shouldFloodUnknownUnicast(const aethermesh_MeshPacket& packet) const {
@@ -609,7 +617,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             packet.prev_hop_id = localNodeId;
             
             // Queue rebroadcast with SNR-based delay (pure math in MeshMath.h)
-            queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr));
+            queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr, rebroadcastTxdelayX100));
         } else if (!canRelay() && packet.hop_limit > 1) {
             // Still learn topology from broadcasts we hear, but do not forward.
         }
@@ -647,7 +655,10 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 // collides with that ACK at the sender every time (all responders
                 // are triggered by the same packet). Wait out the ACK airtime with
                 // jitter; if a duplicate arrives meanwhile, the relay is cancelled.
-                queueRebroadcast(packet, millis() + random(300, 700));
+                uint32_t baseJitter = 300 + (uint32_t)random(0, 400);
+                uint32_t scaled = baseJitter * rebroadcastTxdelayX100 / 100;
+                if (scaled < 150) scaled = 150;
+                queueRebroadcast(packet, millis() + scaled);
             } else if (shouldFloodUnknownUnicast(packet)) {
                 // Flood-then-direct: discover a path when the route table is cold.
                 // Duplicate suppression and jitter bound this fallback flood.
@@ -656,7 +667,10 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 Serial.println("; flooding for path discovery.");
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
-                queueRebroadcast(packet, millis() + random(300, 700));
+                uint32_t baseJitter = 300 + (uint32_t)random(0, 400);
+                uint32_t scaled = baseJitter * rebroadcastTxdelayX100 / 100;
+                if (scaled < 150) scaled = 150;
+                queueRebroadcast(packet, millis() + scaled);
             } else {
                 Serial.print("No route to 0x");
                 Serial.print(packet.recipient_id, HEX);

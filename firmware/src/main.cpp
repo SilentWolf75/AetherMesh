@@ -40,6 +40,8 @@ struct NodeSettings {
     float fixedLon;
     int32_t fixedAlt;
     bool regionConfigured; // v10+: user confirmed LoRa region
+    uint32_t meshHopLimit; // v11+: 1–8, 0→default 4
+    uint32_t rebroadcastTxdelayX100; // v11+: 50–200, 0→100
 };
 
 // v9 layout (without regionConfigured) for InternalFS migration.
@@ -784,6 +786,8 @@ int32_t loraTxPower = 22; // default for Heltec V4
 uint32_t nodeRegion = 0; // 0 = US915, 1 = EU868
 bool regionConfigured = false; // set true after first-setup / Settings apply
 uint32_t nodeRole = 0;   // 0 = Client, 1 = Router, 2 = Low-Power Repeater
+uint32_t meshHopLimit = 4;               // 1–8; locally originated hop_limit
+uint32_t rebroadcastTxdelayX100 = 100;   // 50–200 (=0.5x–2.0x) rebroadcast pace
 uint32_t telemetryIntervalSec = 60; // default telemetry broadcast interval in seconds
 uint32_t screenTimeoutSecs = 30; // Screen timeout in seconds (0 = display off, 0xFFFFFFFF = display always on)
 uint32_t lastDisplayActivityTime = 0;
@@ -808,7 +812,7 @@ bool fixedPosition = false;
 float fixedLat = 0.0f;
 float fixedLon = 0.0f;
 int32_t fixedAlt = 0;
-static const uint32_t SETTINGS_VERSION = 10;
+static const uint32_t SETTINGS_VERSION = 11;
 
 // OLED message popup state
 char lastMsgText[40] = "";
@@ -888,6 +892,12 @@ void loadSettings() {
         loraTxPower = preferences.getInt("lora_tx_power", 22);
         nodeRegion = preferences.getUInt("region", 0);
         nodeRole = preferences.getUInt("node_role", 0);
+        meshHopLimit = preferences.getUInt("mesh_hops", 4);
+        rebroadcastTxdelayX100 = preferences.getUInt("txdelay_x100", 100);
+        if (meshHopLimit == 0 || meshHopLimit > 8) meshHopLimit = 4;
+        if (rebroadcastTxdelayX100 == 0) rebroadcastTxdelayX100 = 100;
+        if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
+        if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
         telemetryIntervalSec = preferences.getUInt("tel_interval", 60);
         screenTimeoutSecs = preferences.getUInt("scr_timeout", 30);
         powerSaveMode = preferences.getBool("power_save", false);
@@ -911,6 +921,8 @@ void loadSettings() {
         nodeRegion = 0;
         regionConfigured = false;
         nodeRole = 0;
+        meshHopLimit = 4;
+        rebroadcastTxdelayX100 = 100;
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
         powerSaveMode = false;
@@ -937,6 +949,8 @@ void loadSettings() {
                   regionConfigured ? "" : " [needs setup]");
     Serial.printf("  Password Configured: %s\n", (strlen(nodePassword) > 0) ? "Yes" : "No");
     Serial.printf("  Node Role: %u\n", nodeRole);
+    Serial.printf("  Mesh hop limit: %u\n", meshHopLimit);
+    Serial.printf("  Rebroadcast txdelay: %u%%\n", rebroadcastTxdelayX100);
     Serial.printf("  Telemetry Interval: %u sec\n", telemetryIntervalSec);
     Serial.printf("  Screen Timeout: %u sec\n", screenTimeoutSecs);
     Serial.printf("  Power Save Mode: %s\n", powerSaveMode ? "ON" : "OFF");
@@ -973,11 +987,16 @@ void loadSettings() {
             fixedLon = settings.fixedLon;
             fixedAlt = settings.fixedAlt;
             regionConfigured = settings.regionConfigured;
+            meshHopLimit = settings.meshHopLimit ? settings.meshHopLimit : 4;
+            rebroadcastTxdelayX100 = settings.rebroadcastTxdelayX100 ? settings.rebroadcastTxdelayX100 : 100;
+            if (meshHopLimit > 8) meshHopLimit = 4;
+            if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
+            if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
             loaded = true;
         } else if (n >= sizeof(NodeSettingsV9)) {
             NodeSettingsV9 v9;
             memcpy(&v9, &settings, sizeof(v9));
-            if (v9.version == 9) {
+            if (v9.version == 9 || v9.version == 10) {
                 strncpy(nodeCustomName, v9.name, sizeof(nodeCustomName) - 1);
                 nodeCustomName[sizeof(nodeCustomName) - 1] = '\0';
                 strncpy(nodePassword, v9.password, sizeof(nodePassword) - 1);
@@ -996,10 +1015,16 @@ void loadSettings() {
                 fixedLat = v9.fixedLat;
                 fixedLon = v9.fixedLon;
                 fixedAlt = v9.fixedAlt;
-                regionConfigured = true; // grandfather
+                regionConfigured = (v9.version >= 10) ? true : true; // grandfather
+                // Prefer regionConfigured from v10 file if we read enough bytes
+                if (v9.version == 10 && n >= sizeof(NodeSettingsV9) + sizeof(bool)) {
+                    // Already grandfathered; keep true for upgrades from field units
+                }
+                meshHopLimit = 4;
+                rebroadcastTxdelayX100 = 100;
                 loaded = true;
                 needsRewrite = true;
-                Serial.println("Migrated settings.bin v9 -> v10.");
+                Serial.printf("Migrated settings.bin v%u -> v11.\n", v9.version);
             }
         }
     }
@@ -1013,6 +1038,8 @@ void loadSettings() {
         nodeRegion = 0;
         regionConfigured = false;
         nodeRole = 0;
+        meshHopLimit = 4;
+        rebroadcastTxdelayX100 = 100;
         telemetryIntervalSec = 60;
         screenTimeoutSecs = 30;
         powerSaveMode = false;
@@ -1073,6 +1100,8 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putUInt("region", region);
     preferences.putString("node_pass", password);
     preferences.putUInt("node_role", role);
+    preferences.putUInt("mesh_hops", meshHopLimit);
+    preferences.putUInt("txdelay_x100", rebroadcastTxdelayX100);
     preferences.putUInt("tel_interval", telemetryInterval);
     preferences.putUInt("scr_timeout", screenTimeout);
     preferences.putBool("power_save", powerSave);
@@ -1114,6 +1143,8 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         settings.fixedLon = fixedLon;
         settings.fixedAlt = fixedAlt;
         settings.regionConfigured = regionConfigured;
+        settings.meshHopLimit = meshHopLimit;
+        settings.rebroadcastTxdelayX100 = rebroadcastTxdelayX100;
 
         file.write((const uint8_t*)&settings, sizeof(settings));
         file.close();
@@ -2908,6 +2939,8 @@ void sendNodeConfigReportToPhone() {
     cfg.apply_name_only = false;
     cfg.report_only = true;
     cfg.region_configured = regionConfigured;
+    cfg.mesh_hop_limit = meshHopLimit;
+    cfg.rebroadcast_txdelay_x100 = rebroadcastTxdelayX100;
 
     uint8_t buffer[256];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
@@ -3339,6 +3372,15 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             // Any full Settings / first-setup apply confirms the LoRa region.
             regionConfigured = true;
             nodeRegion = packet.payload.config.region;
+            if (packet.payload.config.mesh_hop_limit > 0) {
+                meshHopLimit = packet.payload.config.mesh_hop_limit;
+                if (meshHopLimit > 8) meshHopLimit = 8;
+            }
+            if (packet.payload.config.rebroadcast_txdelay_x100 > 0) {
+                rebroadcastTxdelayX100 = packet.payload.config.rebroadcast_txdelay_x100;
+                if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
+                if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
+            }
 
             // Save to NVS
             saveSettings(
@@ -3512,6 +3554,14 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
         fixedAlt = config.fixed_altitude;
         regionConfigured = true;
         nodeRegion = config.region;
+        if (config.mesh_hop_limit > 0) {
+            meshHopLimit = config.mesh_hop_limit > 8 ? 8 : config.mesh_hop_limit;
+        }
+        if (config.rebroadcast_txdelay_x100 > 0) {
+            rebroadcastTxdelayX100 = config.rebroadcast_txdelay_x100;
+            if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
+            if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
+        }
 
         saveSettings(
             config.node_name,
@@ -3838,6 +3888,8 @@ void setup() {
     // 5. Initialize Mesh Router
     router.init(localNodeId);
     router.setNodeRole(nodeRole);
+    router.setDefaultHopLimit((uint8_t)meshHopLimit);
+    router.setRebroadcastTxdelayX100(rebroadcastTxdelayX100);
     router.onReceivedTextMessage(onReceivedTextMessage);
     router.onReceivedConfig(onReceivedConfig);
     router.onDeliveryStatus(sendDeliveryStatusToPhone);

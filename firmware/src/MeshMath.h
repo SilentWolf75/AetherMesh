@@ -23,9 +23,14 @@ inline uint8_t hopCost(float snr) {
 // SNR-weighted rebroadcast backoff (ms): weaker links wait longer before
 // relaying a broadcast, so the node that heard it best rebroadcasts first.
 // Ranges 500ms (SNR>=10) to 2000ms (SNR<=-20).
-inline uint32_t rebroadcastDelayMs(float snr) {
+// txdelayX100 scales the result (50=0.5x … 200=2.0x); 0 or 100 = 1.0x.
+inline uint32_t rebroadcastDelayMs(float snr, uint32_t txdelayX100 = 100) {
     float s = clampf(snr, -20.0f, 10.0f);
-    return (uint32_t)(500.0f + (10.0f - s) * (1500.0f / 30.0f));
+    float base = 500.0f + (10.0f - s) * (1500.0f / 30.0f);
+    uint32_t factor = txdelayX100 == 0 ? 100 : txdelayX100;
+    if (factor < 50) factor = 50;
+    if (factor > 200) factor = 200;
+    return (uint32_t)(base * (float)factor / 100.0f);
 }
 
 inline bool shouldReplaceRoute(uint32_t currentNextHop, uint8_t currentMetric,

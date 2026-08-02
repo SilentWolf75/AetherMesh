@@ -101,6 +101,10 @@ public:
     // Default hop_limit for locally originated packets (1–8).
     void setDefaultHopLimit(uint8_t hops);
     uint8_t getDefaultHopLimit() const { return defaultHopLimit; }
+
+    // Rebroadcast pace multiplier ×100 (50–200). Affects flood/relay stagger.
+    void setRebroadcastTxdelayX100(uint32_t x100);
+    uint32_t getRebroadcastTxdelayX100() const { return rebroadcastTxdelayX100; }
     
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
@@ -143,6 +147,7 @@ private:
     uint64_t sessionId;
     uint32_t nodeRole;
     uint8_t defaultHopLimit;
+    uint32_t rebroadcastTxdelayX100;
     
     // Data structures
     RouteEntry routingTable[MAX_ROUTE_TABLE_ENTRIES];

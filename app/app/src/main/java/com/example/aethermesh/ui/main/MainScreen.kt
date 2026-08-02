@@ -4849,6 +4849,8 @@ fun SettingsView(
     var txPower by remember { mutableIntStateOf(22) }
     var region by remember { mutableIntStateOf(0) } // 0 = US915, 1 = EU868
     var role by remember { mutableIntStateOf(0) } // 0 = Client, 1 = Router, 2 = Low-Power Repeater
+    var meshHopLimit by remember { mutableIntStateOf(4) }
+    var rebroadcastTxdelayX100 by remember { mutableIntStateOf(100) }
     var telemetryIntervalSecs by remember { mutableIntStateOf(60) }
     var screenTimeoutSecs by remember { mutableIntStateOf(30) }
     var powerSaveModeEnabled by remember { mutableStateOf(false) }
@@ -5034,6 +5036,10 @@ fun SettingsView(
             txPower = nodePrefs.getInt("lora_tx_power", 22)
             region = nodePrefs.getInt("region", 0)
             role = nodePrefs.getInt("node_role", 0)
+            meshHopLimit = nodePrefs.getInt("mesh_hop_limit", 4).coerceIn(1, 8)
+            rebroadcastTxdelayX100 = nodePrefs.getInt("rebroadcast_txdelay_x100", 100).let {
+                if (it <= 0) 100 else it.coerceIn(50, 200)
+            }
             telemetryIntervalSecs = nodePrefs.getInt("telemetry_interval", 60)
             screenTimeoutSecs = nodePrefs.getInt("screen_timeout", 30)
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
@@ -5066,7 +5072,9 @@ fun SettingsView(
             fixedPosition = fixedPositionEnabled,
             fixedLatitude = fixedLatInput.toFloatOrNull() ?: 0f,
             fixedLongitude = fixedLonInput.toFloatOrNull() ?: 0f,
-            fixedAltitude = fixedAltInput.toIntOrNull() ?: 0
+            fixedAltitude = fixedAltInput.toIntOrNull() ?: 0,
+            meshHopLimit = meshHopLimit,
+            rebroadcastTxdelayX100 = rebroadcastTxdelayX100
         )
         if (success) {
             val nodeKey = viewModel.connectedNodeId
@@ -5079,6 +5087,8 @@ fun SettingsView(
                     putInt("region", region)
                     putBoolean("region_configured", true)
                     putInt("node_role", role)
+                    putInt("mesh_hop_limit", meshHopLimit.coerceIn(1, 8))
+                    putInt("rebroadcast_txdelay_x100", rebroadcastTxdelayX100.coerceIn(50, 200))
                     putInt("telemetry_interval", telemetryIntervalSecs)
                     putInt("screen_timeout", screenTimeoutSecs)
                     putBoolean("power_save_mode", powerSaveModeEnabled)
@@ -7153,7 +7163,12 @@ fun SettingsView(
                 isConnected = isConnected,
                 isDeviceAuthenticated = isDeviceAuthenticated,
                 appLanguage = appLanguage,
-                onUnlockDevice = { viewModel.promptDeviceAuthentication() }
+                onUnlockDevice = { viewModel.promptDeviceAuthentication() },
+                meshHopLimit = meshHopLimit,
+                onMeshHopLimitChange = { meshHopLimit = it },
+                rebroadcastTxdelayX100 = rebroadcastTxdelayX100,
+                onRebroadcastTxdelayChange = { rebroadcastTxdelayX100 = it },
+                onApplyRoutingSettings = { saveConfigAndNotify() }
             )
         }
 
