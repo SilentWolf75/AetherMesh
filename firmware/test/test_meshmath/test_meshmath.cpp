@@ -112,7 +112,7 @@ void test_store_forward_wake_helpers() {
 }
 
 void test_delivery_soft_age_nudge() {
-    TEST_ASSERT_EQUAL_UINT32(1000, nudgedSoftAgeTimestamp(1000, 900, 200000)); // fresh
+    TEST_ASSERT_EQUAL_UINT32(900, nudgedSoftAgeTimestamp(1000, 900, 200000)); // fresh: keep timestamp
     // Soft-stale backup pulled forward to now - softAge/2.
     TEST_ASSERT_EQUAL_UINT32(1000000u - 100000u,
                              nudgedSoftAgeTimestamp(1000000u, 1000000u - 300000u, 200000u));
