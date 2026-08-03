@@ -223,7 +223,8 @@ fun MainNavigation() {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .safeDrawingPadding()
-                .padding(bottom = 72.dp)
+                // Clear bottom nav + chat composer / FABs so snackbars don't jump layout.
+                .padding(bottom = 96.dp, start = 12.dp, end = 12.dp)
         )
     }
 }

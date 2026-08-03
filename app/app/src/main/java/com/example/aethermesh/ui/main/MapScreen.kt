@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.ColorMatrix
 import android.graphics.drawable.BitmapDrawable
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -109,6 +110,11 @@ fun MapViewCompose(
     var selectedMapNode by remember { mutableStateOf<MeshNode?>(null) }
     var renamingMapNode by remember { mutableStateOf<MeshNode?>(null) }
     var selectedPingLog by remember { mutableStateOf<com.example.aethermesh.data.RangeTestLog?>(null) }
+
+    BackHandler(enabled = selectedMapNode != null || selectedPingLog != null) {
+        selectedMapNode = null
+        selectedPingLog = null
+    }
 
     val context = LocalContext.current
     val rangeTestLogs by viewModel.rangeTestLogs.collectAsStateWithLifecycle()
@@ -768,7 +774,11 @@ fun MapViewCompose(
                             )
                             Icon(
                                 imageVector = if (showNoGpsNodesList) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = null,
+                                contentDescription = if (showNoGpsNodesList) {
+                                    if (appLanguage == "Spanish") "Ocultar lista" else "Collapse list"
+                                } else {
+                                    if (appLanguage == "Spanish") "Mostrar lista" else "Expand list"
+                                },
                                 tint = AccentCyan,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -784,8 +794,7 @@ fun MapViewCompose(
                                             .clip(RoundedCornerShape(6.dp))
                                             .background(DarkBackground.copy(alpha = 0.6f))
                                             .clickable {
-                                                viewModel.selectDirectMessage(node.nodeId)
-                                                onNavigateToChats()
+                                                onOpenNodeDetails(node.nodeId)
                                             }
                                             .padding(6.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -1400,10 +1409,23 @@ fun MapViewCompose(
             nodes.find { it.nodeId == sel.nodeId }
         } ?: selectedMapNode
         // Compact map callout — tap opens full Details (Meshtastic-style).
+        val mapRelativeTick = rememberRelativeTimeTick()
         activeMapNode?.let { node ->
             val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+            @Suppress("UNUSED_VARIABLE")
+            val _heardClock = mapRelativeTick
             val stale = isNodeStale(node.lastActive)
             val mapPrimaryText = if (stale) TextMuted else TextLight
+            val nearbyClusterCount = remember(node.nodeId, nodes) {
+                if (!hasValidPosition(node.latitude, node.longitude)) 1
+                else nodes.count { other ->
+                    hasValidPosition(other.latitude, other.longitude) &&
+                        calculateDistance(
+                            node.latitude.toDouble(), node.longitude.toDouble(),
+                            other.latitude.toDouble(), other.longitude.toDouble()
+                        ) < 0.025
+                }.coerceAtLeast(1)
+            }
             val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
                 val km = calculateDistance(
                     phoneLocation.latitude, phoneLocation.longitude,
@@ -1466,6 +1488,17 @@ fun MapViewCompose(
                                 color = TextMuted,
                                 fontSize = 12.sp
                             )
+                            if (nearbyClusterCount > 1) {
+                                Text(
+                                    if (appLanguage == "Spanish")
+                                        "$nearbyClusterCount nodos a ~25 m — pines separados"
+                                    else
+                                        "$nearbyClusterCount nodes within ~25 m — pins fanned out",
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 val route = observedRoutes[node.nodeId]
@@ -1480,11 +1513,19 @@ fun MapViewCompose(
                                 Icon(
                                     Icons.Default.BatteryFull,
                                     contentDescription = null,
-                                    tint = batteryLevelColor(node.battery),
+                                    tint = if (node.battery <= 0 && node.voltage <= 0f && !node.isCharging)
+                                        TextMuted
+                                    else
+                                        batteryLevelColor(node.battery),
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("${node.battery}%", color = TextMuted, fontSize = 11.sp)
+                                Text(
+                                    if (node.battery <= 0 && node.voltage <= 0f && !node.isCharging) "—"
+                                    else "${node.battery}%",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
                                 route?.hops?.takeIf { it > 0 }?.let { h ->
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text(

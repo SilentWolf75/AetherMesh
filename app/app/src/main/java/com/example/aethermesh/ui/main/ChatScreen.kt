@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.ColorMatrix
 import android.graphics.drawable.BitmapDrawable
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -36,7 +37,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
@@ -57,6 +61,7 @@ import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
+import com.example.aethermesh.data.takeUtf8Bytes
 import com.example.aethermesh.ui.AppUiFeedback
 import com.example.aethermesh.ui.components.*
 import com.example.aethermesh.theme.AccentCyanDim
@@ -94,6 +99,7 @@ fun ChatView(
     appLanguage: String = "English",
     isConnected: Boolean = true,
     isAuthenticated: Boolean = true,
+    isReconnecting: Boolean = false,
     onSelectChannel: (String) -> Unit,
     onSelectDirectMessage: (Long) -> Unit,
     onCreateChannel: (String) -> Unit,
@@ -113,11 +119,14 @@ fun ChatView(
     var inThread by remember { mutableStateOf(false) }
     var stickToBottom by remember { mutableStateOf(true) }
     val chatTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
+    BackHandler(enabled = inThread && !chatTwoPane) { inThread = false }
     val listState = rememberLazyListState()
     val chatScope = rememberCoroutineScope()
     val canSend = isConnected && isAuthenticated
     val spanish = appLanguage == "Spanish"
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val draftPrefs = remember {
         context.getSharedPreferences("chat_drafts", Context.MODE_PRIVATE)
     }
@@ -135,12 +144,34 @@ fun ChatView(
 
     fun formatInboxTime(ts: Long): String {
         if (ts <= 0L) return ""
-        return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(ts))
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = ts }
+        val nowCal = java.util.Calendar.getInstance()
+        val sameDay = msgCal.get(java.util.Calendar.YEAR) == nowCal.get(java.util.Calendar.YEAR) &&
+            msgCal.get(java.util.Calendar.DAY_OF_YEAR) == nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+        return if (sameDay) {
+            SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(ts))
+        } else {
+            SimpleDateFormat("M/d h:mm a", Locale.getDefault()).format(Date(ts))
+        }
     }
 
     fun previewSnippet(raw: String): String {
         val trimmed = raw.trim().replace('\n', ' ')
         return if (trimmed.length <= 48) trimmed else trimmed.take(45) + "…"
+    }
+
+    fun inboxPreviewLine(preview: com.example.aethermesh.data.ChatInboxPreview): String {
+        val body = previewSnippet(preview.snippet)
+        val failed = preview.status in setOf("FAILED", "EXPIRED")
+        val fromMe = localNodeId != 0L && preview.senderId == localNodeId
+        val prefix = when {
+            failed && spanish -> "Falló · "
+            failed -> "Failed · "
+            fromMe && spanish -> "Tú: "
+            fromMe -> "You: "
+            else -> ""
+        }
+        return prefix + body
     }
 
     fun draftSnippetFor(key: String): String? {
@@ -217,12 +248,13 @@ fun ChatView(
 
     @Composable
     fun ChatInboxPane() {
+        val relativeTick = rememberRelativeTimeTick()
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             val dmNodes = nodes.filter { it.nodeId != localNodeId }
             val sortedChannels = remember(channels, channelPreviews) {
                 channels.sortedByDescending { channelPreviews[it]?.timestamp ?: 0L }
             }
-            val sortedDmNodes = remember(dmNodes, dmPreviews) {
+            val sortedDmNodes = remember(dmNodes, dmPreviews, relativeTick) {
                 dmNodes.sortedByDescending { node ->
                     dmPreviews[node.nodeId]?.timestamp?.takeIf { it > 0L } ?: node.lastActive
                 }
@@ -241,6 +273,10 @@ fun ChatView(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         when {
+                            !isConnected && isReconnecting -> if (spanish)
+                                "Reconectando… toca para abrir Conexión."
+                            else
+                                "Reconnecting… tap to open Connection."
                             !isConnected -> if (spanish)
                                 "Conecta una radio para enviar y recibir mensajes."
                             else
@@ -334,24 +370,42 @@ fun ChatView(
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(channel, color = TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                channel,
+                                color = TextLight,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 when {
                                     draft != null ->
                                         (if (spanish) "Borrador: " else "Draft: ") + draft
-                                    preview != null -> previewSnippet(preview.snippet)
+                                    preview != null -> inboxPreviewLine(preview)
                                     else -> if (spanish) "Chat de canal" else "Channel chat"
                                 },
-                                color = if (draft != null) AccentAmber else TextMuted,
+                                color = when {
+                                    draft != null -> AccentAmber
+                                    preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                    else -> TextMuted
+                                },
                                 fontSize = 12.sp,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        if (preview != null && preview.timestamp > 0L) {
-                            Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
-                            Spacer(modifier = Modifier.width(6.dp))
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (preview != null && preview.timestamp > 0L) {
+                                Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                            }
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = TextMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
                     }
                 }
 
@@ -422,28 +476,49 @@ fun ChatView(
                             NodeBadge(shortName = shortName, color = getBadgeColor(node.name), muted = stale)
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(node.name, color = if (stale) TextMuted else TextLight, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    node.name,
+                                    color = if (stale) TextMuted else TextLight,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val heardLabel = remember(node.lastActive, relativeTick, appLanguage) {
+                                    formatLastHeard(node.lastActive, appLanguage)
+                                }
                                 Text(
                                     when {
                                         draft != null ->
                                             (if (spanish) "Borrador: " else "Draft: ") + draft
-                                        preview != null -> previewSnippet(preview.snippet)
+                                        preview != null -> inboxPreviewLine(preview)
                                         stale -> if (spanish)
-                                            "Último aviso ${formatLastHeard(node.lastActive, appLanguage)}"
+                                            "Último aviso $heardLabel"
                                         else
-                                            "Last heard ${formatLastHeard(node.lastActive, appLanguage)}"
+                                            "Last heard $heardLabel"
                                         else -> if (spanish) "Mensaje directo" else "Direct message"
                                     },
-                                    color = if (draft != null) AccentAmber else TextMuted,
+                                    color = when {
+                                        draft != null -> AccentAmber
+                                        preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                        else -> TextMuted
+                                    },
                                     fontSize = 12.sp,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            if (preview != null && preview.timestamp > 0L) {
-                                Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
-                                Spacer(modifier = Modifier.width(6.dp))
+                            Column(horizontalAlignment = Alignment.End) {
+                                if (preview != null && preview.timestamp > 0L) {
+                                    Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                                }
+                                Icon(
+                                    Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
@@ -493,6 +568,10 @@ fun ChatView(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when {
+                        !isConnected && isReconnecting -> if (spanish)
+                            "Reconectando BLE… toca para Conexión."
+                        else
+                            "Reconnecting BLE… tap for Connection."
                         !isConnected -> if (spanish)
                             "Sin conexión BLE. Toca para ir a Conexión."
                         else
@@ -554,6 +633,13 @@ fun ChatView(
                     .background(SurfaceDark)
                     .border(1.dp, BorderDark, RoundedCornerShape(20.dp))
                     .clickable { showPasscodeDialog = true }
+                    .semantics {
+                        contentDescription = if (!passcode.isNullOrEmpty()) {
+                            if (spanish) "Cifrado — tocar para editar clave" else "Encrypted — tap to edit key"
+                        } else {
+                            if (spanish) "Texto claro — tocar para clave" else "Cleartext — tap to set key"
+                        }
+                    }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -612,8 +698,14 @@ fun ChatView(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    if (spanish) "Aún no hay mensajes. Escribe el primero."
-                                    else "No messages yet. Say hello.",
+                                    when {
+                                        !canSend && spanish ->
+                                            "Aún no hay mensajes. Desbloquea el nodo para enviar."
+                                        !canSend ->
+                                            "No messages yet. Unlock the node to send."
+                                        spanish -> "Aún no hay mensajes. Escribe el primero."
+                                        else -> "No messages yet. Say hello."
+                                    },
                                     color = TextMuted,
                                     fontSize = 14.sp,
                                     textAlign = TextAlign.Center
@@ -670,48 +762,67 @@ fun ChatView(
         Spacer(modifier = Modifier.height(8.dp))
 
         if (activeChatId == null || activeChatId != 0L) {
-            val placeholderText = if (activeChatId == null) {
-                if (spanish) "Mensaje #$selectedChannel…" else "Message #$selectedChannel..."
-            } else {
-                if (spanish)
-                    "Mensaje a ${selectedNode?.name ?: "nodo"}…"
-                else
-                    "Message ${selectedNode?.name ?: "node"}..."
+            val placeholderText = when {
+                !isConnected && isReconnecting && spanish -> "Reconectando…"
+                !isConnected && isReconnecting -> "Reconnecting…"
+                !isConnected && spanish -> "Conecta una radio para escribir…"
+                !isConnected -> "Connect a radio to type…"
+                !isAuthenticated && spanish -> "Desbloquea el nodo para enviar…"
+                !isAuthenticated -> "Unlock the node to send…"
+                activeChatId == null && spanish -> "Mensaje #$selectedChannel…"
+                activeChatId == null -> "Message #$selectedChannel..."
+                spanish -> "Mensaje a ${selectedNode?.name ?: "nodo"}…"
+                else -> "Message ${selectedNode?.name ?: "node"}..."
             }
+            val chatIdForLimit = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
+            val encryptedChat = !getChatKey(chatIdForLimit).isNullOrEmpty()
+            val maxUtf8 = if (encryptedChat) CHAT_MAX_ENCRYPTED_UTF8_BYTES else CHAT_MAX_PLAIN_UTF8_BYTES
+            LaunchedEffect(maxUtf8) {
+                val clipped = textState.takeUtf8Bytes(maxUtf8)
+                if (clipped != textState) textState = clipped
+            }
+            val usedUtf8 = remember(textState) { textState.toByteArray(Charsets.UTF_8).size }
+            val hasText = textState.trim().isNotEmpty()
+            val canTapSend = canSend && hasText
             fun trySend() {
                 if (!canSend) {
-                    sendError = if (!isConnected) {
+                    val msg = if (!isConnected) {
                         if (spanish) "Conecta y autentica el nodo primero."
                         else "Connect and authenticate the node first."
                     } else {
                         if (spanish) "Autentica el dispositivo para enviar."
                         else "Authenticate the device to send."
                     }
+                    sendError = msg
                     return
                 }
-                if (textState.trim().isEmpty()) return
+                if (!hasText) return
                 when (onSendMessage(textState)) {
                     com.example.aethermesh.data.SendMessageResult.Sent -> {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         val key = chatDraftKey()
                         textState = ""
                         sendError = null
                         stickToBottom = true
+                        keyboardController?.hide()
                         if (draftPrefs.contains(key)) {
                             draftPrefs.edit().remove(key).apply()
                             draftsRevision++
                         }
                     }
                     com.example.aethermesh.data.SendMessageResult.EncryptFailed -> {
-                        sendError = if (spanish)
+                        val msg = if (spanish)
                             "No se pudo cifrar el mensaje. Revisa la clave del chat."
                         else
                             "Could not encrypt the message. Check the chat passcode."
+                        sendError = msg
                     }
                     com.example.aethermesh.data.SendMessageResult.NotReady -> {
-                        sendError = if (spanish)
+                        val msg = if (spanish)
                             "No se envió. Revisa conexión BLE y autenticación."
                         else
                             "Message not sent. Check BLE connection and authentication."
+                        sendError = msg
                     }
                 }
             }
@@ -722,7 +833,7 @@ fun ChatView(
                 TextField(
                     value = textState,
                     onValueChange = {
-                        textState = it
+                        textState = it.takeUtf8Bytes(maxUtf8)
                         if (sendError != null) sendError = null
                     },
                     enabled = canSend,
@@ -737,18 +848,45 @@ fun ChatView(
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = { trySend() },
-                    enabled = canSend,
+                    enabled = canTapSend,
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .background(if (canSend) AccentCyan else TextMuted.copy(alpha = 0.35f))
+                        .background(if (canTapSend) AccentCyan else TextMuted.copy(alpha = 0.35f))
+                        .semantics {
+                            contentDescription = when {
+                                !canSend && spanish -> "Enviar desactivado — desbloquea el nodo"
+                                !canSend -> "Send disabled — unlock the node"
+                                !hasText && spanish -> "Enviar desactivado — escribe un mensaje"
+                                !hasText -> "Send disabled — type a message"
+                                spanish -> "Enviar"
+                                else -> "Send"
+                            }
+                        }
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = if (spanish) "Enviar" else "Send",
+                        contentDescription = null,
                         tint = DarkBackground
                     )
                 }
+            }
+            if (canSend && (usedUtf8 >= (maxUtf8 * 3 / 4) || encryptedChat)) {
+                Text(
+                    text = when {
+                        spanish && encryptedChat ->
+                            "$usedUtf8 / $maxUtf8 bytes (cifrado)"
+                        spanish ->
+                            "$usedUtf8 / $maxUtf8 bytes"
+                        encryptedChat ->
+                            "$usedUtf8 / $maxUtf8 bytes (encrypted)"
+                        else ->
+                            "$usedUtf8 / $maxUtf8 bytes"
+                    },
+                    color = if (usedUtf8 >= maxUtf8) AccentAmber else TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 4.dp, start = 8.dp)
+                )
             }
             sendError?.let {
                 Text(
@@ -878,13 +1016,35 @@ fun PasscodeEntryDialog(
 ) {
     val spanish = appLanguage == "Spanish"
     var keyState by remember { mutableStateOf(initialPasscode) }
+    val hadKey = initialPasscode.isNotEmpty()
+    val willEncrypt = keyState.trim().isNotEmpty()
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(
-                onClick = { onSave(keyState.trim()) }
-            ) {
-                Text(if (spanish) "Guardar" else "Save", color = AccentMint)
+            Row {
+                if (hadKey || willEncrypt) {
+                    TextButton(onClick = { onSave("") }) {
+                        Text(
+                            if (spanish) "Borrar clave" else "Clear key",
+                            color = Color(0xFFFCA5A5),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = { onSave(keyState.trim()) },
+                    enabled = willEncrypt || hadKey
+                ) {
+                    Text(
+                        when {
+                            willEncrypt && spanish -> "Guardar clave"
+                            willEncrypt -> "Save key"
+                            spanish -> "Guardar"
+                            else -> "Save"
+                        },
+                        color = if (willEncrypt || hadKey) AccentMint else TextMuted
+                    )
+                }
             }
         },
         dismissButton = {
@@ -895,6 +1055,20 @@ fun PasscodeEntryDialog(
         title = { Text(title, color = TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
         text = {
             Column {
+                Text(
+                    when {
+                        willEncrypt && spanish -> "Estado: cifrado AES-256 activo al guardar"
+                        willEncrypt -> "Status: AES-256 encryption on after save"
+                        hadKey && spanish -> "Estado: hay una clave — borrar o reemplazar abajo"
+                        hadKey -> "Status: key set — clear or replace below"
+                        spanish -> "Estado: texto claro (sin clave)"
+                        else -> "Status: cleartext (no key)"
+                    },
+                    color = if (willEncrypt || hadKey) AccentMint else AccentAmber,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     if (spanish)
                         "Todos los mensajes de este chat se cifran y descifran con AES-256 usando la clave de abajo. Manténla en secreto y compártela fuera de banda con los demás."
@@ -918,17 +1092,15 @@ fun PasscodeEntryDialog(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (keyState.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        if (spanish)
-                            "Déjalo vacío para desactivar el cifrado y borrar la clave."
-                        else
-                            "Leave blank to disable encryption and clear key.",
-                        color = Color(0xFFFCA5A5),
-                        fontSize = 10.sp
-                    )
-                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (spanish)
+                        "Usa «Borrar clave» o deja el campo vacío y guarda para volver a texto claro."
+                    else
+                        "Use Clear key, or leave blank and save, to return to cleartext.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
             }
         },
         containerColor = SurfaceDark
@@ -978,9 +1150,9 @@ fun MessageBubble(
             "$statusIcon heard by ${message.heardCount}"
         }
         "SENT" -> if (isChannel) {
-            if (spanish) "$statusIcon esperando oídos…" else "$statusIcon waiting for hearers…"
+            if (spanish) "$statusIcon Esperando ser oído…" else "$statusIcon Waiting to be heard…"
         } else {
-            statusIcon
+            if (spanish) "$statusIcon enviado" else "$statusIcon sent"
         }
         else -> statusIcon
     }
@@ -1008,15 +1180,22 @@ fun MessageBubble(
             "Confirmed by ${message.heardCount} mesh node(s) that heard this channel message."
         "SENT" -> if (isChannel) {
             if (spanish)
-                "Transmitido al canal. Esperando confirmaciones de nodos que lo oigan."
+                "Transmitido al canal. Esperando ser oído por nodos de la malla."
             else
-                "Broadcast on the channel. Waiting for hearer acknowledgments."
+                "Broadcast on the channel. Waiting to be heard."
         } else {
             if (spanish) "Enviado." else "Sent."
         }
         else -> if (spanish) "Enviado." else "Sent."
     }
-    val time = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
+    val time = run {
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = message.timestamp }
+        val nowCal = java.util.Calendar.getInstance()
+        val sameDay = msgCal.get(java.util.Calendar.YEAR) == nowCal.get(java.util.Calendar.YEAR) &&
+            msgCal.get(java.util.Calendar.DAY_OF_YEAR) == nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+        val pattern = if (sameDay) "h:mm a" else "M/d h:mm a"
+        SimpleDateFormat(pattern, Locale.getDefault()).format(Date(message.timestamp))
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1090,14 +1269,17 @@ fun TraceRouteResultDialog(
     nodes: List<MeshNode>,
     connectedNodeId: Long,
     onOk: () -> Unit,
+    onCancel: () -> Unit = onOk,
     onViewOnMap: () -> Unit,
     appLanguage: String = "English"
 ) {
     val spanish = appLanguage == "Spanish"
     val snrOrange = Color(0xFFFF9800)
+    val haptic = LocalHapticFeedback.current
 
     fun displayName(id: Long): String {
         val node = nodes.find { it.nodeId == id }
+            ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
         val longName = node?.name?.takeIf { it.isNotBlank() }
             ?: "0x${id.toString(16).uppercase()}"
         val short = node?.shortName?.takeIf { it.isNotBlank() }
@@ -1120,29 +1302,47 @@ fun TraceRouteResultDialog(
     fun RoutePath(
         title: String,
         startId: Long,
+        endLabel: String?,
         hops: List<com.example.aethermesh.data.TraceHop>,
         truncated: Boolean
     ) {
         Text(title, color = TextMuted, fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("■", color = TextLight, fontSize = 11.sp)
-            Spacer(Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(displayName(startId), color = TextLight, fontSize = 14.sp)
         }
-        hops.forEach { hop ->
-            Row(
-                modifier = Modifier.padding(start = 2.dp, top = 4.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("⇊", color = TextMuted, fontSize = 16.sp)
-                Spacer(Modifier.width(10.dp))
-                HopSnr(hop.snr, hop.rssi)
+        if (hops.isEmpty()) {
+            Text(
+                if (spanish) "↳ Directo (sin repetidores)" else "↳ Direct (no relays)",
+                color = AccentMint,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 18.dp, top = 6.dp, bottom = 4.dp)
+            )
+            endLabel?.let {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("■", color = TextLight, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(it, color = TextLight, fontSize = 14.sp)
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("■", color = TextLight, fontSize = 11.sp)
-                Spacer(Modifier.width(8.dp))
-                Text(displayName(hop.nodeId), color = TextLight, fontSize = 14.sp)
+        } else {
+            hops.forEach { hop ->
+                Row(
+                    modifier = Modifier.padding(start = 2.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("⇊", color = TextMuted, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    HopSnr(hop.snr, hop.rssi)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("■", color = TextLight, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(displayName(hop.nodeId), color = TextLight, fontSize = 14.sp)
+                }
             }
         }
         if (truncated) {
@@ -1156,8 +1356,10 @@ fun TraceRouteResultDialog(
     }
 
     AlertDialog(
-        onDismissRequest = { if (!state.active) onOk() },
-        containerColor = Color(0xFF2A2F38),
+        onDismissRequest = {
+            if (state.active) onCancel() else onOk()
+        },
+        containerColor = SurfaceDark,
         title = {
             Text(
                 if (spanish) "Trazado de ruta" else "Traceroute",
@@ -1169,6 +1371,16 @@ fun TraceRouteResultDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                if (state.targetId != 0L) {
+                    Text(
+                        if (spanish) "Destino: ${displayName(state.targetId)}"
+                        else "Target: ${displayName(state.targetId)}",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
                 when {
                     state.active -> {
                         LinearProgressIndicator(
@@ -1176,9 +1388,12 @@ fun TraceRouteResultDialog(
                             color = AccentMint,
                             trackColor = BorderDark
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            if (spanish) "Trazando ruta…" else "Tracing route…",
+                            if (spanish)
+                                "Trazando ruta… puedes cancelar si tarda demasiado."
+                            else
+                                "Tracing route… you can cancel if this takes too long.",
                             color = TextMuted,
                             fontSize = 13.sp
                         )
@@ -1186,26 +1401,40 @@ fun TraceRouteResultDialog(
                     state.error != null -> {
                         Text(
                             localizeTraceRouteError(state.error, appLanguage),
-                            color = Color(0xFFF87171),
+                            color = if (state.error == "Cancelled") AccentAmber else Color(0xFFF87171),
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                     else -> {
+                        val outHops = state.forward.size
+                        val backHops = state.returning.size
+                        Text(
+                            if (spanish)
+                                "Resumen: $outHops salto(s) de ida · $backHops de vuelta"
+                            else
+                                "Summary: $outHops hop(s) out · $backHops back",
+                            color = AccentCyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
                         RoutePath(
                             title = if (spanish) "Ruta hacia el destino:" else "Route traced toward destination:",
                             startId = connectedNodeId,
+                            endLabel = displayName(state.targetId),
                             hops = state.forward,
                             truncated = state.forwardTruncated
                         )
-                        Spacer(Modifier.height(18.dp))
+                        Spacer(modifier = Modifier.height(18.dp))
                         RoutePath(
                             title = if (spanish) "Ruta de vuelta:" else "Route traced back to us:",
                             startId = state.targetId,
+                            endLabel = displayName(connectedNodeId),
                             hops = state.returning,
                             truncated = state.returnTruncated
                         )
                         state.durationSeconds?.let { secs ->
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(16.dp))
                             Text(
                                 if (spanish) "Duración: ${"%.1f".format(secs)} s" else "Duration: ${"%.1f".format(secs)} s",
                                 color = TextLight,
@@ -1217,14 +1446,25 @@ fun TraceRouteResultDialog(
             }
         },
         confirmButton = {
-            if (!state.active) {
+            if (state.active) {
+                TextButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCancel()
+                    }
+                ) {
+                    Text(
+                        if (spanish) "Cancelar" else "Cancel",
+                        color = Color(0xFFFCA5A5),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
                 Row {
                     TextButton(onClick = onOk) {
                         Text(if (spanish) "Aceptar" else "OK", color = TextLight, fontWeight = FontWeight.SemiBold)
                     }
-                    if (state.error == null &&
-                        (state.forward.isNotEmpty() || state.returning.isNotEmpty())
-                    ) {
+                    if (state.error == null && state.targetId != 0L) {
                         TextButton(onClick = onViewOnMap) {
                             Text(
                                 if (spanish) "Ver en mapa" else "View on map",
@@ -1238,4 +1478,5 @@ fun TraceRouteResultDialog(
         }
     )
 }
+
 

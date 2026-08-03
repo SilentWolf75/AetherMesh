@@ -105,9 +105,26 @@ fun PermissionHealthBanner(
         if (health.missingNotifications) add(if (spanish) "notificaciones" else "notifications")
     }
     val summary = if (spanish) {
-        "Faltan permisos: ${parts.joinToString(", ")}. Algunas funciones no funcionarán."
+        "Faltan: ${parts.joinToString(", ")}."
     } else {
-        "Missing permissions: ${parts.joinToString(", ")}. Some features won't work."
+        "Missing: ${parts.joinToString(", ")}."
+    }
+    val why = when {
+        health.missingBle && health.missingLocation ->
+            if (spanish)
+                "Bluetooth vincula la radio; la ubicación aparece en el mapa (y habilita el escaneo en Android antiguo)."
+            else
+                "Bluetooth links the radio; location shows you on the map (and enables scanning on older Android)."
+        health.missingBle ->
+            if (spanish) "Se necesita Bluetooth para encontrar y conectar tu nodo."
+            else "Bluetooth is required to find and connect your node."
+        health.missingLocation ->
+            if (spanish) "La ubicación muestra tu posición en el mapa y distancia a otros nodos."
+            else "Location shows your position on the map and distance to other nodes."
+        health.missingNotifications ->
+            if (spanish) "Las notificaciones avisan de chats cuando la app está en segundo plano."
+            else "Notifications alert you to chats while the app is in the background."
+        else -> ""
     }
 
     Row(
@@ -136,6 +153,9 @@ fun PermissionHealthBanner(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(text = summary, color = TextMuted, fontSize = 11.sp)
+                if (why.isNotEmpty()) {
+                    Text(text = why, color = TextMuted, fontSize = 10.sp)
+                }
             }
         }
         TextButton(onClick = onOpenSettings) {

@@ -4647,9 +4647,16 @@ void loop() {
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
             lastBleActiveTime = millis();
-            if (!bleMgr.isAdvertising && !bleMgr.isDeviceConnected()) {
+            if (bleMgr.isDeviceConnected()) {
+                Serial.println("Button: BLE already connected (DeliveryStatus path live).");
+            } else if (!bleMgr.isAdvertising) {
+                Serial.println("Button: starting BLE advertising for phone scan/connect.");
                 bleMgr.startAdvertising();
+            } else {
+                Serial.println("Button: BLE already advertising.");
             }
+        } else {
+            Serial.println("Button: Role 2 (low-power repeater) keeps BLE off.");
         }
         updateDisplay();
     }
@@ -4799,20 +4806,23 @@ void loop() {
             bleMgr.loop();
         }
 
-        // Check BLE connection state transitions to reset/manage authentication
+        // Check BLE connection state transitions to reset/manage authentication.
+        // Challenge is deferred (non-blocking): a delay() here stalled radio + BLE
+        // drain and often fired before the phone enabled CCCD, so the challenge
+        // was lost and post-reboot auto-auth raced a half-ready link.
         static bool lastBleConnected = false;
+        static uint32_t pendingAuthChallengeAtMs = 0;
         bool currentBleConnected = bleMgr.isDeviceConnected();
         if (currentBleConnected != lastBleConnected) {
             lastBleConnected = currentBleConnected;
             lastBleActiveTime = millis(); // Reset inactive timer on disconnect/connect
             if (currentBleConnected) {
                 isBleClientAuthenticated = false;
+                pendingAuthChallengeAtMs = millis() + 400;
                 Serial.println("BLE client connected. Awaiting auth...");
-                // Send unsolicited auth response after 150ms delay for buffers to initialize
-                delay(150);
-                sendAuthResponse(false, "Authentication required", strlen(nodePassword) == 0);
             } else {
                 isBleClientAuthenticated = false;
+                pendingAuthChallengeAtMs = 0;
                 Serial.println("BLE client disconnected.");
                 // Range-test quiet mode is BLE-session scoped — never leave a
                 // remote node soft-stalled after the phone walks away.
@@ -4826,6 +4836,13 @@ void loop() {
                         bleMgr.startAdvertising();
                     }
                 }
+            }
+        }
+        if (pendingAuthChallengeAtMs != 0 &&
+            (int32_t)(millis() - pendingAuthChallengeAtMs) >= 0) {
+            pendingAuthChallengeAtMs = 0;
+            if (bleMgr.isDeviceConnected() && !isBleClientAuthenticated) {
+                sendAuthResponse(false, "Authentication required", strlen(nodePassword) == 0);
             }
         }
 

@@ -3,6 +3,7 @@ package com.example.aethermesh.ui.main
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -51,19 +53,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Context
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.RouteHopInfo
 import com.example.aethermesh.data.TelemetrySample
+import com.example.aethermesh.ui.AppUiFeedback
 import org.osmdroid.util.GeoPoint
 
 /**
  * Full-screen node details inspired by Meshtastic: Details → Actions → Tools → Position.
  * Hosted as a Navigation3 destination (not a Dialog overlay).
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun NodeDetailsScreen(
     node: MeshNode,
@@ -87,6 +95,9 @@ fun NodeDetailsScreen(
     val hasLiveSignal = route != null && route.lastRssi != 0f
     val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
     val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
+    val relativeTick = rememberRelativeTimeTick()
+    @Suppress("UNUSED_VARIABLE")
+    val _heardClock = relativeTick
     val stale = isNodeStale(node.lastActive)
     val history = remember(node.nodeId, node.lastActive) { getTelemetryHistory(node.nodeId) }
 
@@ -179,14 +190,6 @@ fun NodeDetailsScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         RoundActionButton(Icons.Default.Edit, if (appLanguage == "Spanish") "Renombrar" else "Rename", onRename)
-                        if (onRemoteConfig != null && !sameMeshNodeId(node.nodeId, connectedNodeId)) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            RoundActionButton(
-                                Icons.Default.Settings,
-                                if (appLanguage == "Spanish") "Config. remota" else "Remote config",
-                                onRemoteConfig
-                            )
-                        }
                     }
                 }
 
@@ -211,6 +214,18 @@ fun NodeDetailsScreen(
                                 else
                                     "Open range test dialog for this node",
                                 onClick = onStartRangeTest
+                            )
+                            HorizontalDivider(color = BorderDark)
+                        }
+                        if (onRemoteConfig != null) {
+                            ToolRow(
+                                icon = Icons.Default.Settings,
+                                label = if (appLanguage == "Spanish") "Configuración remota" else "Remote config",
+                                subtitle = if (appLanguage == "Spanish")
+                                    "Cambiar radio/GPS de este nodo por la malla"
+                                else
+                                    "Change this node’s radio/GPS over the mesh",
+                                onClick = onRemoteConfig
                             )
                             HorizontalDivider(color = BorderDark)
                         }
@@ -272,9 +287,13 @@ fun NodeDetailsScreen(
                         icon = Icons.Default.Memory,
                         label = if (appLanguage == "Spanish") "Métricas del dispositivo" else "Device Metrics",
                         subtitle = buildString {
-                            append("${node.battery}%")
-                            if (node.voltage > 0f) append("  ·  ${"%.2f".format(node.voltage)} V")
-                            if (node.isCharging) append(if (appLanguage == "Spanish") "  ·  cargando" else "  ·  charging")
+                            if (node.battery <= 0 && node.voltage <= 0f && !node.isCharging) {
+                                append(if (appLanguage == "Spanish") "Batería desconocida" else "Battery unknown")
+                            } else {
+                                append("${node.battery}%")
+                                if (node.voltage > 0f) append("  ·  ${"%.2f".format(node.voltage)} V")
+                                if (node.isCharging) append(if (appLanguage == "Spanish") "  ·  cargando" else "  ·  charging")
+                            }
                             if (node.firmwareVersion.isNotEmpty()) append("  ·  fw ${node.firmwareVersion}")
                         },
                         onClick = null,
@@ -365,6 +384,8 @@ private fun DetailsCard(
     stale: Boolean,
     appLanguage: String
 ) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     Card(
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
         shape = RoundedCornerShape(16.dp),
@@ -413,14 +434,34 @@ private fun DetailsCard(
             Row(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {
                     MetaItem(Icons.Default.Person, if (appLanguage == "Spanish") "Nombre corto" else "Short Name", shortName)
-                    MetaItem(Icons.Default.Tag, if (appLanguage == "Spanish") "ID del nodo" else "Node ID", "0x${node.nodeId.toString(16).uppercase()}")
+                    val nodeIdHex = "0x${node.nodeId.toString(16).uppercase()}"
+                    MetaItem(
+                        Icons.Default.Tag,
+                        if (appLanguage == "Spanish") "ID del nodo" else "Node ID",
+                        nodeIdHex,
+                        hint = if (appLanguage == "Spanish") "Mantén pulsado para copiar" else "Long-press to copy",
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Node ID", nodeIdHex))
+                            AppUiFeedback.show(
+                                if (appLanguage == "Spanish") "ID del nodo copiado" else "Node ID copied",
+                                duration = SnackbarDuration.Short
+                            )
+                        }
+                    )
                     MetaItem(Icons.Default.Refresh, if (appLanguage == "Spanish") "Último oído" else "Last heard", formatLastHeard(node.lastActive, appLanguage))
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     MetaItem(
                         Icons.Default.BatteryFull,
                         if (appLanguage == "Spanish") "Batería" else "Battery",
-                        "${node.battery}%" + if (node.isCharging) " ⚡" else ""
+                        when {
+                            node.battery <= 0 && node.voltage <= 0f && !node.isCharging ->
+                                if (appLanguage == "Spanish") "Desconocida" else "Unknown"
+                            node.isCharging -> "${node.battery}% ⚡"
+                            else -> "${node.battery}%"
+                        }
                     )
                     if (hops != null && hops > 0) {
                         MetaItem(
@@ -474,12 +515,26 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MetaItem(icon: ImageVector, label: String, value: String) {
+private fun MetaItem(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    hint: String? = null,
+    onLongClick: (() -> Unit)? = null
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 6.dp)
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
+                } else {
+                    Modifier
+                }
+            ),
         verticalAlignment = Alignment.Top
     ) {
         Icon(icon, contentDescription = null, tint = AccentMint, modifier = Modifier.size(15.dp))
@@ -487,6 +542,9 @@ private fun MetaItem(icon: ImageVector, label: String, value: String) {
         Column {
             Text(label, color = TextMuted, fontSize = 10.sp)
             Text(value, color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            if (!hint.isNullOrEmpty()) {
+                Text(hint, color = TextMuted, fontSize = 9.sp)
+            }
         }
     }
 }

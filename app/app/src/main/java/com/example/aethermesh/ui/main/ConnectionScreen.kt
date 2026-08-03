@@ -235,13 +235,23 @@ fun ConnectionView(
         // 1. Connected Node Card
         if (isConnected) {
             Button(
-                onClick = onContinueToMesh,
+                onClick = {
+                    if (isDeviceAuthenticated) onContinueToMesh()
+                    else viewModel.promptDeviceAuthentication()
+                },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AccentMint),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isDeviceAuthenticated) AccentMint else AccentAmber
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    if (spanish) "Continuar a Chats" else "Continue to Chats",
+                    when {
+                        isDeviceAuthenticated && spanish -> "Continuar a Chats"
+                        isDeviceAuthenticated -> "Continue to Chats"
+                        spanish -> "Desbloquear para continuar"
+                        else -> "Unlock to continue"
+                    },
                     color = DarkBackground,
                     fontWeight = FontWeight.Bold
                 )
@@ -282,7 +292,10 @@ fun ConnectionView(
                             if ((connectedNode?.voltage ?: 0f) > 0f) {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    "%.2f V pack".format(connectedNode!!.voltage),
+                                    if (appLanguage == "Spanish")
+                                        "%.2f V batería".format(connectedNode!!.voltage)
+                                    else
+                                        "%.2f V pack".format(connectedNode!!.voltage),
                                     color = AccentMint,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -312,8 +325,12 @@ fun ConnectionView(
                         )
                         GraphicStatTile(
                             label = if (appLanguage == "Spanish") "Enlace" else "Link",
-                            value = "BLE",
-                            accent = AccentMint,
+                            value = if (isDeviceAuthenticated) {
+                                if (spanish) "ACTIVO" else "UP"
+                            } else {
+                                if (spanish) "BLOQ." else "LOCKED"
+                            },
+                            accent = if (isDeviceAuthenticated) AccentMint else AccentAmber,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -542,9 +559,9 @@ fun ConnectionView(
                                 else "Bluetooth is off. Turn it on to scan for nodes."
                             com.example.aethermesh.ble.BleScanBlockReason.PermissionDenied ->
                                 if (spanish)
-                                    "Falta permiso de Bluetooth (o ubicación). Concédelo en Ajustes de la app."
+                                    "Falta permiso de Bluetooth (o ubicación en Android antiguo). Sin él no se pueden buscar nodos — concédelo en Ajustes de la app."
                                 else
-                                    "Bluetooth (or location) permission is missing. Allow it in app Settings."
+                                    "Bluetooth permission is missing (or location on older Android). Without it the app can’t scan for nodes — allow it in app Settings."
                             com.example.aethermesh.ble.BleScanBlockReason.NoScanner ->
                                 if (spanish) "Este teléfono no ofrece un escáner BLE."
                                 else "This phone has no BLE scanner available."
@@ -620,7 +637,7 @@ fun ConnectionView(
                                 isScanning ->
                                     if (spanish) "Buscando nodos AetherMesh…" else "Searching for AetherMesh nodes..."
                                 else ->
-                                    if (spanish) "Aún no hay dispositivos" else "No devices yet"
+                                    if (spanish) "Ningún dispositivo encontrado" else "No devices found"
                             },
                             color = TextLight,
                             textAlign = TextAlign.Center,
@@ -637,8 +654,10 @@ fun ConnectionView(
                                     if (spanish) "Mantén el nodo encendido y cerca."
                                     else "Keep the node powered and nearby."
                                 else ->
-                                    if (spanish) "Pulsa Escanear arriba — o aquí — para buscar."
-                                    else "Tap Scan above — or tap here — to search."
+                                    if (spanish)
+                                        "Enciende el nodo, acércalo al teléfono y pulsa Escanear (o aquí)."
+                                    else
+                                        "Power the node, keep it near the phone, then tap Scan (or tap here)."
                             },
                             color = TextMuted,
                             textAlign = TextAlign.Center,
@@ -648,14 +667,17 @@ fun ConnectionView(
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val connectInFlight =
+                        blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting ||
+                            blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting
                     scannedDevices.forEach { device ->
                         val isThisConnected = isConnected &&
                             viewModel.connectedDeviceAddress.equals(device.mac, ignoreCase = true)
                         Card(
                             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                if (!isThisConnected) {
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !connectInFlight || isThisConnected) {
+                                if (!isThisConnected && !connectInFlight) {
                                     viewModel.connectToDevice(device.mac)
                                 }
                             },

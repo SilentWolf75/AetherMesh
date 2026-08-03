@@ -80,6 +80,72 @@ import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+/** Matches firmware/app chat payload caps (UTF-8 bytes). Encrypted fits under GCM+base64. */
+const val CHAT_MAX_PLAIN_UTF8_BYTES = 127
+const val CHAT_MAX_ENCRYPTED_UTF8_BYTES = 76
+
+private const val NODE_STALE_MS = 5 * 60 * 1000L
+
+fun isNodeStale(lastActive: Long): Boolean {
+    return System.currentTimeMillis() - lastActive > NODE_STALE_MS
+}
+
+/**
+ * Relative last-heard label used across Nodes / Map / Chat / Details.
+ * Prefer “just now” then “Xm ago” (not “Ns ago”) for a consistent feel.
+ */
+fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
+    if (lastActive <= 0L) return if (spanish) "nunca" else "never"
+    val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
+    return when {
+        elapsedSeconds < 60L -> if (spanish) "ahora" else "just now"
+        elapsedSeconds < 3600L -> {
+            val m = elapsedSeconds / 60L
+            if (spanish) "hace ${m}m" else "${m}m ago"
+        }
+        elapsedSeconds < 86_400L -> {
+            val h = elapsedSeconds / 3600L
+            if (spanish) "hace ${h}h" else "${h}h ago"
+        }
+        else -> {
+            val d = elapsedSeconds / 86_400L
+            if (spanish) "hace ${d}d" else "${d}d ago"
+        }
+    }
+}
+
+/** Compact age for diagnostics tiles (same vocabulary as [formatLastHeard]). */
+fun formatRelativeAge(timestampMs: Long, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
+    if (timestampMs <= 0L) return if (spanish) "—" else "—"
+    val elapsedSeconds = ((System.currentTimeMillis() - timestampMs).coerceAtLeast(0L)) / 1000L
+    return when {
+        elapsedSeconds < 60L -> if (spanish) "ahora" else "just now"
+        elapsedSeconds < 3600L -> {
+            val m = elapsedSeconds / 60L
+            if (spanish) "hace ${m}m" else "${m}m ago"
+        }
+        else -> {
+            val h = (elapsedSeconds / 3600L).coerceAtLeast(1L)
+            if (spanish) "hace ${h}h" else "${h}h ago"
+        }
+    }
+}
+
+/** Bumps so relative “last heard” labels stay fresh without new telemetry. */
+@Composable
+fun rememberRelativeTimeTick(intervalMs: Long = 30_000L): Long {
+    var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(intervalMs) {
+        while (true) {
+            kotlinx.coroutines.delay(intervalMs)
+            tick = System.currentTimeMillis()
+        }
+    }
+    return tick
+}
+
 fun formatUptime(seconds: Long, appLanguage: String = "English"): String {
     val spanish = appLanguage == "Spanish"
     val d = seconds / 86400
@@ -129,14 +195,15 @@ fun getShortName(name: String, nodeId: Long): String {
 
 fun getBadgeColor(name: String): Color {
     val hash = name.hashCode()
+    // Stay on the night-radar palette (no purple AI-slop).
     val colors = listOf(
-        Color(0xFFF59E0B), // Orange/Amber
-        Color(0xFF10B981), // Emerald/Mint
-        Color(0xFF3B82F6), // Blue
-        Color(0xFF8B5CF6), // Purple
-        Color(0xFFEC4899), // Pink
-        Color(0xFF06B6D4), // Cyan
-        Color(0xFF14B8A6)  // Teal
+        Color(0xFFFFB347), // Amber
+        Color(0xFFC8F547), // Mint
+        Color(0xFF4DA3FF), // Azure
+        Color(0xFF7AD4FF), // Steel
+        Color(0xFFFF8C42), // Orange
+        Color(0xFF14B8A6), // Teal
+        Color(0xFFFF5C7A)  // Coral
     )
     val index = Math.abs(hash) % colors.size
     return colors[index]
@@ -155,6 +222,16 @@ fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): D
             Math.sin(dLon / 2) * Math.sin(dLon / 2)
     val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
     return r * c
+}
+
+/** Snap GPS duty interval to Settings chip values (5 / 15 / 30 / 60 min). */
+fun snapGpsDutyIntervalSecs(secs: Int): Int {
+    val options = intArrayOf(300, 900, 1800, 3600)
+    val clamped = when {
+        secs <= 0 -> 900
+        else -> secs.coerceIn(300, 3600)
+    }
+    return options.minBy { kotlin.math.abs(it - clamped) }
 }
 
 fun hasValidPosition(latitude: Number, longitude: Number): Boolean {
@@ -300,7 +377,8 @@ fun exportMeshDiagnosticsToCsv(
         "timestamp_ms,tx_packets,tx_failures,rx_packets,relayed,retries,acked,ack_timeouts," +
             "duplicates,cad_busy,queue_drops,route_changes,active_routes,rebroadcast_depth," +
             "pending_ack_depth,airtime_ms,uptime_seconds,protocol_version," +
-            "range_pings_rx,range_pongs_queued,range_pongs_sent,range_pong_tx_failures,quiet_mode\n"
+            "range_pings_rx,range_pongs_queued,range_pongs_sent,range_pong_tx_failures,quiet_mode," +
+            "directed_relays,suppress_relays,flood_unicasts,rreq_sent,early_repairs\n"
     )
     snapshots.sortedBy { it.timestamp }.forEach { value ->
         csv.append(
@@ -310,7 +388,9 @@ fun exportMeshDiagnosticsToCsv(
                 "${value.activeRoutes},${value.rebroadcastQueueDepth},${value.pendingAckDepth}," +
                 "${value.airtimeMs},${value.uptimeSeconds},${value.protocolVersion}," +
                 "${value.rangePingsRx},${value.rangePongsQueued},${value.rangePongsSent}," +
-                "${value.rangePongTxFailures},${value.quietMode}\n"
+                "${value.rangePongTxFailures},${value.quietMode}," +
+                "${value.directedRelays},${value.suppressRelays},${value.floodUnicasts}," +
+                "${value.rreqSent},${value.earlyRepairs}\n"
         )
     }
     try {

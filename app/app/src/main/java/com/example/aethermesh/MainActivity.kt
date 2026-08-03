@@ -12,22 +12,36 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.aethermesh.ble.AetherMeshService
 import com.example.aethermesh.theme.AetherMeshTheme
+import com.example.aethermesh.ui.main.AccentCyan
+import com.example.aethermesh.ui.main.SurfaceDark
+import com.example.aethermesh.ui.main.TextLight
+import com.example.aethermesh.ui.main.TextMuted
 
 class MainActivity : ComponentActivity() {
     
     companion object {
         private const val PERMISSION_REQUEST_CODE = 101
         private const val TAG = "MainActivity"
+        private const val PREF_PERM_RATIONALE_SHOWN = "perm_rationale_shown"
         const val EXTRA_OPEN_CHANNEL = "extra_open_channel"
         const val EXTRA_OPEN_DM_PEER = "extra_open_dm_peer"
         const val EXTRA_OPEN_NODE_ID = "extra_open_node_id"
@@ -73,9 +87,6 @@ class MainActivity : ComponentActivity() {
 
         ingestNotificationDeepLinks(intent)
 
-        // Request BLE and Location permissions at startup
-        checkAndRequestPermissions()
-
         // Service start is deferred until BLUETOOTH_CONNECT is granted (see onBlePermissionsReady)
 
         enableEdgeToEdge()
@@ -83,6 +94,13 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
             var themeState by remember { mutableStateOf(sharedPrefs.getString("app_theme", "System") ?: "System") }
+            val pendingPermissions = remember { collectMissingPermissions() }
+            var showPermRationale by remember {
+                mutableStateOf(
+                    pendingPermissions.isNotEmpty() &&
+                        !sharedPrefs.getBoolean(PREF_PERM_RATIONALE_SHOWN, false)
+                )
+            }
 
             DisposableEffect(Unit) {
                 val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -96,11 +114,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(showPermRationale) {
+                if (!showPermRationale) {
+                    checkAndRequestPermissions()
+                }
+            }
+
             val darkTheme = when (themeState) {
                 "Dark" -> true
                 "Light" -> false
                 else -> isSystemInDarkTheme()
             }
+
+            val spanish = sharedPrefs.getString("app_language", "English") == "Spanish"
 
             AetherMeshTheme(darkTheme = darkTheme) {
                 Surface(
@@ -108,37 +134,100 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     MainNavigation()
+                    if (showPermRationale) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                sharedPrefs.edit().putBoolean(PREF_PERM_RATIONALE_SHOWN, true).apply()
+                                showPermRationale = false
+                            },
+                            title = {
+                                Text(
+                                    if (spanish) "Permisos de AetherMesh" else "AetherMesh permissions",
+                                    color = TextLight,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            },
+                            text = {
+                                Column {
+                                    Text(
+                                        if (spanish)
+                                            "Antes de vincular una radio, Android pedirá unos permisos:"
+                                        else
+                                            "Before linking a radio, Android will ask for a few permissions:",
+                                        color = TextLight,
+                                        fontSize = 14.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        if (spanish)
+                                            "• Bluetooth — encontrar y conectar tu nodo AetherMesh."
+                                        else
+                                            "• Bluetooth — find and connect your AetherMesh node.",
+                                        color = TextMuted,
+                                        fontSize = 13.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        if (spanish)
+                                            "• Ubicación — mostrarte en el mapa; en Android antiguo también habilita el escaneo BLE."
+                                        else
+                                            "• Location — show you on the map; on older Android it also enables BLE scanning.",
+                                        color = TextMuted,
+                                        fontSize = 13.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        if (spanish)
+                                            "• Notificaciones — avisos de chat en segundo plano cuando la app no está abierta."
+                                        else
+                                            "• Notifications — background chat alerts when the app isn’t open.",
+                                        color = TextMuted,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    sharedPrefs.edit().putBoolean(PREF_PERM_RATIONALE_SHOWN, true).apply()
+                                    showPermRationale = false
+                                }) {
+                                    Text(
+                                        if (spanish) "Continuar" else "Continue",
+                                        color = AccentCyan,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            },
+                            containerColor = SurfaceDark
+                        )
+                    }
                 }
             }
         }
     }
 
-    private fun checkAndRequestPermissions() {
+    private fun collectMissingPermissions(): List<String> {
         val permissions = mutableListOf<String>()
-        
-        // Android 12 (API 31) and higher requires new BLE permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
             permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            // Location is still needed for displaying user positions on the map
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         } else {
-            // Android 11 and below requires Location permissions for BLE scanning
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-
-        // Android 13 (API 33) and higher requires permission to post notifications
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        
-        val listToRequest = permissions.filter {
+        return permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        
+    }
+
+    private fun checkAndRequestPermissions() {
+        val listToRequest = collectMissingPermissions()
         if (listToRequest.isNotEmpty()) {
             Log.d(TAG, "Requesting permissions: $listToRequest")
             ActivityCompat.requestPermissions(this, listToRequest.toTypedArray(), PERMISSION_REQUEST_CODE)

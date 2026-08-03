@@ -68,6 +68,8 @@ class BleConnectionManager(private val context: Context) {
     private var reconnectAttempt = 0
     private var mtuTimeoutRunnable: Runnable? = null
     private var pendingAutoConnectMac: String? = null
+    private var postRebootDetachRunnable: Runnable? = null
+    private var postRebootConnectRunnable: Runnable? = null
     /** Negotiated ATT MTU (default 23 until onMtuChanged). Max write payload is mtu-3. */
     @Volatile
     var negotiatedMtu: Int = 23
@@ -77,6 +79,12 @@ class BleConnectionManager(private val context: Context) {
     @Volatile
     var reconnectGaveUp = false
         private set
+    /**
+     * True only after service discovery + CCCD notify enable succeed.
+     * [isConnected] mirrors this; exposed for auth/send gating clarity.
+     */
+    val isGattReady: Boolean
+        get() = isConnected && txCharacteristic != null && rxCharacteristic != null
 
     /** Current BLE phase for UI (Connecting / Reconnecting / Connected / Disconnected). */
     fun connectionPhase(): BleConnectionPhase = phase
@@ -87,6 +95,19 @@ class BleConnectionManager(private val context: Context) {
         if (phase == next) return
         phase = next
         handler.post { onConnectionPhaseChanged?.invoke(next, reconnectAttempt) }
+    }
+
+    private fun cancelPostRebootPlan() {
+        postRebootDetachRunnable?.let { handler.removeCallbacks(it) }
+        postRebootDetachRunnable = null
+        postRebootConnectRunnable?.let { handler.removeCallbacks(it) }
+        postRebootConnectRunnable = null
+    }
+
+    private fun clearGattHandles() {
+        txCharacteristic = null
+        rxCharacteristic = null
+        onWriteCompleted()
     }
 
     init {
@@ -321,7 +342,7 @@ class BleConnectionManager(private val context: Context) {
         armConnectWatchdog(macAddress)
     }
 
-    private fun scheduleReconnect(macAddress: String) {
+    private fun scheduleReconnect(macAddress: String, delayOverrideMs: Long? = null) {
         if (userWantsDisconnect || suppressReconnect) return
         if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
             Log.w(TAG, "Giving up auto-reconnect after $reconnectAttempt attempts")
@@ -330,7 +351,8 @@ class BleConnectionManager(private val context: Context) {
             return
         }
         reconnectRunnable?.let { handler.removeCallbacks(it) }
-        val delay = ReconnectPolicy.delayMs(reconnectAttempt, macAddress.hashCode() + reconnectAttempt)
+        val delay = delayOverrideMs
+            ?: ReconnectPolicy.delayMs(reconnectAttempt, macAddress.hashCode() + reconnectAttempt)
         reconnectAttempt++
         setPhase(BleConnectionPhase.Reconnecting)
         Log.d(TAG, "Scheduling reconnect attempt $reconnectAttempt in ${delay}ms")
@@ -341,6 +363,116 @@ class BleConnectionManager(private val context: Context) {
         handler.postDelayed(reconnectRunnable!!, delay)
     }
 
+    /**
+     * Settings apply reboots the MCU ~1.5s after the BLE write. Android often
+     * keeps a zombie GATT (missed disconnect) that still reports connected and
+     * accepts writes while the node is dead — channel sends then stick on
+     * "waiting for hearers…". Tear the link down ourselves and reconnect after
+     * the node has time to boot + advertise.
+     *
+     * @param closeAfterMs when to close the current GATT (before/at reboot)
+     * @param reconnectAfterMs when to start a fresh connect (from now)
+     */
+    fun prepareForNodeReboot(closeAfterMs: Long = 1_200L, reconnectAfterMs: Long = 5_000L) {
+        if (suppressReconnect) return
+        val mac = getConnectedDeviceAddress()
+            ?: prefs.getString(PREF_PAIRED_MAC, null)
+            ?: return
+
+        cancelPostRebootPlan()
+        reconnectRunnable?.let {
+            handler.removeCallbacks(it)
+            reconnectRunnable = null
+        }
+        userWantsDisconnect = false
+        reconnectGaveUp = false
+        // Keep paired MAC; unlike user disconnect we must come back.
+        prefs.edit().putString(PREF_PAIRED_MAC, mac).apply()
+        setPhase(BleConnectionPhase.Reconnecting)
+        Log.d(TAG, "prepareForNodeReboot: close in ${closeAfterMs}ms, reconnect in ${reconnectAfterMs}ms ($mac)")
+
+        postRebootDetachRunnable = Runnable {
+            postRebootDetachRunnable = null
+            Log.d(TAG, "prepareForNodeReboot: closing GATT ahead of/during MCU reset")
+            closeGattForReconnect(notify = true)
+        }
+        handler.postDelayed(postRebootDetachRunnable!!, closeAfterMs.coerceAtLeast(0L))
+
+        postRebootConnectRunnable = Runnable {
+            postRebootConnectRunnable = null
+            if (userWantsDisconnect || suppressReconnect) return@Runnable
+            if (isConnected) {
+                Log.d(TAG, "prepareForNodeReboot: still marked connected; forcing GATT refresh")
+                closeGattForReconnect(notify = true)
+            }
+            reconnectAttempt = 0
+            connect(mac)
+        }
+        handler.postDelayed(postRebootConnectRunnable!!, reconnectAfterMs.coerceAtLeast(closeAfterMs + 500L))
+    }
+
+    /** Close GATT without clearing the paired MAC; used for reboot / forced refresh. */
+    private fun closeGattForReconnect(notify: Boolean) {
+        connectionTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+            connectionTimeoutRunnable = null
+        }
+        mtuTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+            mtuTimeoutRunnable = null
+        }
+        val gatt = bluetoothGatt
+        bluetoothGatt = null
+        isConnected = false
+        connectedDeviceName = null
+        connectedNodeId = 0
+        negotiatedMtu = 23
+        clearGattHandles()
+        if (gatt != null) {
+            try {
+                gatt.disconnect()
+            } catch (_: Exception) {
+            }
+            try {
+                gatt.close()
+            } catch (_: Exception) {
+            }
+        }
+        if (notify) {
+            handler.post { onConnectionStateChanged?.invoke(false) }
+        }
+        if (!userWantsDisconnect && !suppressReconnect) {
+            setPhase(BleConnectionPhase.Reconnecting)
+        } else {
+            setPhase(BleConnectionPhase.Disconnected)
+        }
+    }
+
+    /**
+     * Hard refresh when the phone thinks it is linked but auth/traffic fails
+     * (zombie GATT after node reboot). Keeps paired MAC.
+     */
+    fun forceRefreshConnection(reconnectDelayMs: Long = 800L) {
+        val mac = getConnectedDeviceAddress()
+            ?: prefs.getString(PREF_PAIRED_MAC, null)
+            ?: return
+        Log.w(TAG, "forceRefreshConnection to $mac in ${reconnectDelayMs}ms")
+        cancelPostRebootPlan()
+        reconnectRunnable?.let {
+            handler.removeCallbacks(it)
+            reconnectRunnable = null
+        }
+        userWantsDisconnect = false
+        closeGattForReconnect(notify = true)
+        reconnectAttempt = 0
+        reconnectGaveUp = false
+        handler.postDelayed({
+            if (!isConnected && !userWantsDisconnect && !suppressReconnect) {
+                connect(mac)
+            }
+        }, reconnectDelayMs.coerceAtLeast(200L))
+    }
+
     // Set during a bootloader DFU update: our auto-reconnect must not fight the
     // Nordic DFU library for the device. Unlike disconnect(), this keeps the
     // paired MAC so normal reconnection resumes afterward.
@@ -349,6 +481,7 @@ class BleConnectionManager(private val context: Context) {
 
     fun detachForDfu() {
         suppressReconnect = true
+        cancelPostRebootPlan()
         reconnectRunnable?.let {
             handler.removeCallbacks(it)
             reconnectRunnable = null
@@ -362,6 +495,8 @@ class BleConnectionManager(private val context: Context) {
         bluetoothGatt = null
         isConnected = false
         connectedDeviceName = null
+        connectedNodeId = 0
+        clearGattHandles()
         onConnectionStateChanged?.invoke(false)
         setPhase(BleConnectionPhase.Disconnected)
     }
@@ -385,6 +520,7 @@ class BleConnectionManager(private val context: Context) {
         userWantsDisconnect = true
         reconnectAttempt = 0
         reconnectGaveUp = false
+        cancelPostRebootPlan()
         
         // Cancel any pending reconnect attempts
         reconnectRunnable?.let {
@@ -405,6 +541,7 @@ class BleConnectionManager(private val context: Context) {
         isConnected = false
         connectedDeviceName = null
         connectedNodeId = 0
+        clearGattHandles()
         onConnectionStateChanged?.invoke(false)
         setPhase(BleConnectionPhase.Disconnected)
     }
@@ -585,10 +722,16 @@ class BleConnectionManager(private val context: Context) {
                     handler.removeCallbacks(it)
                     connectionTimeoutRunnable = null
                 }
+                // A planned post-settings reconnect already owns the timeline.
+                val rebootPlanActive =
+                    postRebootDetachRunnable != null || postRebootConnectRunnable != null
                 isConnected = false
                 connectedDeviceName = null
                 connectedNodeId = 0
                 negotiatedMtu = 23
+                // Drop stale handles / write gate so the first post-reconnect
+                // AuthRequest is not blocked behind a dead in-flight write.
+                clearGattHandles()
                 
                 try {
                     gatt.close()
@@ -602,12 +745,18 @@ class BleConnectionManager(private val context: Context) {
                 handler.post { onConnectionStateChanged?.invoke(false) }
 
                 // Auto-reconnect if it's not a user-initiated disconnect (and not
-                // suspended for a bootloader DFU transfer)
-                if (!userWantsDisconnect && !suppressReconnect) {
+                // suspended for a bootloader DFU transfer). Skip when
+                // prepareForNodeReboot already scheduled the next connect —
+                // racing an early reconnect against a rebooting MCU is what
+                // left the prior fix half-working.
+                if (!userWantsDisconnect && !suppressReconnect && !rebootPlanActive) {
                     val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
                     if (savedMac != null) {
                         scheduleReconnect(savedMac)
                     }
+                } else if (rebootPlanActive) {
+                    Log.d(TAG, "Natural disconnect during reboot plan; waiting for scheduled reconnect")
+                    setPhase(BleConnectionPhase.Reconnecting)
                 }
             }
         }
@@ -691,6 +840,9 @@ class BleConnectionManager(private val context: Context) {
 
         private fun finalizeConnection(gatt: BluetoothGatt) {
             if (isConnected) return // Prevent double-triggering finalization
+
+            // A successful link means the reboot reconnect plan completed.
+            cancelPostRebootPlan()
             
             isConnected = true
             reconnectAttempt = 0
@@ -724,7 +876,9 @@ class BleConnectionManager(private val context: Context) {
                 connectedNodeId = parseNodeIdFromMac(gatt.device.address)
             }
             
-            Log.d(TAG, "BLE services configured. Node ID: 0x${connectedNodeId.toString(16).uppercase()}")
+            Log.d(TAG, "BLE services+notify ready. Node ID: 0x${connectedNodeId.toString(16).uppercase()}")
+            // Only signal "connected" after CCCD notify is armed so auto-auth
+            // and send never race service discovery.
             handler.post { onConnectionStateChanged?.invoke(true) }
             
         }
@@ -735,9 +889,26 @@ class BleConnectionManager(private val context: Context) {
                 return
             }
             if (characteristic.uuid == RX_CHAR_UUID) {
-                val data = characteristic.value
+                val data = characteristic.value ?: return
+                if (data.isEmpty()) return
                 Log.d(TAG, "Packet received from BLE: ${data.size} bytes")
                 handler.post { onPacketReceived?.invoke(data) }
+            }
+        }
+
+        // Android 13+: preferred callback carries the value explicitly.
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            if (gatt != bluetoothGatt) {
+                Log.d(TAG, "onCharacteristicChanged(value): Stale GATT callback. Ignoring.")
+                return
+            }
+            if (characteristic.uuid == RX_CHAR_UUID && value.isNotEmpty()) {
+                Log.d(TAG, "Packet received from BLE: ${value.size} bytes")
+                handler.post { onPacketReceived?.invoke(value) }
             }
         }
     }

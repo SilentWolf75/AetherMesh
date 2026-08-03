@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 20
+        private const val DATABASE_VERSION = 21
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -419,6 +419,15 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 android.util.Log.e("DatabaseHelper", "Failed to add message heard columns: ${e.message}")
             }
         }
+        if (oldVersion < 21) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN directed_relays INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN suppress_relays INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN flood_unicasts INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN rreq_sent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN early_repairs INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) { }
+        }
     }
 
     private fun meshDiagnosticsTableSql() = """
@@ -446,7 +455,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             range_pongs_queued INTEGER NOT NULL DEFAULT 0,
             range_pongs_sent INTEGER NOT NULL DEFAULT 0,
             range_pong_tx_failures INTEGER NOT NULL DEFAULT 0,
-            quiet_mode INTEGER NOT NULL DEFAULT 0
+            quiet_mode INTEGER NOT NULL DEFAULT 0,
+            directed_relays INTEGER NOT NULL DEFAULT 0,
+            suppress_relays INTEGER NOT NULL DEFAULT 0,
+            flood_unicasts INTEGER NOT NULL DEFAULT 0,
+            rreq_sent INTEGER NOT NULL DEFAULT 0,
+            early_repairs INTEGER NOT NULL DEFAULT 0
         )
     """.trimIndent()
 
@@ -475,6 +489,11 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put("range_pongs_sent", snapshot.rangePongsSent)
             put("range_pong_tx_failures", snapshot.rangePongTxFailures)
             put("quiet_mode", if (snapshot.quietMode) 1 else 0)
+            put("directed_relays", snapshot.directedRelays)
+            put("suppress_relays", snapshot.suppressRelays)
+            put("flood_unicasts", snapshot.floodUnicasts)
+            put("rreq_sent", snapshot.rreqSent)
+            put("early_repairs", snapshot.earlyRepairs)
         }
         writableDatabase.insert(TABLE_MESH_DIAGNOSTICS, null, values)
         writableDatabase.execSQL(
@@ -525,7 +544,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     rangePongsQueued = longOrZero("range_pongs_queued"),
                     rangePongsSent = longOrZero("range_pongs_sent"),
                     rangePongTxFailures = longOrZero("range_pong_tx_failures"),
-                    quietMode = intOrZero("quiet_mode") != 0
+                    quietMode = intOrZero("quiet_mode") != 0,
+                    directedRelays = longOrZero("directed_relays"),
+                    suppressRelays = longOrZero("suppress_relays"),
+                    floodUnicasts = longOrZero("flood_unicasts"),
+                    rreqSent = longOrZero("rreq_sent"),
+                    earlyRepairs = longOrZero("early_repairs")
                 )
             }
         }
@@ -953,7 +977,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val out = mutableMapOf<String, ChatInboxPreview>()
         val cursor = db.rawQuery(
             """
-                SELECT $COL_MSG_CHANNEL, $COL_MSG_CONTENT, $COL_MSG_TIMESTAMP
+                SELECT $COL_MSG_CHANNEL, $COL_MSG_CONTENT, $COL_MSG_TIMESTAMP,
+                       $COL_MSG_SENDER, $COL_MSG_STATUS
                 FROM $TABLE_MESSAGES
                 WHERE $COL_MSG_CHANNEL != ''
                   AND $COL_MSG_ID IN (
@@ -969,7 +994,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 val channel = cursor.getString(0) ?: continue
                 out[channel] = ChatInboxPreview(
                     snippet = cursor.getString(1) ?: "",
-                    timestamp = cursor.getLong(2)
+                    timestamp = cursor.getLong(2),
+                    senderId = cursor.getLong(3),
+                    status = cursor.getString(4) ?: "SENT"
                 )
             } while (cursor.moveToNext())
         }
@@ -983,7 +1010,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val out = mutableMapOf<Long, ChatInboxPreview>()
         val cursor = db.rawQuery(
             """
-                SELECT $COL_MSG_SENDER, $COL_MSG_RECIPIENT, $COL_MSG_CONTENT, $COL_MSG_TIMESTAMP
+                SELECT $COL_MSG_SENDER, $COL_MSG_RECIPIENT, $COL_MSG_CONTENT,
+                       $COL_MSG_TIMESTAMP, $COL_MSG_STATUS
                 FROM $TABLE_MESSAGES
                 WHERE $COL_MSG_CHANNEL = ''
                 ORDER BY $COL_MSG_TIMESTAMP DESC
@@ -1002,7 +1030,9 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 if (peer == 0L || out.containsKey(peer)) continue
                 out[peer] = ChatInboxPreview(
                     snippet = cursor.getString(2) ?: "",
-                    timestamp = cursor.getLong(3)
+                    timestamp = cursor.getLong(3),
+                    senderId = sender,
+                    status = cursor.getString(4) ?: "SENT"
                 )
             } while (cursor.moveToNext())
         }
@@ -1413,7 +1443,9 @@ data class ChatMessage(
 /** Lightweight last-message summary for the Chats inbox. */
 data class ChatInboxPreview(
     val snippet: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val senderId: Long = 0L,
+    val status: String = "SENT"
 )
 
 data class MeshNode(

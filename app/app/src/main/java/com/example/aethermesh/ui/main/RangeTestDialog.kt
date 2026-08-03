@@ -41,7 +41,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -61,6 +63,7 @@ fun RangeTestDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val spanish = appLanguage == "Spanish"
     val isConnected by viewModel.isBleConnected.collectAsStateWithLifecycle()
     val isDeviceAuthenticated by viewModel.isDeviceAuthenticated.collectAsStateWithLifecycle()
@@ -126,6 +129,55 @@ fun RangeTestDialog(
         isRangeTestActive && viewModel.rangeTestTargetId == targetNode.nodeId
     val activeForOtherTarget =
         isRangeTestActive && viewModel.rangeTestTargetId != 0L && !activeForThisTarget
+    var showClearLogsConfirm by remember { mutableStateOf(false) }
+
+    if (showClearLogsConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearLogsConfirm = false },
+            title = {
+                Text(
+                    if (spanish) "Borrar registros" else "Clear logs",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    if (spanish)
+                        "¿Borrar el historial de prueba de rango de este nodo? No se puede deshacer."
+                    else
+                        "Clear range-test history for this node? This cannot be undone.",
+                    color = TextMuted,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val targetId = if (isRangeTestActive && viewModel.rangeTestTargetId != 0L) {
+                            viewModel.rangeTestTargetId
+                        } else {
+                            targetNode.nodeId
+                        }
+                        viewModel.clearRangeTestLogs(targetId)
+                        showClearLogsConfirm = false
+                    }
+                ) {
+                    Text(
+                        if (spanish) "Borrar" else "Clear",
+                        color = Color(0xFFFCA5A5),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearLogsConfirm = false }) {
+                    Text(if (spanish) "Cancelar" else "Cancel", color = TextMuted)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -201,17 +253,13 @@ fun RangeTestDialog(
                 val targetStale = !targetingConnectedNode &&
                     (targetNode.lastActive <= 0L || targetStaleMs > 120_000L)
                 if (targetStale) {
-                    val staleLabel = if (targetNode.lastActive <= 0L) {
-                        if (spanish) "nunca" else "never"
-                    } else {
-                        "${(targetStaleMs / 1000L).toInt()}s"
-                    }
+                    val staleLabel = formatLastHeard(targetNode.lastActive, appLanguage)
                     Text(
                         if (spanish)
                             "${targetNode.name} no está en el aire (última telemetría: $staleLabel). " +
                                 "Enciéndelo, verifica misma región/SF que el nodo BLE, y espera a ver batería/RSSI actualizados antes de probar."
                         else
-                            "${targetNode.name} is not on the air (last telemetry: $staleLabel ago). " +
+                            "${targetNode.name} is not on the air (last telemetry: $staleLabel). " +
                                 "Power it on, match region/SF with the BLE-connected node, and wait until battery/RSSI update before testing.",
                         color = AccentAmber,
                         fontSize = 12.sp,
@@ -269,12 +317,15 @@ fun RangeTestDialog(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
-                        onClick = { viewModel.stopRangeTest() },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.stopRangeTest()
+                        },
                         modifier = Modifier.fillMaxWidth().height(40.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D)),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text(t("Stop Test", appLanguage), color = TextLight)
+                        Text(t("Stop Test", appLanguage), color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
                     }
                 } else if (!activeForThisTarget) {
                     Text(
@@ -315,19 +366,25 @@ fun RangeTestDialog(
                         )
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    val canStart = isConnected && isDeviceAuthenticated &&
+                        !targetingConnectedNode && !targetStale
                     Button(
                         onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             viewModel.startRangeTest(targetNode.nodeId, pingIntervalSec.toInt())
                         },
-                        enabled = isConnected && isDeviceAuthenticated &&
-                            !targetingConnectedNode && !targetStale,
+                        enabled = canStart,
                         modifier = Modifier.fillMaxWidth().height(40.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AccentCyan,
+                            contentColor = DarkBackground,
+                            disabledContainerColor = TextMuted.copy(alpha = 0.22f),
+                            disabledContentColor = TextMuted
+                        ),
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
                             if (spanish) "Iniciar prueba de rango" else "Start Range Test",
-                            color = DarkBackground,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -400,7 +457,7 @@ fun RangeTestDialog(
                                 Text(t("Export CSV", appLanguage), color = AccentCyan, fontSize = 12.sp)
                             }
                             Button(
-                                onClick = { viewModel.clearRangeTestLogs(targetNode.nodeId) },
+                                onClick = { showClearLogsConfirm = true },
                                 modifier = Modifier.weight(1f).height(38.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF451a1a)),
                                 shape = RoundedCornerShape(8.dp),
@@ -447,12 +504,27 @@ fun RangeTestDialog(
                         )
                     }
 
+                    if (totalPings == 0) {
+                        Text(
+                            if (spanish)
+                                "Esperando la primera respuesta…"
+                            else
+                                "Waiting for first reply…",
+                            color = AccentCyan,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 10.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                            Text(if (spanish) "PINGS" else "PINGS SENT", color = TextMuted, fontSize = 10.sp)
+                            Text(if (spanish) "ENVIADOS" else "PINGS SENT", color = TextMuted, fontSize = 10.sp)
                             Text("$totalPings", color = TextLight, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
@@ -467,6 +539,46 @@ fun RangeTestDialog(
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+                    }
+                    if (sessionLogs.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            if (spanish) "Últimos resultados" else "Recent results",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        sessionLogs.takeLast(5).asReversed().forEach { log ->
+                            val timeStr = java.text.SimpleDateFormat(
+                                "h:mm:ss a",
+                                java.util.Locale.getDefault()
+                            ).format(java.util.Date(log.timestamp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(timeStr, color = TextMuted, fontSize = 11.sp)
+                                if (log.success) {
+                                    Text(
+                                        "${log.rssi.toInt()} dBm · %.1f dB".format(log.snr),
+                                        color = AccentMint,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                } else {
+                                    Text(
+                                        rangeTestFailureShort(log.failureReason, appLanguage),
+                                        color = AccentRed,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
                     }
                     if (failBuckets.isNotEmpty()) {
@@ -675,13 +787,21 @@ fun RangeTestDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = { viewModel.stopRangeTest() },
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.stopRangeTest()
+                            },
                             modifier = Modifier.weight(1f).height(38.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D)),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
-                            Text(t("Stop Test", appLanguage), color = TextLight, fontSize = 12.sp)
+                            Text(
+                                t("Stop Test", appLanguage),
+                                color = Color(0xFFFCA5A5),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                         Button(
                             onClick = {
@@ -702,14 +822,7 @@ fun RangeTestDialog(
                             Text(t("Export CSV", appLanguage), color = AccentCyan, fontSize = 12.sp)
                         }
                         Button(
-                            onClick = {
-                                val targetId = if (isRangeTestActive && viewModel.rangeTestTargetId != 0L) {
-                                    viewModel.rangeTestTargetId
-                                } else {
-                                    targetNode.nodeId
-                                }
-                                viewModel.clearRangeTestLogs(targetId)
-                            },
+                            onClick = { showClearLogsConfirm = true },
                             modifier = Modifier.weight(1f).height(38.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF451a1a)),
                             shape = RoundedCornerShape(8.dp),

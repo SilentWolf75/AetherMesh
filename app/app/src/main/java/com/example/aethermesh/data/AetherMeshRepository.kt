@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
@@ -67,7 +68,12 @@ data class MeshDiagnosticsSnapshot(
     val rangePongsQueued: Long = 0,
     val rangePongsSent: Long = 0,
     val rangePongTxFailures: Long = 0,
-    val quietMode: Boolean = false
+    val quietMode: Boolean = false,
+    val directedRelays: Long = 0,
+    val suppressRelays: Long = 0,
+    val floodUnicasts: Long = 0,
+    val rreqSent: Long = 0,
+    val earlyRepairs: Long = 0
 )
 
 data class TraceHop(
@@ -239,6 +245,17 @@ class AetherMeshRepository(private val context: Context) {
     val remoteConfigResult: SharedFlow<RemoteConfigResultEvent> = _remoteConfigResult.asSharedFlow()
 
     private var pendingAuthPassword: String? = null
+    private var autoAuthJob: Job? = null
+    @Volatile
+    private var lastAuthChallengeResubmitMs: Long = 0L
+    /** Generation bumped on each BLE connect so in-flight auto-auth cannot unlock a newer session. */
+    @Volatile
+    private var authSessionGeneration: Int = 0
+    /** After Apply Settings we expect MCU reboot; auto-auth is more patient and may force-refresh GATT. */
+    @Volatile
+    private var expectPostSettingsReconnect: Boolean = false
+    @Volatile
+    private var postReconnectAuthRefreshUsed: Boolean = false
 
     // Range Test Engine properties
     private val _isRangeTestActive = MutableStateFlow(false)
@@ -376,16 +393,24 @@ class AetherMeshRepository(private val context: Context) {
             Log.d(TAG, "BLE Connection changed: $connected")
             _isBleConnected.value = connected
             if (connected) {
+                // New link: never inherit a pre-reboot "authenticated" flag.
+                authSessionGeneration += 1
+                val session = authSessionGeneration
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
                 _needsRegionSetup.value = false
                 _bleReconnectGaveUp.value = false
+                lastAuthChallengeResubmitMs = 0L
+                postReconnectAuthRefreshUsed = false
                 val mac = bleManager.getConnectedDeviceAddress()
                 if (mac != null) {
-                    autoAuthenticate(mac)
+                    autoAuthenticate(mac, session)
                 }
                 refreshData()
             } else {
+                autoAuthJob?.cancel()
+                autoAuthJob = null
+                authSessionGeneration += 1
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
                 _needsRegionSetup.value = false
@@ -462,31 +487,102 @@ class AetherMeshRepository(private val context: Context) {
         editor.apply()
     }
 
-    private fun autoAuthenticate(macAddress: String) {
-        repositoryScope.launch {
-            // GATT notify/write can still be settling when connection flips to true.
-            delay(250)
+    private fun autoAuthenticate(macAddress: String, session: Int = authSessionGeneration) {
+        autoAuthJob?.cancel()
+        autoAuthJob = repositoryScope.launch {
+            // State machine: GATT ready (notify armed) → AuthRequest retries →
+            // AuthResponse(success). Never treat writeCharacteristic alone as unlock.
+            val postSettings = expectPostSettingsReconnect
+            val initialDelay = if (postSettings) 700L else 400L
+            delay(initialDelay)
+            if (!isActive || session != authSessionGeneration) return@launch
             if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
 
+            // Wait briefly for TX/RX handles after finalizeConnection.
+            var readyWait = 0
+            while (isActive && readyWait < 12 && bleManager.isConnected && !bleManager.isGattReady) {
+                delay(100)
+                readyWait++
+            }
+            if (!isActive || session != authSessionGeneration) return@launch
+            if (!bleManager.isConnected || !bleManager.isGattReady) {
+                Log.w(TAG, "Auto-auth aborted: GATT not ready (connected=${bleManager.isConnected})")
+                return@launch
+            }
+
             val savedPass = lookupSavedPassword(macAddress)
-            if (!savedPass.isNullOrEmpty()) {
-                Log.d(TAG, "Found saved password for ${normalizeMac(macAddress)}. Submitting auto-auth...")
-                if (!sendAuthRequest(savedPass)) {
-                    delay(400)
-                    if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
-                        Log.d(TAG, "Retrying auto-auth after GATT settle...")
-                        sendAuthRequest(savedPass)
-                    }
+            val password = savedPass.orEmpty()
+            val attempts = when {
+                password.isNotEmpty() && postSettings -> 8
+                password.isNotEmpty() -> 6
+                else -> 3
+            }
+            Log.d(
+                TAG,
+                if (password.isNotEmpty()) {
+                    "Found saved password for ${normalizeMac(macAddress)}. Auto-auth up to $attempts attempts (postSettings=$postSettings)..."
+                } else {
+                    "No saved password for ${normalizeMac(macAddress)}. Querying auth status..."
                 }
-            } else {
-                Log.d(TAG, "No saved password found for ${normalizeMac(macAddress)}. Sending status query...")
-                if (!sendAuthRequest("")) {
-                    delay(400)
-                    if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
-                        sendAuthRequest("")
-                    }
+            )
+
+            for (attempt in 1..attempts) {
+                if (!isActive || session != authSessionGeneration) return@launch
+                if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
+                if (!bleManager.isGattReady) {
+                    delay(200)
+                    continue
+                }
+                Log.d(TAG, "Auto-auth attempt $attempt/$attempts")
+                val wrote = sendAuthRequest(password)
+                // Wait for AuthResponse(success); longer after settings reboot.
+                val waitMs = when {
+                    !wrote -> 500L
+                    postSettings -> 1_200L
+                    else -> 900L
+                }
+                delay(waitMs)
+                if (_isDeviceAuthenticated.value) {
+                    expectPostSettingsReconnect = false
+                    return@launch
                 }
             }
+
+            if (!isActive || session != authSessionGeneration) return@launch
+            if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
+                // Zombie GATT after MCU reboot: Android still "connected" but the
+                // node never saw AuthRequest / never notified AuthResponse.
+                if (postSettings && !postReconnectAuthRefreshUsed) {
+                    postReconnectAuthRefreshUsed = true
+                    Log.w(TAG, "Post-settings auto-auth failed; forcing GATT refresh")
+                    bleManager.forceRefreshConnection(1_000L)
+                    return@launch
+                }
+                Log.w(TAG, "Auto-auth did not complete; prompting unlock UI")
+                expectPostSettingsReconnect = false
+                if (_authenticationRequired.value == null) {
+                    _authenticationRequired.value = true
+                }
+            }
+        }
+    }
+
+    /** Resubmit saved password when the node challenges after reboot/reconnect. */
+    private fun resubmitSavedPasswordOnChallenge() {
+        if (!bleManager.isConnected || !bleManager.isGattReady) return
+        val mac = bleManager.getConnectedDeviceAddress() ?: return
+        val saved = lookupSavedPassword(mac)
+        if (saved.isNullOrEmpty()) return
+        val now = System.currentTimeMillis()
+        if (now - lastAuthChallengeResubmitMs < 1_200L) return
+        lastAuthChallengeResubmitMs = now
+        val session = authSessionGeneration
+        Log.d(TAG, "Auth challenge received; resubmitting saved password")
+        repositoryScope.launch {
+            delay(120)
+            if (session != authSessionGeneration) return@launch
+            if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
+            sendAuthRequest(saved)
         }
     }
 
@@ -499,7 +595,7 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun sendAuthRequest(password: String): Boolean {
-        if (!bleManager.isConnected) return false
+        if (!bleManager.isConnected || !bleManager.isGattReady) return false
         val localNodeId = bleManager.connectedNodeId
         
         val authBuilder = com.example.aethermesh.proto.AuthRequest.newBuilder()
@@ -567,6 +663,7 @@ class AetherMeshRepository(private val context: Context) {
                 _isDeviceAuthenticated.value = true
                 _authenticationRequired.value = null
                 _authFailureTick.value = 0
+                expectPostSettingsReconnect = false
                 
                 // Remember this node so reconnect unlocks without retyping.
                 val mac = bleManager.getConnectedDeviceAddress()
@@ -593,17 +690,30 @@ class AetherMeshRepository(private val context: Context) {
 
                 refreshData()
             } else {
-                // Firmware also emits AuthResponse(false, "Authentication required") when any
-                // non-auth packet arrives before unlock. That must NOT wipe a saved password
-                // or pop the unlock dialog — the real auth reply is still in flight.
+                // Firmware emits AuthResponse(false, "Authentication required") on BLE
+                // connect and when non-auth traffic arrives while locked. Do not wipe a
+                // saved password — but ALWAYS clear local auth. The prior fix left
+                // isDeviceAuthenticated=true across challenges, so the composer allowed
+                // SENT bubbles while the MCU dropped every text as unauthenticated.
                 val msg = authResp.message.orEmpty()
-                if (msg.contains("Authentication required", ignoreCase = true)) {
-                    Log.d(TAG, "Ignoring pre-auth rejection (non-auth packet while locked).")
+                val wasAuthenticated = _isDeviceAuthenticated.value
+                _isDeviceAuthenticated.value = false
+                _needsRegionSetup.value = false
+
+                if (msg.contains("Authentication required", ignoreCase = true) ||
+                    msg.contains("Password required", ignoreCase = true)
+                ) {
+                    if (authResp.passwordNotSet) {
+                        _authenticationRequired.value = false // Needs initial password
+                    } else {
+                        if (wasAuthenticated) {
+                            Log.w(TAG, "Node re-challenged after local auth; session desync cleared")
+                        }
+                        resubmitSavedPasswordOnChallenge()
+                    }
                     return
                 }
 
-                _isDeviceAuthenticated.value = false
-                _needsRegionSetup.value = false
                 if (authResp.passwordNotSet) {
                     _authenticationRequired.value = false // Needs to set initial password
                 } else {
@@ -723,7 +833,12 @@ class AetherMeshRepository(private val context: Context) {
                 rangePongsQueued = value.rangePongsQueued.toLong(),
                 rangePongsSent = value.rangePongsSent.toLong(),
                 rangePongTxFailures = value.rangePongTxFailures.toLong(),
-                quietMode = value.quietMode
+                quietMode = value.quietMode,
+                directedRelays = value.directedRelays.toLong(),
+                suppressRelays = value.suppressRelays.toLong(),
+                floodUnicasts = value.floodUnicasts.toLong(),
+                rreqSent = value.rreqSent.toLong(),
+                earlyRepairs = value.earlyRepairs.toLong()
             )
             dbHelper.insertMeshDiagnostics(snapshot)
             _meshDiagnostics.value = snapshot
@@ -1014,7 +1129,11 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult {
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return SendMessageResult.NotReady
+        // Require notify-ready GATT + AuthResponse(success). A zombie post-reboot
+        // link can report isConnected with stale auth and produce fake SENT rows.
+        if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
+            return SendMessageResult.NotReady
+        }
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
         val generatedPacketId = PacketIdGenerator.next()
         val localNodeId = bleManager.connectedNodeId
@@ -1209,6 +1328,14 @@ class AetherMeshRepository(private val context: Context) {
                     .apply()
             }
             refreshData()
+            // Full local Settings apply always reboots the MCU (~1.5s). Drop auth
+            // immediately and proactively refresh GATT so we never keep a zombie
+            // "LINK UP / authenticated" session across the reset.
+            expectPostSettingsReconnect = true
+            _isDeviceAuthenticated.value = false
+            _authenticationRequired.value = null
+            Log.d(TAG, "Settings applied — scheduling post-reboot BLE refresh")
+            bleManager.prepareForNodeReboot(closeAfterMs = 1_200L, reconnectAfterMs = 5_000L)
         }
         return success
     }
@@ -1429,6 +1556,19 @@ class AetherMeshRepository(private val context: Context) {
 
     fun hideTraceRouteDialog() {
         _traceRouteState.value = _traceRouteState.value.copy(showDialog = false)
+    }
+
+    /** Stop an in-flight traceroute and surface a cancelled result in the dialog. */
+    fun cancelTraceRoute() {
+        val pending = _traceRouteState.value
+        if (!pending.active) return
+        traceRouteJob?.cancel()
+        _traceRouteState.value = pending.copy(
+            active = false,
+            showDialog = true,
+            error = "Cancelled",
+            finishedAtMs = System.currentTimeMillis()
+        )
     }
 
     fun clearTraceRouteResult() {

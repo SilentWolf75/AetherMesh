@@ -38,6 +38,8 @@ RadioManager::RadioManager() {
     lastSnr = 0.0f;
     isTransmitting = false;
     txTimeoutMs = 2500;
+    recentAirtimeMs = 0;
+    recentAirtimeWindowStart = 0;
     lastRxActivityTime = 0;
     lastHealthLogTime = 0;
     txPackets = 0;
@@ -457,7 +459,27 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
 
     txPackets++;
     airtimeMsTotal += airtimeMs;
+    noteRecentAirtime(airtimeMs);
     return true;
+}
+
+void RadioManager::noteRecentAirtime(uint32_t ms) {
+    uint32_t now = millis();
+    const uint32_t windowMs = 10000u;
+    if (recentAirtimeWindowStart == 0 ||
+        (uint32_t)(now - recentAirtimeWindowStart) >= windowMs) {
+        recentAirtimeMs = 0;
+        recentAirtimeWindowStart = now;
+    }
+    recentAirtimeMs += ms;
+}
+
+uint32_t RadioManager::getRecentAirtimeMs() const {
+    uint32_t now = millis();
+    const uint32_t windowMs = 10000u;
+    if (recentAirtimeWindowStart == 0) return 0;
+    if ((uint32_t)(now - recentAirtimeWindowStart) >= windowMs) return 0;
+    return recentAirtimeMs;
 }
 
 void RadioManager::onReceive(void (*callback)(uint8_t* data, size_t len, float rssi, float snr)) {

@@ -257,12 +257,7 @@ fun MeshRoutingDiagnosticsPanel(
                     diagnostics.ackedPackets * 100 / deliveryAttempts >= 70L -> AccentMint
                     else -> AccentAmber
                 }
-                val ageSec = ((System.currentTimeMillis() - diagnostics.timestamp) / 1000L).coerceAtLeast(0L)
-                val ageLabel = when {
-                    ageSec < 5L -> if (appLanguage == "Spanish") "ahora" else "just now"
-                    ageSec < 60L -> "${ageSec}s"
-                    else -> "${ageSec / 60}m"
-                }
+                val ageLabel = formatRelativeAge(diagnostics.timestamp, appLanguage)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -374,10 +369,31 @@ fun MeshRoutingDiagnosticsPanel(
                         append(diagnostics.relayedPackets)
                         append(if (spanish) "  ·  Reintentos " else "  ·  Retries ")
                         append(diagnostics.retries)
+                        append(if (spanish) "  ·  Rutas " else "  ·  Routes ")
+                        append(diagnostics.activeRoutes)
+                        append(if (spanish) "  ·  Cambios " else "  ·  Changes ")
+                        append(diagnostics.routeChanges)
                         append(if (spanish) "  ·  Aire " else "  ·  Airtime ")
                         append(diagnostics.airtimeMs / 1000)
                         append(if (spanish) "s  ·  Activo ${diagnostics.uptimeSeconds}s  ·  V" else "s  ·  Up ${diagnostics.uptimeSeconds}s  ·  V")
                         append(diagnostics.protocolVersion)
+                    },
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    buildString {
+                        append(if (spanish) "Dirigidos " else "Directed ")
+                        append(diagnostics.directedRelays)
+                        append(if (spanish) "  ·  Suprimidos " else "  ·  Suppress ")
+                        append(diagnostics.suppressRelays)
+                        append(if (spanish) "  ·  Flood " else "  ·  Flood ")
+                        append(diagnostics.floodUnicasts)
+                        append("  ·  RREQ ")
+                        append(diagnostics.rreqSent)
+                        append(if (spanish) "  ·  Reparos " else "  ·  Early ")
+                        append(diagnostics.earlyRepairs)
                     },
                     color = TextMuted,
                     fontSize = 11.sp

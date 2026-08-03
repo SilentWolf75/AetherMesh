@@ -37,8 +37,12 @@ public:
     uint32_t getRxPackets() const { return rxPackets; }
     uint32_t getCadBusyEvents() const { return cadBusyEvents; }
     uint32_t getAirtimeMs() const { return airtimeMsTotal; }
+    // Phase 6: TX airtime accumulated in the current ~10s window (for
+    // congestion gates on STORED wake / repair floods).
+    uint32_t getRecentAirtimeMs() const;
     
 private:
+    void noteRecentAirtime(uint32_t airtimeMs);
     // SX1262 Instance
     SX1262* radio;
     
@@ -61,6 +65,8 @@ private:
     uint32_t rxPackets;
     uint32_t cadBusyEvents;
     uint32_t airtimeMsTotal;
+    uint32_t recentAirtimeMs;
+    uint32_t recentAirtimeWindowStart;
     
     // Config
     float frequency;

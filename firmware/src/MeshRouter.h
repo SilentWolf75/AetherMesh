@@ -10,7 +10,10 @@
 #define MAX_SEEN_PACKETS_CACHE 50
 #define DEFAULT_HOP_LIMIT 4
 #define ROUTE_TIMEOUT_MS 600000 // 10 minutes
-#define MAX_PENDING_REBROADCASTS 6
+// Soft-age before metric decay / demotion (Phase 3). Hard invalidate stays at
+// ROUTE_TIMEOUT_MS; stale primaries lose preference sooner.
+#define ROUTE_SOFT_AGE_MS 200000UL // ~3.3 minutes
+#define MAX_PENDING_REBROADCASTS 8
 #define MAX_PENDING_ACKS 4
 #define MAX_PENDING_PONGS 4
 #define MAX_CHANNEL_RECEIPTS 4
@@ -28,10 +31,26 @@
 #define DIRECT_PONG_RESEND_MS 400
 #define DIRECT_PONG_INITIAL_DELAY_MS 350
 #define ACK_MAX_RETRIES 3
+// Locally-originated ACKs share the rebroadcast queue; allow longer CAD/busy
+// retries at high SF than flood relays (default 5s). Must also cover the
+// collision-recovery ACK wave scheduled after insurance (~30–40s at SF11/12).
+#define ACK_QUEUE_TTL_MS 60000UL
 #define STORE_FORWARD_TTL_MS 1800000UL
 #define STORE_FORWARD_RETRY_MS 60000UL
-#define ROUTE_DISCOVERY_COOLDOWN_MS 5000
+// Per-target / global discovery gaps are SF-scaled via MeshMath
+// (routeDiscoveryCooldownMs / routeDiscoveryGlobalGapMs). These macros remain
+// as documentation defaults matching SF≤9.
+#define ROUTE_DISCOVERY_COOLDOWN_MS 8000
+#define FLOOD_DEST_COOLDOWN_MS 6000
+#define ROUTE_FAIL_FLOOD_MS 45000
+#define MAX_ROUTE_FAILURES 8
 #define PROXY_ROUTE_MAX_AGE_MS 60000
+// Directed unicast stuck on CAD: abandon next hop after this many busy fails.
+#define EARLY_CAD_FAIL_THRESHOLD 2
+// Phase 6: small per-neighbor ACK SNR quality table (reuse route-scale budget).
+#define MAX_NEIGHBOR_QUALITY 12
+#define NEIGHBOR_QUALITY_TIMEOUT_MS 600000UL
+#define AIRTIME_CONGESTION_WINDOW_MS 10000UL
 // Hard cap so a forgotten range-test START cannot soft-stall a leave-behind node.
 #define QUIET_MODE_MAX_MS (5UL * 60UL * 1000UL)
 
@@ -63,13 +82,20 @@ struct PendingRebroadcast {
 };
 
 // A locally-originated want_ack packet awaiting acknowledgment.
-// Retransmitted up to ACK_MAX_RETRIES times, then dropped.
+// Retransmitted up to ACK_MAX_RETRIES times, then store-and-forward.
 struct PendingAck {
     aethermesh_MeshPacket packet;
     uint32_t nextRetryTime;
     uint32_t expiresAt;
+    uint32_t trackedAt;
     uint8_t retriesLeft;
+    uint8_t cadFailStreak;
+    bool earlyBackupDone;
+    bool earlyFloodDone;
     bool stored;
+    // Phase 5: one adaptive wake per store-forward wait cycle when a route
+    // reappears (avoids re-arming forever on telemetry spam).
+    bool storedWakeDone;
     bool active;
 };
 
@@ -99,6 +125,27 @@ struct PendingPongReply {
 struct RouteDiscoveryState {
     uint32_t targetId;
     uint32_t lastRequestMs;
+};
+
+// Recent primary-route failures: allow flood fallback and rediscovery.
+struct RouteFailure {
+    uint32_t targetId;
+    uint32_t failedAtMs;
+    bool active;
+};
+
+struct FloodDestState {
+    uint32_t targetId;
+    uint32_t lastFloodMs;
+};
+
+// Phase 6: smoothed ACK hop-cost per immediate neighbor (next hop).
+struct NeighborQuality {
+    uint32_t neighborId;
+    uint8_t hopCost;
+    uint8_t samples;
+    uint32_t updatedAt;
+    bool active;
 };
 
 class MeshRouter {
@@ -175,6 +222,10 @@ private:
     ChannelReceiptTrack channelReceipts[MAX_CHANNEL_RECEIPTS];
     PendingPongReply pendingPongs[MAX_PENDING_PONGS];
     RouteDiscoveryState routeDiscoveries[6];
+    RouteFailure routeFailures[MAX_ROUTE_FAILURES];
+    FloodDestState floodDests[6];
+    NeighborQuality neighborQuality[MAX_NEIGHBOR_QUALITY];
+    uint32_t lastAnyDiscoveryMs; // Phase 4: global RREQ pacing across targets
     uint32_t relayedPackets;
     uint32_t retryPackets;
     uint32_t ackedPackets;
@@ -182,6 +233,12 @@ private:
     uint32_t duplicatePackets;
     uint32_t queueDrops;
     uint32_t routeChanges;
+    // Smart-routing counters (BLE MeshDiagnostics + Serial; never LoRa).
+    uint32_t directedRelays;
+    uint32_t suppressRelays;
+    uint32_t floodUnicasts;
+    uint32_t rreqSent;
+    uint32_t earlyRepairs;
     uint32_t rangePingsRx;
     uint32_t rangePongsQueued;
     uint32_t rangePongsSent;
@@ -199,6 +256,31 @@ private:
     void addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric);
     RouteEntry* getRoute(uint32_t targetId);
     void invalidateRoute(uint32_t targetId);
+    void markRouteFailed(uint32_t targetId);
+    bool isRouteFailedRecently(uint32_t targetId) const;
+    void learnReverseRoute(uint32_t originId, uint32_t viaHopId, uint8_t lastHopCost);
+    void applyDirectedNextHop(aethermesh_MeshPacket* packet, bool preferReturnPath = false);
+    bool noteFloodDest(uint32_t targetId);
+    // Phase 3: demote soft-stale primary to backup; early backup/flood repair.
+    void maybeSoftDemoteRoute(RouteEntry* route);
+    bool tryEarlyPathRepair(PendingAck& pending, uint32_t now);
+    // Phase 4: retarget pending directed unicasts when a better next hop lands.
+    void refreshPendingDirectedNextHop(uint32_t targetId, uint32_t newNextHop);
+    // Phase 5: accelerate STORED want_ack retries when a route reappears.
+    void wakeStoredPendingForTarget(uint32_t targetId);
+    // Phase 5: refresh primary + soft-nudge backup on DELIVERED.
+    void reinforceRouteOnDelivery(uint32_t destId, float ackSnr);
+    // Phase 6: congestion score from queue depth + recent airtime.
+    uint8_t currentCongestionScore() const;
+    uint8_t countActiveRebroadcasts() const;
+    uint8_t countActivePendingAcks() const;
+    // Phase 6: per-neighbor ACK SNR → route metric bias.
+    void noteNeighborAckQuality(uint32_t neighborId, float ackSnr);
+    uint8_t neighborLinkCost(uint32_t neighborId) const;
+    uint8_t metricWithNeighborQuality(uint32_t nextHopId, uint8_t metric) const;
+    // Phase 6: after invalidate/promote — retarget pending + one rediscovery.
+    void retargetPendingAfterRelayLoss(uint32_t targetId, bool promotedBackup,
+                                       uint32_t newNextHop);
     
     bool hasSeenPacketId(uint32_t senderId, uint32_t packetId);
     bool isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
@@ -206,6 +288,8 @@ private:
     
     bool handleRouteRequest(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rreq);
     void handleRouteReply(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rrep);
+    // Install forward route to RREP target via the transmitting hop (path splice).
+    void installReplyPath(uint32_t targetId, uint32_t viaHopId, uint8_t metric);
     
     bool sendRouteRequest(uint32_t targetId);
     void sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t metric);
@@ -220,7 +304,8 @@ private:
     void cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount = UINT32_MAX);
 
     // ACK/retransmit helpers
-    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
+    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr,
+                 bool scheduleRecovery = false);
     void trackForAck(const aethermesh_MeshPacket& packet);
     void trackChannelReceipt(uint32_t packetId);
     void noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId, float ackRssi = 0.0f, float ackSnr = 0.0f);

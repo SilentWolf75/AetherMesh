@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.ColorMatrix
 import android.graphics.drawable.BitmapDrawable
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -135,6 +136,7 @@ fun SettingsView(
     var showClearChatDialog by remember { mutableStateOf(false) }
     var showResetNodesDialog by remember { mutableStateOf(false) }
     var showRepeaterConfirmDialog by remember { mutableStateOf(false) }
+    var channelPendingDelete by remember { mutableStateOf<ChannelConfig?>(null) }
 
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var bgAlertsEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("bg_alerts_enabled", true)) }
@@ -207,17 +209,18 @@ fun SettingsView(
                     powerSaveModeEnabled = json.optBoolean("power_save_mode", powerSaveModeEnabled)
                     positionPrecisionM = json.optInt("position_precision", positionPrecisionM)
                     nodeGpsMode = json.optInt("gps_mode", nodeGpsMode).coerceIn(0, 2)
-                    gpsDutyIntervalSecs = json.optInt("gps_duty_interval_secs", gpsDutyIntervalSecs)
-                        .let { if (it <= 0) 900 else it.coerceIn(300, 3600) }
+                    gpsDutyIntervalSecs = snapGpsDutyIntervalSecs(
+                        json.optInt("gps_duty_interval_secs", gpsDutyIntervalSecs)
+                    )
                     fixedPositionEnabled = json.optBoolean("fixed_position", fixedPositionEnabled)
                     fixedLatInput = json.optDouble("fixed_latitude", fixedLatInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedLonInput = json.optDouble("fixed_longitude", fixedLonInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedAltInput = json.optInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0).toString()
                     
                     AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
-                            "Ajustes importados. Pulsa Guardar para aplicarlos al dispositivo."
+                            "Ajustes importados. Pulsa Aplicar Ajustes para enviarlos al dispositivo."
                         else
-                            "Settings imported. Tap Save to apply to device.", duration = SnackbarDuration.Long)
+                            "Settings imported. Tap Apply Settings to send them to the device.", duration = SnackbarDuration.Long)
                 }
             } catch (e: Exception) {
                 AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
@@ -235,6 +238,10 @@ fun SettingsView(
     var editingChannel by remember { mutableStateOf<ChannelConfig?>(null) }
     var importChannelLinkInput by remember { mutableStateOf("") }
     var activeCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    val settingsScrollState = rememberScrollState()
+    LaunchedEffect(activeCategory) {
+        settingsScrollState.scrollTo(0)
+    }
     LaunchedEffect(initialCategory) {
         val cat = initialCategory ?: return@LaunchedEffect
         activeCategory = cat
@@ -308,9 +315,9 @@ fun SettingsView(
             powerSaveModeEnabled = nodePrefs.getBoolean("power_save_mode", false)
             positionPrecisionM = nodePrefs.getInt("position_precision", 0)
             nodeGpsMode = nodePrefs.getInt("gps_mode", 0).coerceIn(0, 2)
-            gpsDutyIntervalSecs = nodePrefs.getInt("gps_duty_interval_secs", 900).let {
-                if (it <= 0) 900 else it.coerceIn(300, 3600)
-            }
+            gpsDutyIntervalSecs = snapGpsDutyIntervalSecs(
+                nodePrefs.getInt("gps_duty_interval_secs", 900)
+            )
             fixedPositionEnabled = nodePrefs.getBoolean("fixed_position", false)
             val fLat = nodePrefs.getFloat("fixed_latitude", 0f)
             val fLon = nodePrefs.getFloat("fixed_longitude", 0f)
@@ -400,12 +407,12 @@ fun SettingsView(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(settingsScrollState)
     ) {
         val deviceCategories = listOf(
             Triple(SettingsCategory.CHANNELS, "Channels", "Manage secondary channels and share/join links"),
             Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
-            Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure GPS enable, telemetry interval, and view satellite lock status"),
+            Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure onboard GPS mode, telemetry interval, and satellite lock status"),
             Triple(SettingsCategory.ROUTING, "Mesh Routing", "Hop limit, rebroadcast pace, and route health"),
             Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
             Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password")
@@ -665,6 +672,7 @@ fun SettingsView(
                 SettingsCategoryCard(cat, title, desc)
             }
         } else {
+            BackHandler { activeCategory = null }
             // Header Bar inside categories
             Row(
                 modifier = Modifier
@@ -713,24 +721,17 @@ fun SettingsView(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = t("Channels", appLanguage),
-                    color = AccentCyan,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
+                AetherSectionHeader(
+                    title = t("Channels", appLanguage),
+                    trailing = "${channelsList.size}",
+                    modifier = Modifier.weight(1f)
                 )
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = if (appLanguage == "Spanish") "Frec: $freqText" else "Freq: $freqText",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                    Text(
-                        text = if (appLanguage == "Spanish") "Canales: ${channelsList.size}" else "Slot: ${channelsList.size}",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                }
+                Text(
+                    text = if (appLanguage == "Spanish") "Frec: $freqText" else "Freq: $freqText",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
             }
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -829,11 +830,7 @@ fun SettingsView(
 
                                 if (!channel.isPrimary) {
                                     IconButton(
-                                        onClick = {
-                                            viewModel.deleteChannel(channel.id)
-                                            channelsList = viewModel.getChannelsList()
-                                            AppUiFeedback.show(t("Channel deleted.", appLanguage), duration = SnackbarDuration.Short)
-                                        },
+                                        onClick = { channelPendingDelete = channel },
                                         modifier = Modifier.size(24.dp)
                                     ) {
                                         Icon(
@@ -867,7 +864,16 @@ fun SettingsView(
                         Text(t("Add Secondary Channel", appLanguage), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    if (appLanguage == "Spanish")
+                        "Comparte el enlace del canal primario. Unirse añade un canal secundario con esa PSK."
+                    else
+                        "Share sends the primary channel link. Join adds it as a secondary channel with that PSK.",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -933,13 +939,10 @@ fun SettingsView(
 
         if (activeCategory == SettingsCategory.RADIO) {
             // --- 2. LORA RADIO CONFIGURATION CARD ---
-            Text(
-            text = t("LoRa Radio Configuration", appLanguage),
-            color = AccentCyan,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+            AetherSectionHeader(
+                title = t("LoRa Radio Configuration", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(12.dp),
@@ -1209,9 +1212,9 @@ fun SettingsView(
                     Text(
                         text = when (role) {
                             1 -> if (appLanguage == "Spanish")
-                                "Router: reenvía mensajes LoRa y mantiene BLE/pantalla."
+                                "Router: reenvía mensajes LoRa. BLE sigue activo salvo que el Ahorro de Batería lo apague tras 5 min."
                             else
-                                "Router: relays LoRa traffic and keeps BLE/display on."
+                                "Router: relays LoRa traffic. BLE stays on unless Battery Saver stops advertising after 5 min."
                             2 -> if (appLanguage == "Spanish")
                                 "Repetidor: solo infraestructura LoRa; apaga BLE para ahorrar batería."
                             else
@@ -1373,11 +1376,8 @@ fun SettingsView(
 
         if (activeCategory == SettingsCategory.POSITION) {
             // --- POSITION & GPS CONFIGURATION VIEW ---
-            Text(
-                text = t("GPS & Position Settings", appLanguage),
-                color = AccentCyan,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
+            AetherSectionHeader(
+                title = t("GPS & Position Settings", appLanguage),
                 modifier = Modifier.padding(bottom = 8.dp)
             )
 
@@ -1397,37 +1397,74 @@ fun SettingsView(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     val hasLock = connectedNode != null && hasValidPosition(connectedNode.latitude, connectedNode.longitude)
-                    
+                    val statusLabel = when {
+                        hasLock -> t("LOCKED", appLanguage)
+                        nodeGpsMode == 1 -> t("GPS OFF", appLanguage)
+                        nodeGpsMode == 2 -> t("PERIODIC SLEEP", appLanguage)
+                        else -> t("WAITING FOR LOCK", appLanguage)
+                    }
+                    val statusOk = hasLock
+                    val statusMuted = nodeGpsMode == 1 || (nodeGpsMode == 2 && !hasLock)
+                    val statusColor = when {
+                        statusOk -> AccentMint
+                        statusMuted -> TextMuted
+                        else -> Color(0xFFF59E0B)
+                    }
+                    val statusBg = when {
+                        statusOk -> Color(0x204ADE80)
+                        statusMuted -> Color(0x20A1A1AA)
+                        else -> Color(0x20F59E0B)
+                    }
+
                     // Status Badge row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = t("GPS Lock Status", appLanguage) + ":",
-                            color = TextMuted,
-                            fontSize = 13.sp,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = t("GPS Lock Status", appLanguage) + ":",
+                                color = TextMuted,
+                                fontSize = 13.sp
+                            )
+                            if (nodeGpsMode == 2) {
+                                Text(
+                                    text = if (appLanguage == "Spanish")
+                                        "Modo periódico · cada ${gpsDutyIntervalSecs / 60} min"
+                                    else
+                                        "Periodic mode · every ${gpsDutyIntervalSecs / 60} min",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            } else if (nodeGpsMode == 1) {
+                                Text(
+                                    text = if (appLanguage == "Spanish")
+                                        "GPS del nodo apagado (usa GPS del teléfono si está activo)"
+                                    else
+                                        "Onboard GPS powered off (phone GPS used if sharing is on)",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(if (hasLock) Color(0x204ADE80) else Color(0x20F59E0B))
+                                .background(statusBg)
                                 .padding(horizontal = 8.dp, vertical = 3.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Small indicator dot
                                 Box(
                                     modifier = Modifier
                                         .size(8.dp)
                                         .clip(CircleShape)
-                                        .background(if (hasLock) AccentMint else Color(0xFFF59E0B))
+                                        .background(statusColor)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (hasLock) t("LOCKED", appLanguage) else t("WAITING FOR LOCK", appLanguage),
-                                    color = if (hasLock) AccentMint else Color(0xFFF59E0B),
+                                    text = statusLabel,
+                                    color = statusColor,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1769,9 +1806,9 @@ fun SettingsView(
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = if (appLanguage == "Spanish")
-                                "Periódico enciende el GPS unos segundos para un fix y luego lo apaga (mejor para leave-behind)."
+                                "Periódico enciende el GPS unos segundos para obtener ubicación y luego lo apaga — mejor para nodos dejados en el campo."
                             else
-                                "Periodic wakes the GPS briefly for a fix, then powers it off — better for leave-behind than always off.",
+                                "Periodic wakes the GPS briefly for a location fix, then powers it off — better for leave-behind nodes than always on or always off.",
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -1994,9 +2031,10 @@ fun SettingsView(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = if (appLanguage == "Spanish") 
-                                        "Atenúa la pantalla rápido, reduce BLE y telemetría para ahorrar batería." 
-                                        else "Caps screen to 10s, slows BLE/telemetry to maximize battery.",
+                                    text = if (appLanguage == "Spanish")
+                                        "Pantalla máx. 10s; telemetría más lenta; apaga el anuncio BLE tras 5 min sin conexión (pulsa el botón del nodo para reactivarlo)."
+                                    else
+                                        "Caps screen to 10s, slows telemetry, and stops BLE advertising after 5 min idle (press the node button to wake it for scanning).",
                                     color = TextMuted,
                                     fontSize = 11.sp
                                 )
@@ -2501,13 +2539,10 @@ fun SettingsView(
 
         if (activeCategory == SettingsCategory.SECURITY) {
             // --- 3. SECURITY & DM KEYS CARD ---
-            Text(
-            text = t("Security & DM Keys", appLanguage),
-            color = AccentCyan,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+            AetherSectionHeader(
+                title = t("Security & DM Keys", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(12.dp),
@@ -2604,13 +2639,10 @@ fun SettingsView(
 
         if (activeCategory == SettingsCategory.PREFERENCES) {
             // --- 4. APP PREFERENCES CARD ---
-            Text(
-            text = t("App Preferences", appLanguage),
-            color = AccentCyan,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+            AetherSectionHeader(
+                title = t("App Preferences", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(12.dp),
@@ -2673,32 +2705,50 @@ fun SettingsView(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
+                Text(t("Distance Units", appLanguage), color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = if (useImperialUnitsSetting)
+                        t("Imperial (Miles, Feet)", appLanguage)
+                    else
+                        t("Metric (Kilometers, Meters)", appLanguage),
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(t("Distance Units", appLanguage), color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            text = if (useImperialUnitsSetting) t("Imperial (Miles, Feet)", appLanguage) else t("Metric (Kilometers, Meters)", appLanguage),
-                            color = TextMuted,
-                            fontSize = 11.sp
-                        )
+                    listOf(
+                        true to t("Imperial", appLanguage),
+                        false to t("Metric", appLanguage)
+                    ).forEach { (imperial, label) ->
+                        val selected = useImperialUnitsSetting == imperial
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) AccentCyan.copy(alpha = 0.22f) else SurfaceDark)
+                                .border(
+                                    1.dp,
+                                    if (selected) AccentCyan else BorderDark,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    useImperialUnitsSetting = imperial
+                                    sharedPrefs.edit().putBoolean("use_imperial_units", imperial).apply()
+                                }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                label,
+                                color = if (selected) AccentCyan else TextLight,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
-                    Switch(
-                        checked = useImperialUnitsSetting,
-                        onCheckedChange = { isChecked ->
-                            useImperialUnitsSetting = isChecked
-                            sharedPrefs.edit().putBoolean("use_imperial_units", isChecked).apply()
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = AccentCyan,
-                            checkedTrackColor = AccentCyan.copy(alpha = 0.5f),
-                            uncheckedThumbColor = TextMuted,
-                            uncheckedTrackColor = SurfaceDark
-                        )
-                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -2739,13 +2789,10 @@ fun SettingsView(
 
         if (activeCategory == SettingsCategory.DEVELOPER) {
             // --- 5. DATA & LOGS MANAGEMENT CARD ---
-            Text(
-            text = t("Data & Logs Management", appLanguage),
-            color = AccentCyan,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+            AetherSectionHeader(
+                title = t("Data & Logs Management", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(12.dp),
@@ -3157,6 +3204,48 @@ fun SettingsView(
         )
     }
 
+    channelPendingDelete?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { channelPendingDelete = null },
+            title = {
+                Text(
+                    if (appLanguage == "Spanish") "Eliminar canal" else "Delete channel",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    if (appLanguage == "Spanish")
+                        "¿Eliminar «${pending.name}»? Los mensajes locales del canal no se borran."
+                    else
+                        "Remove “${pending.name}”? Local channel messages are kept.",
+                    color = TextMuted,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteChannel(pending.id)
+                        channelsList = viewModel.getChannelsList()
+                        channelPendingDelete = null
+                        AppUiFeedback.show(t("Channel deleted.", appLanguage), duration = SnackbarDuration.Short)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentRed, contentColor = TextLight)
+                ) {
+                    Text(if (appLanguage == "Spanish") "Eliminar" else "Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { channelPendingDelete = null }) {
+                    Text(t("Cancel", appLanguage), color = TextLight)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
+
     if (showResetNodesDialog) {
         AlertDialog(
             onDismissRequest = { showResetNodesDialog = false },
@@ -3266,6 +3355,15 @@ fun SettingsView(
             title = { Text(t("Add Secondary Channel", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
+                    Text(
+                        if (appLanguage == "Spanish")
+                            "Crea un canal secundario. Todos los nodos necesitan el mismo nombre y PSK."
+                        else
+                            "Creates a secondary channel. Every node needs the same name and PSK.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(t("Channel Name", appLanguage), color = TextMuted, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(2.dp))
                     TextField(
@@ -3501,6 +3599,37 @@ fun SettingsView(
     }
 
     if (showImportChannelDialog) {
+        val spanish = appLanguage == "Spanish"
+        val parsedJoin = remember(importChannelLinkInput) {
+            try {
+                val cleaned = importChannelLinkInput.trim()
+                if (cleaned.isEmpty()) return@remember null
+                val base64Part = when {
+                    cleaned.contains("#") -> cleaned.substringAfter("#")
+                    cleaned.startsWith("aethermesh://channel") -> {
+                        // Raw deep link — encode path for preview decode path below
+                        return@remember android.net.Uri.parse(cleaned).let { uri ->
+                            Triple(
+                                uri.getQueryParameter("name") ?: "Imported",
+                                uri.getQueryParameter("psk").orEmpty(),
+                                true
+                            )
+                        }
+                    }
+                    else -> cleaned
+                }
+                val decodedStr = String(android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT))
+                if (!decodedStr.startsWith("aethermesh://channel")) return@remember null
+                val uri = android.net.Uri.parse(decodedStr)
+                Triple(
+                    uri.getQueryParameter("name") ?: "Imported",
+                    uri.getQueryParameter("psk").orEmpty(),
+                    true
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
         AlertDialog(
             onDismissRequest = { showImportChannelDialog = false },
             confirmButton = {
@@ -3508,50 +3637,63 @@ fun SettingsView(
                     onClick = {
                         try {
                             val cleaned = importChannelLinkInput.trim()
-                            val base64Part = if (cleaned.contains("#")) {
-                                cleaned.substringAfter("#")
-                            } else if (cleaned.startsWith("aethermesh://")) {
-                                cleaned.substringAfter("aethermesh://channel?")
+                            val uri = if (cleaned.startsWith("aethermesh://channel")) {
+                                android.net.Uri.parse(cleaned)
                             } else {
-                                cleaned
-                            }
-                            
-                            val decodedBytes = android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
-                            val decodedStr = String(decodedBytes)
-                            
-                            if (decodedStr.startsWith("aethermesh://channel")) {
-                                val uri = android.net.Uri.parse(decodedStr)
-                                val name = uri.getQueryParameter("name") ?: "Imported"
-                                val psk = uri.getQueryParameter("psk") ?: ""
-                                val uplink = uri.getQueryParameter("uplink")?.toBoolean() ?: true
-                                val downlink = uri.getQueryParameter("downlink")?.toBoolean() ?: true
-                                val position = uri.getQueryParameter("position")?.toBoolean() ?: true
-                                val precise = uri.getQueryParameter("precise")?.toBoolean() ?: true
-                                
-                                // Create the channel!
-                                val newChan = ChannelConfig(
-                                    name = name,
-                                    psk = psk,
-                                    isPrimary = true, // Set as primary
-                                    uplinkEnabled = uplink,
-                                    downlinkEnabled = downlink,
-                                    positionEnabled = position,
-                                    preciseLocation = precise,
-                                    precisionMiles = 1f
+                                val base64Part = if (cleaned.contains("#")) {
+                                    cleaned.substringAfter("#")
+                                } else {
+                                    cleaned
+                                }
+                                val decodedStr = String(
+                                    android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
                                 )
-                                viewModel.insertChannel(newChan)
-                                channelsList = viewModel.getChannelsList() // refresh list
-                                showImportChannelDialog = false
-                                AppUiFeedback.show(if (appLanguage == "Spanish") "¡Canal importado con éxito!" else "Channel imported successfully!", duration = SnackbarDuration.Short)
-                            } else {
-                                throw Exception("Invalid URI scheme")
+                                if (!decodedStr.startsWith("aethermesh://channel")) {
+                                    throw Exception("Invalid URI scheme")
+                                }
+                                android.net.Uri.parse(decodedStr)
                             }
+                            val name = uri.getQueryParameter("name") ?: "Imported"
+                            val psk = uri.getQueryParameter("psk") ?: ""
+                            val uplink = uri.getQueryParameter("uplink")?.toBoolean() ?: true
+                            val downlink = uri.getQueryParameter("downlink")?.toBoolean() ?: true
+                            val position = uri.getQueryParameter("position")?.toBoolean() ?: true
+                            val precise = uri.getQueryParameter("precise")?.toBoolean() ?: true
+
+                            // Join always adds a secondary channel (doesn't replace primary).
+                            val newChan = ChannelConfig(
+                                name = name,
+                                psk = psk,
+                                isPrimary = false,
+                                uplinkEnabled = uplink,
+                                downlinkEnabled = downlink,
+                                positionEnabled = position,
+                                preciseLocation = precise,
+                                precisionMiles = 1f
+                            )
+                            viewModel.insertChannel(newChan)
+                            channelsList = viewModel.getChannelsList()
+                            showImportChannelDialog = false
+                            AppUiFeedback.show(
+                                if (spanish) "Canal secundario «$name» añadido"
+                                else "Secondary channel \"$name\" added",
+                                duration = SnackbarDuration.Short
+                            )
                         } catch (e: Exception) {
-                            AppUiFeedback.show(if (appLanguage == "Spanish") "Enlace de canal no válido" else "Invalid channel link", duration = SnackbarDuration.Short)
+                            AppUiFeedback.show(
+                                if (spanish) "Enlace de canal no válido"
+                                else "Invalid channel link",
+                                duration = SnackbarDuration.Short
+                            )
                         }
                     },
-                    enabled = importChannelLinkInput.trim().isNotEmpty()
-                ) { Text(t("Join", appLanguage), color = AccentMint) }
+                    enabled = parsedJoin != null
+                ) {
+                    Text(
+                        t("Join", appLanguage),
+                        color = if (parsedJoin != null) AccentMint else TextMuted
+                    )
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showImportChannelDialog = false }) {
@@ -3561,6 +3703,15 @@ fun SettingsView(
             title = { Text(t("Join Channel", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
+                    Text(
+                        if (spanish)
+                            "Pega un enlace AetherMesh. Se añadirá como canal secundario."
+                        else
+                            "Paste an AetherMesh link. It will be added as a secondary channel.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(t("Paste AetherMesh Channel Link", appLanguage), color = TextMuted, fontSize = 11.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     TextField(
@@ -3568,11 +3719,48 @@ fun SettingsView(
                         onValueChange = { importChannelLinkInput = it },
                         singleLine = false,
                         maxLines = 3,
-                        placeholder = { Text("https://aethermesh.org/join#...", color = TextMuted) },
+                        placeholder = {
+                            Text(
+                                if (spanish) "https://aethermesh.org/join#…"
+                                else "https://aethermesh.org/join#...",
+                                color = TextMuted
+                            )
+                        },
                         colors = aetherTextFieldColors(),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
+                    parsedJoin?.let { (name, psk, _) ->
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            if (spanish) "Vista previa" else "Preview",
+                            color = AccentCyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (spanish) "Nombre: $name" else "Name: $name",
+                            color = TextLight,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            if (spanish)
+                                "PSK: ${if (psk.isNotEmpty()) "presente (${psk.length} car.)" else "ninguna"}"
+                            else
+                                "PSK: ${if (psk.isNotEmpty()) "present (${psk.length} chars)" else "none"}",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                    if (importChannelLinkInput.trim().isNotEmpty() && parsedJoin == null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (spanish) "Enlace no reconocido todavía"
+                            else "Link not recognized yet",
+                            color = AccentAmber,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             },
             containerColor = SurfaceDark

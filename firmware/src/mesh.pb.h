@@ -97,6 +97,12 @@ typedef struct _aethermesh_MeshDiagnostics {
     uint32_t range_pongs_sent;
     uint32_t range_pong_tx_failures;
     bool quiet_mode;
+    /* Smart-routing counters (BLE companion only; never routed over LoRa). */
+    uint32_t directed_relays;
+    uint32_t suppress_relays;
+    uint32_t flood_unicasts;
+    uint32_t rreq_sent;
+    uint32_t early_repairs;
 } aethermesh_MeshDiagnostics;
 
 /* BLE-only: phone signals the connected node to quiet mesh traffic during a
@@ -306,6 +312,9 @@ typedef struct _aethermesh_MeshPacket {
     uint64_t session_id; /* Random boot/session identity used for replay protection. */
     uint32_t auth_counter; /* Monotonic counter within session_id; 0 when unauthenticated. */
     aethermesh_MeshPacket_auth_tag_t auth_tag; /* Truncated packet authentication tag; empty for V1 compatibility. */
+    /* Intended next relay for unicast. 0 = flood/legacy (any Router may forward).
+ When set, only that node should rebroadcast; others suppress (Phase 1 smart routing). */
+    uint32_t next_hop_id;
 } aethermesh_MeshPacket;
 
 
@@ -372,8 +381,8 @@ extern "C" {
 
 
 /* Initializer values for message structs */
-#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
-#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0}
+#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_default {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
@@ -388,8 +397,8 @@ extern "C" {
 #define aethermesh_ConfigResult_init_default     {_aethermesh_ConfigResult_Status_MIN, 0, ""}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
-#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}}
-#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0}
+#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_zero    {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
@@ -428,6 +437,11 @@ extern "C" {
 #define aethermesh_MeshDiagnostics_range_pongs_sent_tag 20
 #define aethermesh_MeshDiagnostics_range_pong_tx_failures_tag 21
 #define aethermesh_MeshDiagnostics_quiet_mode_tag 22
+#define aethermesh_MeshDiagnostics_directed_relays_tag 23
+#define aethermesh_MeshDiagnostics_suppress_relays_tag 24
+#define aethermesh_MeshDiagnostics_flood_unicasts_tag 25
+#define aethermesh_MeshDiagnostics_rreq_sent_tag 26
+#define aethermesh_MeshDiagnostics_early_repairs_tag 27
 #define aethermesh_RangeTestControl_op_tag       1
 #define aethermesh_OtaControl_op_tag             1
 #define aethermesh_OtaControl_total_size_tag     2
@@ -541,6 +555,7 @@ extern "C" {
 #define aethermesh_MeshPacket_session_id_tag     24
 #define aethermesh_MeshPacket_auth_counter_tag   25
 #define aethermesh_MeshPacket_auth_tag_tag       26
+#define aethermesh_MeshPacket_next_hop_id_tag    29
 
 /* Struct field encoding specification for nanopb */
 #define aethermesh_MeshPacket_FIELDLIST(X, a) \
@@ -571,7 +586,8 @@ X(a, STATIC,   SINGULAR, UINT64,   session_id,       24) \
 X(a, STATIC,   SINGULAR, UINT32,   auth_counter,     25) \
 X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_test_control),  27) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,config_result,payload.config_result),  28)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,config_result,payload.config_result),  28) \
+X(a, STATIC,   SINGULAR, UINT32,   next_hop_id,      29)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -612,7 +628,12 @@ X(a, STATIC,   SINGULAR, UINT32,   range_pings_rx,   18) \
 X(a, STATIC,   SINGULAR, UINT32,   range_pongs_queued,  19) \
 X(a, STATIC,   SINGULAR, UINT32,   range_pongs_sent,  20) \
 X(a, STATIC,   SINGULAR, UINT32,   range_pong_tx_failures,  21) \
-X(a, STATIC,   SINGULAR, BOOL,     quiet_mode,       22)
+X(a, STATIC,   SINGULAR, BOOL,     quiet_mode,       22) \
+X(a, STATIC,   SINGULAR, UINT32,   directed_relays,  23) \
+X(a, STATIC,   SINGULAR, UINT32,   suppress_relays,  24) \
+X(a, STATIC,   SINGULAR, UINT32,   flood_unicasts,   25) \
+X(a, STATIC,   SINGULAR, UINT32,   rreq_sent,        26) \
+X(a, STATIC,   SINGULAR, UINT32,   early_repairs,    27)
 #define aethermesh_MeshDiagnostics_CALLBACK NULL
 #define aethermesh_MeshDiagnostics_DEFAULT NULL
 
@@ -799,8 +820,8 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthResponse_size             37
 #define aethermesh_ConfigResult_size             49
 #define aethermesh_DeliveryStatus_size           34
-#define aethermesh_MeshDiagnostics_size          135
-#define aethermesh_MeshPacket_size               411
+#define aethermesh_MeshDiagnostics_size          170
+#define aethermesh_MeshPacket_size               418
 #define aethermesh_NodeConfig_size               183
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233

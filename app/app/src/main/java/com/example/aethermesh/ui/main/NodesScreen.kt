@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +86,7 @@ private enum class NodesSort {
     LAST_HEARD, SIGNAL, NAME, DISTANCE
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NodesView(
     nodes: List<MeshNode>,
@@ -101,12 +103,16 @@ fun NodesView(
     onViewOnMap: (Long) -> Unit = {},
     onRangeTest: (Long) -> Unit = {},
     onOpenNodeDetails: (Long) -> Unit = {},
-    selectedNodeId: Long? = null
+    selectedNodeId: Long? = null,
+    onRefresh: (() -> Unit)? = null
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf(NodesSort.LAST_HEARD) }
     var sortMenuExpanded by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
+    val relativeTick = rememberRelativeTimeTick()
+    val refreshScope = rememberCoroutineScope()
 
     if (renamingNode != null) {
         RenameNodeDialog(
@@ -154,6 +160,9 @@ fun NodesView(
         )
     }
 
+    // relativeTick forces active/stale split + heard labels to refresh
+    @Suppress("UNUSED_VARIABLE")
+    val _heardClock = relativeTick
     val remoteNodes = nodes.filter { !sameMeshNodeId(it.nodeId, connectedNodeId) && matchesQuery(it) }
     val activeNodes = sortNodes(remoteNodes.filter { !isNodeStale(it.lastActive) })
     val staleNodes = sortNodes(remoteNodes.filter { isNodeStale(it.lastActive) })
@@ -167,7 +176,8 @@ fun NodesView(
         NodesSort.DISTANCE to if (appLanguage == "Spanish") "Distancia" else "Distance"
     )
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    val listContent: @Composable () -> Unit = {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
@@ -179,7 +189,11 @@ fun NodesView(
                 )
             },
             leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted)
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = if (appLanguage == "Spanish") "Buscar" else "Search",
+                    tint = TextMuted
+                )
             },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
@@ -215,7 +229,12 @@ fun NodesView(
                         color = AccentCyan,
                         fontSize = 12.sp
                     )
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                    Icon(
+                        Icons.Default.ArrowDropDown,
+                        contentDescription = if (appLanguage == "Spanish") "Ordenar" else "Sort",
+                        tint = AccentCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
                 DropdownMenu(
                     expanded = sortMenuExpanded,
@@ -345,6 +364,26 @@ fun NodesView(
             }
         }
     }
+    }
+
+    if (onRefresh != null) {
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                refreshScope.launch {
+                    refreshing = true
+                    onRefresh()
+                    kotlinx.coroutines.delay(450)
+                    refreshing = false
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            listContent()
+        }
+    } else {
+        listContent()
+    }
 }
 
 @Composable
@@ -468,6 +507,15 @@ fun NodeItem(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+                if (node.region == 0 || node.region == 1) {
+                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
+                    Text(
+                        if (node.region == 0) "US915" else "EU868",
+                        color = if (stale) TextMuted else AccentCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
             if (isConnectedNode) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -517,14 +565,20 @@ fun NodeItem(
                     )
                     Spacer(modifier = Modifier.width(2.dp))
                 }
+                val batteryUnknown = node.battery <= 0 && node.voltage <= 0f && !node.isCharging
                 Icon(
                     imageVector = Icons.Default.BatteryFull,
                     contentDescription = if (appLanguage == "Spanish") "Batería" else "Battery",
-                    tint = batteryLevelColor(node.battery),
+                    tint = if (batteryUnknown) TextMuted else batteryLevelColor(node.battery),
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(2.dp))
-                Text("${node.battery}%", color = primaryText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (batteryUnknown) "—" else "${node.battery}%",
+                    color = primaryText,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
                 Box {
                     IconButton(
                         onClick = { menuExpanded = true },

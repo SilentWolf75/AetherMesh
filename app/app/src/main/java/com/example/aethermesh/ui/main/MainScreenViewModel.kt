@@ -345,6 +345,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
 
     fun startTraceRoute(nodeId: Long): Boolean = repository.startTraceRoute(nodeId)
 
+    fun cancelTraceRoute() = repository.cancelTraceRoute()
+
     fun clearTraceRouteResult() = repository.clearTraceRouteResult()
 
     fun hideTraceRouteDialog() = repository.hideTraceRouteDialog()

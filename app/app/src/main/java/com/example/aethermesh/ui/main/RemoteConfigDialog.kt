@@ -111,11 +111,7 @@ fun RemoteConfigDialog(
     var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
     var remoteGpsMode by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("gps_mode", 0).coerceIn(0, 2)) }
     var remoteGpsDutySecs by remember(node.nodeId) {
-        mutableIntStateOf(
-            remotePrefs.getInt("gps_duty_interval_secs", 900).let {
-                if (it <= 0) 900 else it.coerceIn(300, 3600)
-            }
-        )
+        mutableIntStateOf(snapGpsDutyIntervalSecs(remotePrefs.getInt("gps_duty_interval_secs", 900)))
     }
     var remoteScreenTimeout by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("screen_timeout", 30)) }
     var remotePowerSave by remember(node.nodeId) { mutableStateOf(remotePrefs.getBoolean("power_save_mode", false)) }
@@ -152,10 +148,7 @@ fun RemoteConfigDialog(
         remotePowerSave = cfg.powerSaveMode
         remotePositionPrecision = cfg.positionPrecision
         remoteGpsMode = cfg.gpsMode.coerceIn(0, 2)
-        remoteGpsDutySecs = when {
-            cfg.gpsDutyIntervalSecs <= 0 -> 900
-            else -> cfg.gpsDutyIntervalSecs.coerceIn(300, 3600)
-        }
+        remoteGpsDutySecs = snapGpsDutyIntervalSecs(cfg.gpsDutyIntervalSecs)
         remoteFixedPosition = cfg.fixedPosition
         remoteFixedLat = cfg.fixedLatitude
         remoteFixedLon = cfg.fixedLongitude
@@ -293,27 +286,31 @@ fun RemoteConfigDialog(
             statusText = if (spanish) "No se pudo enviar." else "Could not send."
         } else {
             pendingPacketId = id
-            remotePrefs.edit().apply {
-                putString("node_name", remoteName.trim())
-                putInt("lora_sf", remoteSF)
-                putFloat("lora_bw", remoteBW)
-                putInt("lora_tx_power", remoteTxPower)
-                putInt("region", remoteRegion)
-                putInt("node_role", roleToSend)
-                putInt("telemetry_interval", remoteTelemetryInterval)
-                putInt("screen_timeout", remoteScreenTimeout)
-                putBoolean("power_save_mode", remotePowerSave)
-                putInt("position_precision", remotePositionPrecision)
-                putInt("gps_mode", remoteGpsMode)
-                putInt("gps_duty_interval_secs", remoteGpsDutySecs)
-                putBoolean("fixed_position", remoteFixedPosition)
-                putFloat("fixed_latitude", remoteFixedLat)
-                putFloat("fixed_longitude", remoteFixedLon)
-                putInt("fixed_altitude", remoteFixedAlt)
-                putInt("mesh_hop_limit", remoteHop)
-                putInt("rebroadcast_txdelay_x100", remoteTxdelay)
-                apply()
-            }
+            // Prefs are written only after ConfigResult APPLIED / APPLIED_REBOOTING.
+        }
+    }
+
+    fun persistRemotePrefs() {
+        remotePrefs.edit().apply {
+            putString("node_name", remoteName.trim())
+            putInt("lora_sf", remoteSF)
+            putFloat("lora_bw", remoteBW)
+            putInt("lora_tx_power", remoteTxPower)
+            putInt("region", remoteRegion)
+            putInt("node_role", remoteRole.coerceIn(0, 1))
+            putInt("telemetry_interval", remoteTelemetryInterval)
+            putInt("screen_timeout", remoteScreenTimeout)
+            putBoolean("power_save_mode", remotePowerSave)
+            putInt("position_precision", remotePositionPrecision)
+            putInt("gps_mode", remoteGpsMode)
+            putInt("gps_duty_interval_secs", remoteGpsDutySecs)
+            putBoolean("fixed_position", remoteFixedPosition)
+            putFloat("fixed_latitude", remoteFixedLat)
+            putFloat("fixed_longitude", remoteFixedLon)
+            putInt("fixed_altitude", remoteFixedAlt)
+            putInt("mesh_hop_limit", remoteHop)
+            putInt("rebroadcast_txdelay_x100", remoteTxdelay)
+            apply()
         }
     }
 
@@ -360,6 +357,7 @@ fun RemoteConfigDialog(
                 if (event.status == ConfigResult.Status.APPLIED_REBOOTING ||
                     event.status == ConfigResult.Status.APPLIED
                 ) {
+                    persistRemotePrefs()
                     AppUiFeedback.show(statusText)
                 } else if (event.status == ConfigResult.Status.AUTH_FAILED ||
                     event.status == ConfigResult.Status.REJECTED_ROLE2 ||
@@ -570,6 +568,14 @@ fun RemoteConfigDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(if (spanish) "GPS del nodo" else "Node GPS", color = TextMuted, fontSize = 11.sp)
+                Text(
+                    if (spanish)
+                        "Periódico: enciende, obtiene ubicación, apaga. Ideal para nodos en el campo."
+                    else
+                        "Periodic: wake, get a fix, sleep. Best for leave-behind nodes.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Chip(if (spanish) "Siempre" else "On", remoteGpsMode == 0) { remoteGpsMode = 0 }

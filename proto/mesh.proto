@@ -16,6 +16,9 @@ message MeshPacket {
   float rx_rssi = 14;        // Received Signal Strength Indicator (LoRa last hop)
   float rx_snr = 15;         // Signal-to-Noise Ratio (LoRa last hop)
   uint32 retry_count = 16;   // Retransmit attempt for this packet_id; relays forward higher attempts.
+  // Intended next relay for unicast. 0 = flood/legacy (any Router may forward).
+  // When set, only that node should rebroadcast; others suppress (Phase 1 smart routing).
+  uint32 next_hop_id = 29;
   uint32 protocol_version = 23; // 0/1 = legacy packet, 2 = authenticated envelope capable.
   uint64 session_id = 24;       // Random boot/session identity used for replay protection.
   uint32 auth_counter = 25;     // Monotonic counter within session_id; 0 when unauthenticated.
@@ -66,6 +69,12 @@ message MeshDiagnostics {
   uint32 range_pongs_sent = 20;
   uint32 range_pong_tx_failures = 21;
   bool quiet_mode = 22;
+  // Smart-routing counters (BLE companion only; never routed over LoRa).
+  uint32 directed_relays = 23;
+  uint32 suppress_relays = 24;
+  uint32 flood_unicasts = 25;
+  uint32 rreq_sent = 26;
+  uint32 early_repairs = 27;
 }
 
 // BLE-only: phone signals the connected node to quiet mesh traffic during a

@@ -131,12 +131,6 @@ val SurfaceRaised: Color get() = com.example.aethermesh.theme.SurfaceRaised
 
 fun batteryLevelColor(level: Int): Color = com.example.aethermesh.theme.batteryLevelColor(level)
 
-private const val NODE_STALE_MS = 5 * 60 * 1000L
-
-fun isNodeStale(lastActive: Long): Boolean {
-    return System.currentTimeMillis() - lastActive > NODE_STALE_MS
-}
-
 // Minimum firmware BASE version (the "1.2.0" in "1.2.0-abc1234") this app is
 // compatible with. Mixed builds across the mesh are fine — like Meshtastic,
 // nodes on different builds interoperate. Bump this ONLY when the app starts
@@ -170,17 +164,6 @@ fun formatPositionPrecision(meters: Int, imperial: Boolean, language: String): S
     } else {
         if (meters < 1000) "±$meters m"
         else "±%.1f km".format(meters / 1000.0)
-    }
-}
-
-fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String {
-    val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
-    val spanish = appLanguage == "Spanish"
-    return when {
-        elapsedSeconds < 60 -> if (spanish) "hace ${elapsedSeconds}s" else "${elapsedSeconds}s ago"
-        elapsedSeconds < 3600 -> if (spanish) "hace ${elapsedSeconds / 60}m" else "${elapsedSeconds / 60}m ago"
-        elapsedSeconds < 86_400 -> if (spanish) "hace ${elapsedSeconds / 3600}h" else "${elapsedSeconds / 3600}h ago"
-        else -> if (spanish) "hace ${elapsedSeconds / 86_400}d" else "${elapsedSeconds / 86_400}d ago"
     }
 }
 
@@ -279,6 +262,7 @@ fun localizeTraceRouteError(error: String?, appLanguage: String): String {
             "No se recibió respuesta de ruta"
         else
             "No route response received"
+        "Cancelled" -> if (spanish) "Trazado cancelado" else "Traceroute cancelled"
         else -> error
     }
 }
@@ -299,6 +283,8 @@ fun t(text: String, lang: String): String {
     if (lang != "Spanish") return text
     return when (text) {
         "Distance Units" -> "Unidades de Distancia"
+        "Imperial" -> "Imperial"
+        "Metric" -> "Métrico"
         "Imperial (Miles, Feet)" -> "Imperial (Millas, Pies)"
         "Metric (Kilometers, Meters)" -> "Métrico (Kilómetros, Metros)"
         "Chats" -> "Chats"
@@ -415,7 +401,17 @@ fun t(text: String, lang: String): String {
         "Short Name (max 4 chars)" -> "Nombre corto (máx. 4 caracteres)"
         "Firmware Update" -> "Actualización de Firmware"
         "Flash new firmware to the connected node over Bluetooth (BLE OTA)" -> "Flashea firmware nuevo al nodo conectado por Bluetooth (BLE OTA)"
-        "Configure GPS enable, telemetry interval, and view satellite lock status" -> "Configura GPS, intervalo de telemetría y estado de satélites"
+        "Configure GPS enable, telemetry interval, and view satellite lock status" -> "Configura GPS (siempre / periódico / apagado), telemetría y estado de satélites"
+        "Configure onboard GPS mode, telemetry interval, and satellite lock status" -> "Configura el GPS del nodo, telemetría y estado de satélites"
+        "Phone GPS Sharing" -> "Compartir GPS del teléfono"
+        "Position Configuration" -> "Configuración de posición"
+        "GPS Status & Live Telemetry" -> "Estado GPS y telemetría en vivo"
+        "GPS Lock Status" -> "Estado de bloqueo GPS"
+        "LOCKED" -> "FIJADO"
+        "WAITING FOR LOCK" -> "ESPERANDO FIJACIÓN"
+        "PERIODIC SLEEP" -> "SUEÑO PERIÓDICO"
+        "GPS OFF" -> "GPS APAGADO"
+        "Node GPS" -> "GPS del nodo"
         "Backup Device Settings" -> "Respaldar Ajustes del Dispositivo"
         "Restore Device Settings" -> "Restaurar Ajustes del Dispositivo"
         "Data & Logs Management" -> "Gestión de Datos y Registros"
@@ -459,6 +455,9 @@ fun t(text: String, lang: String): String {
         "Spanish" -> "Español"
         "Radio Profile" -> "Perfil de radio"
         "Primary" -> "Primario"
+        "Client" -> "Cliente"
+        "Router" -> "Router"
+        "Low-Power Repeater" -> "Repetidor de bajo consumo"
         "This replaces your device keypair. Existing encrypted direct-message threads may become unreadable." ->
             "Esto reemplaza el par de claves del dispositivo. Los mensajes directos cifrados existentes pueden quedar ilegibles."
         else -> text
@@ -496,6 +495,7 @@ fun MainScreen(
     var activeTab by remember { mutableStateOf(TabItem.CONNECTION) }
     var previousTabBeforeConnection by remember { mutableStateOf(TabItem.CHATS) }
     var wasBleConnected by remember { mutableStateOf(false) }
+    var pendingChatsAfterAuth by remember { mutableStateOf(false) }
     var fitTraceRouteToken by remember { mutableIntStateOf(0) }
     var pendingMapFocusNodeId by remember { mutableStateOf<Long?>(null) }
     var pendingSettingsCategory by remember { mutableStateOf<SettingsCategory?>(null) }
@@ -515,12 +515,20 @@ fun MainScreen(
                 activeTab = TabItem.CONNECTION
             }
             wasBleConnected = false
+            pendingChatsAfterAuth = false
         } else if (!wasBleConnected) {
-            // Fresh link-up → primary mesh surface (like MeshCore → Channels).
-            if (activeTab == TabItem.CONNECTION) {
-                activeTab = TabItem.CHATS
-            }
+            // Stay on Connection until unlock; then land on Chats.
             wasBleConnected = true
+            if (activeTab == TabItem.CONNECTION) {
+                pendingChatsAfterAuth = true
+            }
+        }
+    }
+
+    LaunchedEffect(isDeviceAuthenticated, pendingChatsAfterAuth) {
+        if (pendingChatsAfterAuth && isConnected && isDeviceAuthenticated) {
+            activeTab = TabItem.CHATS
+            pendingChatsAfterAuth = false
         }
     }
 
@@ -751,6 +759,7 @@ fun MainScreen(
                 HeaderBar(
                     title = headerTitle,
                     isConnected = isConnected,
+                    isAuthenticated = isDeviceAuthenticated,
                     connectionPhase = blePhase,
                     reconnectAttempt = bleReconnectAttempt,
                     connectedNodeName = connectedNodeName,
@@ -880,6 +889,10 @@ fun MainScreen(
                             appLanguage = appLanguage,
                             isConnected = isConnected,
                             isAuthenticated = isDeviceAuthenticated,
+                            isReconnecting = !isConnected && (
+                                blePhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
+                                    blePhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting
+                            ),
                             onSelectChannel = { viewModel.selectChannel(it) },
                             onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
                             onCreateChannel = { viewModel.createChannel(it) },
@@ -918,7 +931,8 @@ fun MainScreen(
                                             onViewOnMap = { nodeId -> viewModel.requestOpenMapTab(focusNodeId = nodeId) },
                                             onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
                                             onOpenNodeDetails = { nodeId -> selectedNodeDetailsId = nodeId },
-                                            selectedNodeId = selectedNodeDetailsId
+                                            selectedNodeId = selectedNodeDetailsId,
+                                            onRefresh = { viewModel.refresh() }
                                         )
                                     }
                                     Box(
@@ -999,7 +1013,8 @@ fun MainScreen(
                                     onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
                                     onOpenNodeDetails = { nodeId ->
                                         onItemClick(com.example.aethermesh.NodeDetails(nodeId))
-                                    }
+                                    },
+                                    onRefresh = { viewModel.refresh() }
                                 )
                             }
                         }
@@ -1076,6 +1091,7 @@ fun MainScreen(
                 connectedNodeId = viewModel.connectedNodeId,
                 appLanguage = appLanguage,
                 onOk = { viewModel.clearTraceRouteResult() },
+                onCancel = { viewModel.cancelTraceRoute() },
                 onViewOnMap = {
                     viewModel.hideTraceRouteDialog()
                     activeTab = TabItem.MAP
@@ -1306,11 +1322,18 @@ fun MainScreen(
                                 screenTimeout = nodePrefs.getInt("screen_timeout", 30),
                                 powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
                                 positionPrecision = nodePrefs.getInt("position_precision", 0),
-                                gpsMode = nodePrefs.getInt("gps_mode", 0),
+                                gpsMode = nodePrefs.getInt("gps_mode", 0).coerceIn(0, 2),
+                                gpsDutyIntervalSecs = snapGpsDutyIntervalSecs(
+                                    nodePrefs.getInt("gps_duty_interval_secs", 900)
+                                ),
                                 fixedPosition = nodePrefs.getBoolean("fixed_position", false),
                                 fixedLatitude = nodePrefs.getFloat("fixed_latitude", 0f),
                                 fixedLongitude = nodePrefs.getFloat("fixed_longitude", 0f),
-                                fixedAltitude = nodePrefs.getInt("fixed_altitude", 0)
+                                fixedAltitude = nodePrefs.getInt("fixed_altitude", 0),
+                                meshHopLimit = nodePrefs.getInt("mesh_hop_limit", 4).coerceIn(1, 8),
+                                rebroadcastTxdelayX100 = nodePrefs.getInt("rebroadcast_txdelay_x100", 100).let {
+                                    if (it <= 0) 100 else it.coerceIn(50, 200)
+                                }
                             )
                             if (sent) {
                                 nodePrefs.edit()
@@ -1340,6 +1363,7 @@ fun MainScreen(
 fun HeaderBar(
     title: String,
     isConnected: Boolean,
+    isAuthenticated: Boolean = true,
     connectionPhase: com.example.aethermesh.ble.BleConnectionPhase =
         com.example.aethermesh.ble.BleConnectionPhase.Disconnected,
     reconnectAttempt: Int = 0,
@@ -1352,6 +1376,7 @@ fun HeaderBar(
 ) {
     val spanish = appLanguage == "Spanish"
     val statusLabel = when {
+        isConnected && !isAuthenticated -> if (spanish) "BLOQUEADO" else "LOCKED"
         isConnected -> if (spanish) "ENLACE" else "LINK UP"
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ->
             if (spanish) "RECON $reconnectAttempt" else "RECONNECT $reconnectAttempt"
@@ -1360,12 +1385,13 @@ fun HeaderBar(
         else -> if (spanish) "SIN RED" else "OFFLINE"
     }
     val statusColor = when {
+        isConnected && !isAuthenticated -> AccentAmber
         isConnected -> AccentMint
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
             connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting -> AccentAmber
         else -> AccentRed
     }
-    val pulseActive = isConnected ||
+    val pulseActive = (isConnected && isAuthenticated) ||
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Reconnecting ||
         connectionPhase == com.example.aethermesh.ble.BleConnectionPhase.Connecting
     Column(
@@ -1424,7 +1450,24 @@ fun HeaderBar(
                 }
             }
 
-            if (isConnected && !connectedNodeName.isNullOrBlank()) {
+            if (isConnected && !isAuthenticated) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(AccentAmber.copy(alpha = 0.2f))
+                        .border(BorderStroke(1.dp, AccentAmber.copy(alpha = 0.55f)), RoundedCornerShape(10.dp))
+                        .clickable(onClick = onConnectionClick)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (spanish) "DESBLOQ." else "UNLOCK",
+                        color = AccentAmber,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
+            } else if (isConnected && !connectedNodeName.isNullOrBlank()) {
                 val shortName = getShortName(connectedNodeName, 0L)
                 Box(
                     modifier = Modifier
