@@ -226,6 +226,18 @@ bool MeshRouter::isRouteFailedRecently(uint32_t targetId) const {
     return false;
 }
 
+bool MeshRouter::isLiveNeighbor(uint32_t nodeId) const {
+    if (nodeId == 0 || nodeId == localNodeId) return false;
+    uint32_t now = millis();
+    for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
+        if (!routingTable[i].active || routingTable[i].targetId != nodeId) continue;
+        // Direct neighbor: the next hop toward them is themselves.
+        if (routingTable[i].nextHopId != nodeId) return false;
+        return (uint32_t)(now - routingTable[i].timestamp) <= ROUTE_SOFT_AGE_MS;
+    }
+    return false;
+}
+
 void MeshRouter::learnReverseRoute(uint32_t originId, uint32_t viaHopId, uint8_t lastHopCost) {
     if (originId == 0 || originId == localNodeId || viaHopId == 0) return;
     if (viaHopId == originId) {
@@ -244,16 +256,20 @@ void MeshRouter::learnReverseRoute(uint32_t originId, uint32_t viaHopId, uint8_t
 void MeshRouter::applyDirectedNextHop(aethermesh_MeshPacket* packet,
                                       bool preferReturnPath) {
     if (packet == nullptr) return;
+    // Broadcast/channel never carries a directed next hop — flood only.
     if (packet->recipient_id == 0 || packet->recipient_id == 0xFFFFFFFFu) {
         packet->next_hop_id = 0;
         return;
     }
     RouteEntry* route = getRoute(packet->recipient_id);
     if (preferReturnPath) {
-        // ACK / RREP / traceroute / config reply: stamp reverse next hop;
-        // flood only if cold (ignore recent *forward* DM failure).
+        // ACK / RREP / traceroute / config reply: stamp reverse next hop only
+        // when that hop is a live neighbor; otherwise flood. Ghost next_hops
+        // caused every other router to suppress and killed the return path.
         const bool hasReverse =
-            route != nullptr && meshmath::hasUsableDirectedHop(route->nextHopId);
+            route != nullptr &&
+            meshmath::hasUsableDirectedHop(route->nextHopId) &&
+            isLiveNeighbor(route->nextHopId);
         packet->next_hop_id = meshmath::restampNextHopId(
             hasReverse ? route->nextHopId : 0,
             !meshmath::shouldFloodReturnPath(hasReverse));
@@ -264,7 +280,9 @@ void MeshRouter::applyDirectedNextHop(aethermesh_MeshPacket* packet,
         return;
     }
     const bool hasDirected =
-        route != nullptr && meshmath::hasUsableDirectedHop(route->nextHopId);
+        route != nullptr &&
+        meshmath::hasUsableDirectedHop(route->nextHopId) &&
+        isLiveNeighbor(route->nextHopId);
     packet->next_hop_id = meshmath::restampNextHopId(
         hasDirected ? route->nextHopId : 0, hasDirected);
 }
@@ -683,74 +701,95 @@ void MeshRouter::loop() {
         setQuietMode(false);
     }
     drainPendingPongReplies();
-    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
-        if (pendingRebroadcasts[i].active &&
-            (int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
-            bool urgent = isUrgentControlPacket(pendingRebroadcasts[i].packet);
-            // Quiet mode: only emit range-test / remote-config control; hold other relays.
-            if (quietMode && !urgent) {
-                pendingRebroadcasts[i].transmitTime = now + 1000;
-                continue;
-            }
-            const bool isLocalAck =
-                pendingRebroadcasts[i].packet.which_payload == aethermesh_MeshPacket_ack_tag &&
-                pendingRebroadcasts[i].packet.sender_id == localNodeId;
-            // Capture relay intent before serializeAndSend restamps next_hop.
-            const bool queuedDirected =
-                pendingRebroadcasts[i].packet.next_hop_id != 0;
-            const bool queuedUnicast =
-                pendingRebroadcasts[i].packet.recipient_id != 0 &&
-                pendingRebroadcasts[i].packet.recipient_id != 0xFFFFFFFFu;
-            if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
-                if (pendingRebroadcasts[i].packet.sender_id == localNodeId) {
-                    // Local insurance retries count; locally-originated ACKs do not.
-                    if (!isLocalAck) {
-                        retryPackets++;
-                    }
-                } else {
-                    relayedPackets++;
-                    if (queuedUnicast) {
-                        if (queuedDirected) directedRelays++;
-                        else floodUnicasts++;
-                    }
-                }
-                pendingRebroadcasts[i].active = false;
-                if (isLocalAck) {
-                    Serial.printf("Transmitted queued ACK for packet %u to 0x%08X\n",
-                                  pendingRebroadcasts[i].packet.payload.ack.acked_packet_id,
-                                  pendingRebroadcasts[i].packet.recipient_id);
-                } else {
-                    Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
-                                  pendingRebroadcasts[i].packet.packet_id,
-                                  pendingRebroadcasts[i].packet.sender_id);
-                }
-            } else {
-                uint32_t holdMs = isLocalAck ? ACK_QUEUE_TTL_MS : 5000u;
-                if (now - pendingRebroadcasts[i].queuedAtTime > holdMs) {
-                    // Radio stayed busy past the hold window; give up.
-                    pendingRebroadcasts[i].active = false;
-                    queueDrops++;
-                    Serial.printf("Dropping queued %s for packet %u (radio busy too long)\n",
-                                  isLocalAck ? "ACK" : "rebroadcast",
-                                  isLocalAck
-                                      ? pendingRebroadcasts[i].packet.payload.ack.acked_packet_id
-                                      : pendingRebroadcasts[i].packet.packet_id);
-                } else if (isLocalAck) {
-                    // CAD-busy: restagger with the *other* mixer so same-slot
-                    // primary colliders do not retry on top of each other again.
-                    uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-                    uint32_t slot = (pendingRebroadcasts[i].packet.retry_count == 0)
-                        ? meshmath::channelAckAltSlotIndex(localNodeId)
-                        : meshmath::channelAckSlotIndex(localNodeId);
-                    pendingRebroadcasts[i].transmitTime = now +
-                        meshmath::channelAckBusyRetryDelayMs(sf, (uint32_t)random(0, 401)) +
-                        meshmath::channelAckSlotWidthMs(sf) * slot;
-                } else {
-                    pendingRebroadcasts[i].transmitTime = now +
-                        meshmath::radioBusyRetryDelayMs(random(0, 181));
-                }
+    // Drain highest-priority due slot first. Slot-order used to let queued ACKs
+    // grab the radio before local channel/DM text that was also due — phone
+    // sends then failed CAD/busy and never went out while "Waiting to be heard".
+    while (true) {
+        int best = -1;
+        for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+            if (!pendingRebroadcasts[i].active) continue;
+            if ((int32_t)(now - pendingRebroadcasts[i].transmitTime) < 0) continue;
+            if (best < 0 ||
+                pendingRebroadcasts[i].priority > pendingRebroadcasts[best].priority ||
+                (pendingRebroadcasts[i].priority == pendingRebroadcasts[best].priority &&
+                 meshmath::deadlineBefore(pendingRebroadcasts[i].transmitTime,
+                                          pendingRebroadcasts[best].transmitTime, now))) {
+                best = i;
             }
         }
+        if (best < 0) break;
+
+        int i = best;
+        bool urgent = isUrgentControlPacket(pendingRebroadcasts[i].packet);
+        // Quiet mode: only emit range-test / remote-config control; hold other relays.
+        if (quietMode && !urgent) {
+            pendingRebroadcasts[i].transmitTime = now + 1000;
+            continue;
+        }
+        const bool isLocalAck =
+            pendingRebroadcasts[i].packet.which_payload == aethermesh_MeshPacket_ack_tag &&
+            pendingRebroadcasts[i].packet.sender_id == localNodeId;
+        // Capture relay intent before serializeAndSend restamps next_hop.
+        const bool queuedDirected =
+            pendingRebroadcasts[i].packet.next_hop_id != 0;
+        const bool queuedUnicast =
+            pendingRebroadcasts[i].packet.recipient_id != 0 &&
+            pendingRebroadcasts[i].packet.recipient_id != 0xFFFFFFFFu;
+        if (serializeAndSend(&pendingRebroadcasts[i].packet, urgent)) {
+            if (pendingRebroadcasts[i].packet.sender_id == localNodeId) {
+                // Local insurance retries count; locally-originated ACKs do not.
+                if (!isLocalAck) {
+                    retryPackets++;
+                }
+            } else {
+                relayedPackets++;
+                if (queuedUnicast) {
+                    if (queuedDirected) directedRelays++;
+                    else floodUnicasts++;
+                }
+            }
+            pendingRebroadcasts[i].active = false;
+            if (isLocalAck) {
+                Serial.printf("Transmitted queued ACK for packet %u to 0x%08X\n",
+                              pendingRebroadcasts[i].packet.payload.ack.acked_packet_id,
+                              pendingRebroadcasts[i].packet.recipient_id);
+            } else {
+                Serial.printf("Transmitted queued rebroadcast for packet %u from sender 0x%08X\n",
+                              pendingRebroadcasts[i].packet.packet_id,
+                              pendingRebroadcasts[i].packet.sender_id);
+            }
+            // One successful TX per loop pass — radio is half-duplex.
+            break;
+        }
+
+        uint32_t holdMs = isLocalAck ? ACK_QUEUE_TTL_MS : 5000u;
+        if (now - pendingRebroadcasts[i].queuedAtTime > holdMs) {
+            // Radio stayed busy past the hold window; give up.
+            pendingRebroadcasts[i].active = false;
+            queueDrops++;
+            Serial.printf("Dropping queued %s for packet %u (radio busy too long)\n",
+                          isLocalAck ? "ACK" : "rebroadcast",
+                          isLocalAck
+                              ? pendingRebroadcasts[i].packet.payload.ack.acked_packet_id
+                              : pendingRebroadcasts[i].packet.packet_id);
+            continue;
+        }
+        if (isLocalAck) {
+            // CAD-busy: restagger with the *other* mixer so same-slot
+            // primary colliders do not retry on top of each other again.
+            uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+            uint32_t slot = (pendingRebroadcasts[i].packet.retry_count == 0)
+                ? meshmath::channelAckAltSlotIndex(localNodeId)
+                : meshmath::channelAckSlotIndex(localNodeId);
+            pendingRebroadcasts[i].transmitTime = now +
+                meshmath::channelAckBusyRetryDelayMs(sf, (uint32_t)random(0, 401)) +
+                meshmath::channelAckSlotWidthMs(sf) * slot;
+        } else {
+            pendingRebroadcasts[i].transmitTime = now +
+                meshmath::radioBusyRetryDelayMs(random(0, 181));
+        }
+        // Failed TX: stop so we do not burn the rest of the due queue this tick.
+        break;
     }
 
     // Retransmit locally-originated want_ack packets that haven't been ACKed.
@@ -1130,8 +1169,22 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         terminateTextFields(packet.payload.text);
     }
     
-    // Ignore loopback reflections of packets originally generated by us
+    // Ignore loopback of packets we originated — except channel text: an
+    // overheard rebroadcast is a Meshtastic-style implicit ACK (the mesh is
+    // carrying our flood). Count the relay as HEARD and cancel insurance so
+    // we do not TX a second copy into an already-working flood.
     if (packet.sender_id == localNodeId) {
+        if (packet.recipient_id == 0xFFFFFFFFu &&
+            packet.which_payload == aethermesh_MeshPacket_text_tag) {
+            uint32_t hearer = (packet.prev_hop_id != 0) ? packet.prev_hop_id : 0;
+            if (hearer != 0 && hearer != localNodeId) {
+                noteChannelHearing(packet.packet_id, hearer, rssi, snr);
+            }
+            // Cancel pending primary ASAP + insurance copies for this packet.
+            cancelRebroadcast(localNodeId, packet.packet_id);
+            Serial.printf("Implicit HEARD for channel packet %u via relay 0x%08X\n",
+                          packet.packet_id, hearer);
+        }
         return;
     }
     
@@ -1283,15 +1336,16 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         bool shouldRebroadcast = true;
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
-                // Channel receipts: each hearer ACKs want_ack broadcasts.
-                // Insurance retries share packet_id but bump retry_count and
-                // reach here with packetIdSeenBefore=true — re-ACK those so a
-                // first ACK lost while the originator was TX/deaf (insurance
-                // window) can still recover. Exact same-retry duplicates are
-                // filtered earlier (no ACK storm on relay echoes). sendAck
+                // Channel receipts: each hearer ACKs want_ack broadcasts once.
+                // No recovery wave — MeshCore/Meshtastic keep control ACKs
+                // bounded; primary+recovery previously filled the shared TX
+                // queue and starved channel text. Insurance retries share
+                // packet_id but bump retry_count — re-ACK those so a first ACK
+                // lost while the originator was TX/deaf can still recover.
+                // Exact same-retry duplicates are filtered earlier. sendAck
                 // coalesces bursts onto one queued outbound ACK.
                 if (packet.want_ack) {
-                    sendAck(packet.sender_id, packet.packet_id, rssi, snr, true);
+                    sendAck(packet.sender_id, packet.packet_id, rssi, snr);
                 }
                 if (!packetIdSeenBefore && textCallback) {
                     textCallback(packet.sender_id, packet.payload.text.content);
@@ -1319,6 +1373,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         if (canRelay() && shouldRebroadcast && packet.hop_limit > 1) {
             packet.hop_limit--;
             packet.prev_hop_id = localNodeId;
+            packet.next_hop_id = 0; // channel flood — never directed-suppress
             
             // Queue rebroadcast with SNR-based delay (pure math in MeshMath.h)
             queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr, rebroadcastTxdelayX100));
@@ -1327,26 +1382,37 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
     } else {
         // Unicast packet for someone else — only Router/Repeater relay.
+        // Broadcast/channel (0xFFFFFFFF) is handled above and must never enter
+        // directed-suppress logic.
         if (!canRelay()) {
             // Clients may still learn a route to the sender from the RF hop.
             return;
         }
 
-        // Directed next-hop: if the packet names a forwarder and it is not us,
-        // do not rebroadcast (cancel any pending flood of the same attempt).
+        // Directed next-hop: if the packet names a live neighbor forwarder and
+        // it is not us, stay quiet. Do NOT cancel a pending flood of the same
+        // attempt — a stale/wrong next_hop used to cancel every other relay and
+        // black-hole DMs when the named hop never forwarded.
         if (!meshmath::shouldRelayAsNextHop(packet.next_hop_id, localNodeId)) {
-            cancelRebroadcast(packet.sender_id, packet.packet_id, packet.retry_count);
-            suppressRelays++;
-            Serial.printf("Suppress relay of packet %u (next_hop 0x%08X)\n",
-                          packet.packet_id, packet.next_hop_id);
-            return;
+            if (isLiveNeighbor(packet.next_hop_id)) {
+                suppressRelays++;
+                Serial.printf("Suppress relay of packet %u (next_hop 0x%08X)\n",
+                              packet.packet_id, packet.next_hop_id);
+                return;
+            }
+            // Ghost / multi-hop-as-next-hop: clear and flood-fallback below.
+            Serial.printf("Ignoring stale next_hop 0x%08X on packet %u; flood fallback\n",
+                          packet.next_hop_id, packet.packet_id);
+            packet.next_hop_id = 0;
         }
 
         if (packet.hop_limit > 1) {
             RouteEntry* route = getRoute(packet.recipient_id);
             const bool failedRecently = isRouteFailedRecently(packet.recipient_id);
             const bool hasDirected =
-                route != nullptr && meshmath::hasUsableDirectedHop(route->nextHopId);
+                route != nullptr &&
+                meshmath::hasUsableDirectedHop(route->nextHopId) &&
+                isLiveNeighbor(route->nextHopId);
             const bool useDirected =
                 hasDirected &&
                 !meshmath::shouldFloodUnicast(true, failedRecently);
@@ -1402,8 +1468,9 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     packet.recipient_id = recipientId;
     packet.packet_id = ++packetSequenceCounter;
     packet.hop_limit = defaultHopLimit;
-    // Channel broadcasts need want_ack too: hearers ACK so a connected phone
-    // (or local DeliveryStatus) can leave "waiting for hearers…".
+    // Channel broadcasts keep want_ack so Client-role hearers (no relay) can
+    // still report HEARD. Routers also provide Meshtastic-style implicit HEARD
+    // when we overhear their rebroadcast — without a second recovery ACK wave.
     packet.want_ack = true;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_text_tag;
@@ -1427,13 +1494,17 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
         trackForAck(packet);
     }
     bool sent = serializeAndSend(&packet);
+    if (!sent && !isRangeTestTextPacket(packet)) {
+        ensureLocalTextQueued(packet, millis() + 40u + (uint32_t)random(0, 80));
+        Serial.printf("Radio busy on local text %u — queued ASAP retry\n", packet.packet_id);
+    }
     // Mirror sendRawPacket: one spaced insurance TX for channel text coverage.
-    if (sent && recipientId == 0xFFFFFFFFu && !isRangeTestTextPacket(packet)) {
+    if (recipientId == 0xFFFFFFFFu && !isRangeTestTextPacket(packet)) {
         aethermesh_MeshPacket retry = packet;
         retry.retry_count = 1;
         retry.prev_hop_id = localNodeId;
         uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-        queueRebroadcast(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
+        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
     }
     // After the payload is on the air, ask the mesh for a path (flood-then-direct).
     if (sent && recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
@@ -1765,13 +1836,21 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
     }
     bool sent = serializeAndSend(packet, urgent);
 
+    // Radio may be mid-ACK / mid-insurance while the UI still shows
+    // "Waiting to be heard…" for an older channel message. BLE already accepted
+    // the write, so a busy/CAD miss must not silently drop this text — queue it
+    // ASAP (above ACK priority) so it TXes as soon as the air clears.
+    if (!sent && isLocalOriginatedText(*packet) && !isRangeTestTextPacket(*packet)) {
+        ensureLocalTextQueued(*packet, millis() + 40u + (uint32_t)random(0, 80));
+        Serial.printf("Radio busy on phone text %u — queued ASAP retry\n", packet->packet_id);
+    }
+
     // Give locally-originated broadcast text one spaced insurance transmission
     // so a single CAD collision does not make the message disappear. Schedule
-    // it AFTER the hearer ACK window — overlapping the old 1.8–3.2s retry with
-    // SF11/SF12 ACK jitter left the originator half-duplex/deaf when ACKs
-    // arrived, and hearers did not re-ACK (same packet_id already seen).
-    // Receivers suppress duplicate app/display delivery by (sender_id,
-    // packet_id) while still re-ACKing insurance retries for HEARD recovery.
+    // it AFTER the hearer ACK window — overlapping insurance with ACK TX left
+    // the originator half-duplex/deaf. Overhearing our own rebroadcast cancels
+    // this copy (implicit ACK). Receivers suppress duplicate app/display
+    // delivery by (sender_id, packet_id) while still re-ACKing insurance retries.
     if (packet->recipient_id == 0xFFFFFFFFu &&
         packet->which_payload == aethermesh_MeshPacket_text_tag &&
         packet->retry_count == 0 && !isRangeTestTextPacket(*packet)) {
@@ -1779,7 +1858,7 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
         retry.retry_count = 1;
         retry.prev_hop_id = localNodeId;
         uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-        queueRebroadcast(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
+        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
     }
     return sent;
 }
@@ -1936,8 +2015,56 @@ void MeshRouter::drainPendingPongReplies() {
     }
 }
 
+bool MeshRouter::isLocalOriginatedText(const aethermesh_MeshPacket& packet) const {
+    return packet.which_payload == aethermesh_MeshPacket_text_tag &&
+           packet.sender_id == localNodeId;
+}
+
+void MeshRouter::deferQueuedAcks(uint32_t deferMs) {
+    if (deferMs == 0) return;
+    uint32_t now = millis();
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+            continue;
+        }
+        // Only push deadlines that are already due or land before the defer window.
+        uint32_t minTime = now + deferMs;
+        if ((int32_t)(pendingRebroadcasts[i].transmitTime - minTime) < 0) {
+            pendingRebroadcasts[i].transmitTime = minTime;
+        }
+    }
+}
+
+void MeshRouter::ensureLocalTextQueued(const aethermesh_MeshPacket& packet, uint32_t transmitTime) {
+    // Coalesce duplicate ASAP/insurance entries for the same attempt so rapid
+    // phone sends do not fill the 8-deep queue with copies of one packet.
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.sender_id != packet.sender_id) continue;
+        if (pendingRebroadcasts[i].packet.packet_id != packet.packet_id) continue;
+        if (pendingRebroadcasts[i].packet.retry_count != packet.retry_count) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_text_tag) {
+            continue;
+        }
+        // Keep the sooner deadline; refresh payload/priority.
+        uint32_t now = millis();
+        if (meshmath::deadlineBefore(transmitTime, pendingRebroadcasts[i].transmitTime, now)) {
+            pendingRebroadcasts[i].transmitTime = transmitTime;
+        }
+        pendingRebroadcasts[i].packet = packet;
+        pendingRebroadcasts[i].priority = packetPriority(packet);
+        pendingRebroadcasts[i].queuedAtTime = now;
+        deferQueuedAcks(80);
+        return;
+    }
+    deferQueuedAcks(80);
+    queueRebroadcast(packet, transmitTime);
+}
+
 void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime) {
     uint8_t priority = packetPriority(packet);
+    const bool localText = isLocalOriginatedText(packet);
     int emptySlot = -1;
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (!pendingRebroadcasts[i].active) {
@@ -1947,32 +2074,60 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
     }
     
     if (emptySlot == -1) {
-        // Preserve work that is closest to transmission. A new urgent relay may
-        // replace the farthest deadline; otherwise reject it without disturbing
-        // the queue that is already draining.
         uint32_t now = millis();
-        uint8_t lowestPriority = pendingRebroadcasts[0].priority;
-        uint32_t farthestTime = pendingRebroadcasts[0].transmitTime;
-        int farthestSlot = 0;
-        for (int i = 1; i < MAX_PENDING_REBROADCASTS; i++) {
-            if (pendingRebroadcasts[i].priority < lowestPriority ||
-                (pendingRebroadcasts[i].priority == lowestPriority &&
-                 meshmath::deadlineBefore(farthestTime, pendingRebroadcasts[i].transmitTime, now))) {
-                lowestPriority = pendingRebroadcasts[i].priority;
-                farthestTime = pendingRebroadcasts[i].transmitTime;
-                farthestSlot = i;
+        // Local originated text must never lose to ACKs filling the shared
+        // rebroadcast queue — evict the farthest ACK (recovery first) when present.
+        int ackEvict = -1;
+        if (localText) {
+            uint32_t farthestAckTime = 0;
+            uint8_t lowestAckPri = 255;
+            for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+                if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+                    continue;
+                }
+                if (ackEvict < 0 ||
+                    pendingRebroadcasts[i].priority < lowestAckPri ||
+                    (pendingRebroadcasts[i].priority == lowestAckPri &&
+                     meshmath::deadlineBefore(farthestAckTime, pendingRebroadcasts[i].transmitTime, now))) {
+                    ackEvict = i;
+                    lowestAckPri = pendingRebroadcasts[i].priority;
+                    farthestAckTime = pendingRebroadcasts[i].transmitTime;
+                }
             }
         }
-        if (priority < lowestPriority ||
-            (priority == lowestPriority && !meshmath::deadlineBefore(transmitTime, farthestTime, now))) {
-            Serial.printf("Rebroadcast queue full. Dropping later packet %u.\n", packet.packet_id);
+
+        if (ackEvict >= 0) {
             queueDrops++;
-            return;
+            emptySlot = ackEvict;
+            Serial.printf("Rebroadcast queue full. Evicting ACK slot %d for local text %u\n",
+                          emptySlot, packet.packet_id);
+        } else {
+            // Preserve work that is closest to transmission. A new urgent relay may
+            // replace the farthest deadline; otherwise reject it without disturbing
+            // the queue that is already draining.
+            uint8_t lowestPriority = pendingRebroadcasts[0].priority;
+            uint32_t farthestTime = pendingRebroadcasts[0].transmitTime;
+            int farthestSlot = 0;
+            for (int i = 1; i < MAX_PENDING_REBROADCASTS; i++) {
+                if (pendingRebroadcasts[i].priority < lowestPriority ||
+                    (pendingRebroadcasts[i].priority == lowestPriority &&
+                     meshmath::deadlineBefore(farthestTime, pendingRebroadcasts[i].transmitTime, now))) {
+                    lowestPriority = pendingRebroadcasts[i].priority;
+                    farthestTime = pendingRebroadcasts[i].transmitTime;
+                    farthestSlot = i;
+                }
+            }
+            if (priority < lowestPriority ||
+                (priority == lowestPriority && !meshmath::deadlineBefore(transmitTime, farthestTime, now))) {
+                Serial.printf("Rebroadcast queue full. Dropping later packet %u.\n", packet.packet_id);
+                queueDrops++;
+                return;
+            }
+            queueDrops++;
+            emptySlot = farthestSlot;
+            Serial.printf("Rebroadcast queue full. Replacing farthest slot %d (packet_id: %u)\n",
+                          emptySlot, pendingRebroadcasts[emptySlot].packet.packet_id);
         }
-        queueDrops++;
-        emptySlot = farthestSlot;
-        Serial.printf("Rebroadcast queue full. Replacing farthest slot %d (packet_id: %u)\n",
-                      emptySlot, pendingRebroadcasts[emptySlot].packet.packet_id);
     }
     
     pendingRebroadcasts[emptySlot].packet = packet;
@@ -1993,49 +2148,90 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
 }
 
 uint8_t MeshRouter::packetPriority(const aethermesh_MeshPacket& packet) const {
-    if (packet.which_payload == aethermesh_MeshPacket_ack_tag) return 5;
+    // Local originated channel/DM text outranks ACKs so pending HEARD /
+    // hearer ACK waves cannot monopolize the 8-deep queue or radio schedule.
+    if (isLocalOriginatedText(packet)) {
+        return packet.recipient_id != 0xFFFFFFFFu ? 6 : 5;
+    }
+    // Single ACK attempt — keep snappy for HEARD/DELIVERED but below local text.
+    if (packet.which_payload == aethermesh_MeshPacket_ack_tag) {
+        return 4;
+    }
     if (packet.which_payload == aethermesh_MeshPacket_route_discovery_tag &&
         packet.payload.route_discovery.type == aethermesh_RouteDiscovery_Type_REPLY) return 4;
     if (packet.recipient_id != 0xFFFFFFFFu &&
         packet.which_payload == aethermesh_MeshPacket_text_tag) return 4;
     if (packet.which_payload == aethermesh_MeshPacket_trace_route_tag) return 3;
+    // Relayed channel/broadcast text.
+    if (packet.which_payload == aethermesh_MeshPacket_text_tag) return 3;
     if (packet.which_payload == aethermesh_MeshPacket_route_discovery_tag) return 2;
-    if (packet.which_payload == aethermesh_MeshPacket_text_tag) return 1;
     return 0;
 }
 
-void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr,
-                         bool scheduleRecovery) {
+uint8_t MeshRouter::countActiveLocalAcks() const {
+    uint8_t n = 0;
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+            continue;
+        }
+        if (pendingRebroadcasts[i].packet.sender_id != localNodeId) continue;
+        n++;
+    }
+    return n;
+}
+
+bool MeshRouter::evictFarthestLocalAck() {
+    uint32_t now = millis();
+    int ackEvict = -1;
+    uint32_t farthestAckTime = 0;
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+            continue;
+        }
+        if (pendingRebroadcasts[i].packet.sender_id != localNodeId) continue;
+        if (ackEvict < 0 ||
+            meshmath::deadlineBefore(farthestAckTime, pendingRebroadcasts[i].transmitTime, now)) {
+            ackEvict = i;
+            farthestAckTime = pendingRebroadcasts[i].transmitTime;
+        }
+    }
+    if (ackEvict < 0) return false;
+    queueDrops++;
+    Serial.printf("ACK cap: evicting queued ACK for packet %u\n",
+                  pendingRebroadcasts[ackEvict].packet.payload.ack.acked_packet_id);
+    pendingRebroadcasts[ackEvict].active = false;
+    return true;
+}
+
+void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr) {
     uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-    // Primary: node-id slot + small random. Recovery: alternate mixer after the
-    // insurance window — same-slot hidden-terminal colliders separate there.
-    // Unique-hearer aggregation makes a duplicate ACK harmless.
+    // One ACK attempt: node-id slot + small random. No recovery wave — that
+    // doubled every hearer's queue footprint and starved application text
+    // (MeshCore/Meshtastic keep ACKs single-shot / bounded).
     uint32_t primaryDelayMs =
         meshmath::channelAckDelayMs(sf, localNodeId, (uint32_t)random(0, 256));
-    uint32_t recoveryDelayMs = scheduleRecovery
-        ? meshmath::channelAckRecoveryDelayMs(sf, localNodeId, (uint32_t)random(0, 256))
-        : 0;
 
     bool havePrimary = false;
-    bool haveRecovery = false;
     uint32_t now = millis();
 
     // Coalesce duplicate ACK requests (unicast retransmit / insurance re-ACK /
-    // relay echo) onto the existing primary + recovery slots. Do not reshuffle
-    // future schedules — that re-collapses hearers into one window.
+    // relay echo) onto the existing primary slot. Do not reshuffle future
+    // schedules — that re-collapses hearers into one window.
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (!pendingRebroadcasts[i].active) continue;
         if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) continue;
         if (pendingRebroadcasts[i].packet.sender_id != localNodeId) continue;
         if (pendingRebroadcasts[i].packet.payload.ack.acked_packet_id != ackedPacketId) continue;
 
-        const bool isRecovery = pendingRebroadcasts[i].packet.retry_count != 0;
-        if (isRecovery) {
-            haveRecovery = true;
-        } else {
-            havePrimary = true;
+        // Drop any legacy recovery-marked slot from older firmware behavior.
+        if (pendingRebroadcasts[i].packet.retry_count != 0) {
+            pendingRebroadcasts[i].active = false;
+            continue;
         }
 
+        havePrimary = true;
         pendingRebroadcasts[i].packet.recipient_id = recipientId;
         pendingRebroadcasts[i].packet.payload.ack.acked_rx_rssi = rssi;
         pendingRebroadcasts[i].packet.payload.ack.acked_rx_snr = snr;
@@ -2043,20 +2239,12 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
         pendingRebroadcasts[i].priority = packetPriority(pendingRebroadcasts[i].packet);
 
         if ((int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
-            uint32_t delayMs = isRecovery ? recoveryDelayMs : primaryDelayMs;
-            if (isRecovery && !scheduleRecovery) {
-                // Unicast path should not keep a stale recovery ACK around.
-                pendingRebroadcasts[i].active = false;
-                continue;
-            }
-            pendingRebroadcasts[i].transmitTime = now + delayMs;
+            pendingRebroadcasts[i].transmitTime = now + primaryDelayMs;
             pendingRebroadcasts[i].queuedAtTime = now;
-            Serial.printf("Rescheduled queued %s ACK for packet %u to 0x%08X in %u ms\n",
-                          isRecovery ? "recovery" : "primary",
-                          ackedPacketId, recipientId, delayMs);
+            Serial.printf("Rescheduled queued ACK for packet %u to 0x%08X in %u ms\n",
+                          ackedPacketId, recipientId, primaryDelayMs);
         } else {
-            Serial.printf("Kept slotted %s ACK for packet %u to 0x%08X (due in %u ms)\n",
-                          isRecovery ? "recovery" : "primary",
+            Serial.printf("Kept slotted ACK for packet %u to 0x%08X (due in %u ms)\n",
                           ackedPacketId, recipientId,
                           (uint32_t)(pendingRebroadcasts[i].transmitTime - now));
         }
@@ -2067,6 +2255,9 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
     // chat then sticks on "waiting for hearers…". Clients still emit: loop()
     // drains this queue regardless of canRelay().
     if (!havePrimary) {
+        while (countActiveLocalAcks() >= MAX_PENDING_LOCAL_ACKS) {
+            if (!evictFarthestLocalAck()) break;
+        }
         aethermesh_MeshPacket ackPacket = aethermesh_MeshPacket_init_zero;
         ackPacket.sender_id = localNodeId;
         ackPacket.recipient_id = recipientId;
@@ -2082,28 +2273,9 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
         // Prefer reverse route now; serializeAndSend restamps at TX time.
         applyDirectedNextHop(&ackPacket, true);
         queueRebroadcast(ackPacket, now + primaryDelayMs);
-        Serial.printf("Queued primary ACK for packet %u to 0x%08X via 0x%08X in %u ms (slot %u)\n",
+        Serial.printf("Queued ACK for packet %u to 0x%08X via 0x%08X in %u ms (slot %u)\n",
                       ackedPacketId, recipientId, ackPacket.next_hop_id, primaryDelayMs,
                       meshmath::channelAckSlotIndex(localNodeId));
-    }
-    if (scheduleRecovery && !haveRecovery) {
-        aethermesh_MeshPacket ackPacket = aethermesh_MeshPacket_init_zero;
-        ackPacket.sender_id = localNodeId;
-        ackPacket.recipient_id = recipientId;
-        ackPacket.packet_id = ++packetSequenceCounter;
-        ackPacket.hop_limit = DEFAULT_HOP_LIMIT;
-        ackPacket.want_ack = false;
-        ackPacket.retry_count = 1; // marks collision-recovery wave
-        ackPacket.prev_hop_id = localNodeId;
-        ackPacket.which_payload = aethermesh_MeshPacket_ack_tag;
-        ackPacket.payload.ack.acked_packet_id = ackedPacketId;
-        ackPacket.payload.ack.acked_rx_rssi = rssi;
-        ackPacket.payload.ack.acked_rx_snr = snr;
-        applyDirectedNextHop(&ackPacket, true);
-        queueRebroadcast(ackPacket, now + recoveryDelayMs);
-        Serial.printf("Queued recovery ACK for packet %u to 0x%08X via 0x%08X in %u ms (alt slot %u)\n",
-                      ackedPacketId, recipientId, ackPacket.next_hop_id, recoveryDelayMs,
-                      meshmath::channelAckAltSlotIndex(localNodeId));
     }
 }
 

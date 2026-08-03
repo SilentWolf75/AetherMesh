@@ -20,6 +20,10 @@
 #define MAX_CHANNEL_HEARERS 16
 #define CHANNEL_RECEIPT_TTL_MS 120000UL
 #define SEEN_PACKET_TIMEOUT_MS 120000
+// Hard cap on locally-originated ACK slots in the shared TX queue. MeshCore /
+// Meshtastic keep control ACKs cheap and bounded; AetherMesh previously queued
+// primary+recovery per hearer and starved channel/DM text in the 8-deep queue.
+#define MAX_PENDING_LOCAL_ACKS 2
 // Direct-range (_D) PONGs: a few CAD-skipped copies after each PING.
 // startTransmit() returns before TX completes — spacing MUST include the
 // expected airtime (SF11/BW125 ≈ 1.4s) or copies collide with themselves
@@ -32,9 +36,9 @@
 #define DIRECT_PONG_INITIAL_DELAY_MS 350
 #define ACK_MAX_RETRIES 3
 // Locally-originated ACKs share the rebroadcast queue; allow longer CAD/busy
-// retries at high SF than flood relays (default 5s). Must also cover the
-// collision-recovery ACK wave scheduled after insurance (~30–40s at SF11/12).
-#define ACK_QUEUE_TTL_MS 60000UL
+// retries at high SF than flood relays (default 5s). Single ACK attempt only
+// (no recovery wave) — TTL covers slotted delay + a few CAD retries.
+#define ACK_QUEUE_TTL_MS 12000UL
 #define STORE_FORWARD_TTL_MS 1800000UL
 #define STORE_FORWARD_RETRY_MS 60000UL
 // Per-target / global discovery gaps are SF-scaled via MeshMath
@@ -258,6 +262,8 @@ private:
     void invalidateRoute(uint32_t targetId);
     void markRouteFailed(uint32_t targetId);
     bool isRouteFailedRecently(uint32_t targetId) const;
+    // True when nodeId is a recently heard 1-hop neighbor (nextHop == self).
+    bool isLiveNeighbor(uint32_t nodeId) const;
     void learnReverseRoute(uint32_t originId, uint32_t viaHopId, uint8_t lastHopCost);
     void applyDirectedNextHop(aethermesh_MeshPacket* packet, bool preferReturnPath = false);
     bool noteFloodDest(uint32_t targetId);
@@ -301,14 +307,22 @@ private:
     // Rebroadcast Queue helpers
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
     uint8_t packetPriority(const aethermesh_MeshPacket& packet) const;
+    bool isLocalOriginatedText(const aethermesh_MeshPacket& packet) const;
+    // Push pending ACK deadlines so freshly queued local text can claim the radio.
+    void deferQueuedAcks(uint32_t deferMs);
+    // When immediate LoRa TX fails (busy/CAD), still guarantee local text gets a slot.
+    void ensureLocalTextQueued(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
     void cancelRebroadcast(uint32_t senderId, uint32_t packetId, uint32_t retryCount = UINT32_MAX);
 
     // ACK/retransmit helpers
-    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr,
-                 bool scheduleRecovery = false);
+    // Channel/broadcast path never schedules a recovery ACK (one attempt).
+    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
     void trackForAck(const aethermesh_MeshPacket& packet);
     void trackChannelReceipt(uint32_t packetId);
     void noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId, float ackRssi = 0.0f, float ackSnr = 0.0f);
+    // Drop farthest local ACK so a new one can claim a slot (bounded storm).
+    bool evictFarthestLocalAck();
+    uint8_t countActiveLocalAcks() const;
     void clearPendingAck(uint32_t ackedPacketId, float ackRssi = 0.0f, float ackSnr = 0.0f);
     void emitDeliveryStatus(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi = 0.0f, float ackSnr = 0.0f, uint32_t heardCount = 0, uint32_t fromNodeId = 0);
 

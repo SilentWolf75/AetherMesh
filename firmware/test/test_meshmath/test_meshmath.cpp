@@ -146,9 +146,11 @@ void test_channel_ack_delay_scales_with_sf_and_clamps_jitter() {
     TEST_ASSERT_EQUAL_UINT32(1000, channelAckDelayMs(12, 0, 0));
     TEST_ASSERT_EQUAL_UINT32(1200, channelAckDelayMs(12, 0, 9999));
     TEST_ASSERT_EQUAL_UINT32(780, channelAckDelayMs(11, 0, 180));
-    // Slot width must cover ACK airtime so adjacent unique slots do not overlap.
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(11) >= 1600);
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(12) >= 2600);
+    // Slot width covers small-ACK airtime without recreating 20s+ grids.
+    TEST_ASSERT_TRUE(channelAckSlotWidthMs(11) >= 700);
+    TEST_ASSERT_TRUE(channelAckSlotWidthMs(11) <= 900);
+    TEST_ASSERT_TRUE(channelAckSlotWidthMs(12) >= 1200);
+    TEST_ASSERT_TRUE(channelAckSlotWidthMs(12) <= 1500);
     // Distinct node ids that map to distinct slots stay spaced by slot width.
     uint32_t idA = 1;
     uint32_t idB = 3;
@@ -160,7 +162,7 @@ void test_channel_ack_delay_scales_with_sf_and_clamps_jitter() {
     uint32_t gap = delayA > delayB ? delayA - delayB : delayB - delayA;
     TEST_ASSERT_TRUE(gap >= channelAckSlotWidthMs(11));
     TEST_ASSERT_TRUE(channelAckAltSlotIndex(0xC504A6B0u) < CHANNEL_ACK_SLOT_COUNT);
-    TEST_ASSERT_EQUAL_UINT32(12, CHANNEL_ACK_SLOT_COUNT);
+    TEST_ASSERT_EQUAL_UINT32(4, CHANNEL_ACK_SLOT_COUNT);
 }
 
 void test_channel_ack_busy_retry_scales_with_sf() {
@@ -175,19 +177,24 @@ void test_channel_insurance_delay_clears_ack_window() {
     // Insurance must start after max slotted channelAckDelayMs for the same SF.
     TEST_ASSERT_TRUE(channelInsuranceDelayMs(11, 0) > channelAckMaxDelayMs(11));
     TEST_ASSERT_TRUE(channelInsuranceDelayMs(12, 0) > channelAckMaxDelayMs(12));
-    TEST_ASSERT_EQUAL_UINT32(600 + 11 * 1800 + 180, channelAckMaxDelayMs(11)); // 20580
-    TEST_ASSERT_EQUAL_UINT32(1000 + 11 * 3000 + 200, channelAckMaxDelayMs(12)); // 34200
-    TEST_ASSERT_EQUAL_UINT32(20580 + 2200, channelInsuranceDelayMs(11, 0)); // 22780
-    TEST_ASSERT_EQUAL_UINT32(22780 + 1500, channelInsuranceDelayMs(11, 9999)); // base+cap
-    TEST_ASSERT_EQUAL_UINT32(34200 + 3200, channelInsuranceDelayMs(12, 0)); // 37400
-    TEST_ASSERT_EQUAL_UINT32(37400 + 1500, channelInsuranceDelayMs(12, 9999));
-    // Recovery wave starts after worst-case insurance + insurance airtime.
+    // SF11: 600 + 3*700 + 180 = 2880 (under 4s cap)
+    TEST_ASSERT_EQUAL_UINT32(600 + 3 * 700 + 180, channelAckMaxDelayMs(11));
+    // SF12 raw would be 1000 + 3*1200 + 200 = 4800 → capped at 4000
+    TEST_ASSERT_EQUAL_UINT32(CHANNEL_ACK_MAX_DELAY_CAP_MS, channelAckMaxDelayMs(12));
+    // SF11 raw 2880+2200=5080 → capped (no recovery wave; insurance only clears primary ACKs)
+    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(11, 0));
+    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(11, 9999));
+    // SF12 insurance base 4000+3200=7200 → capped
+    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(12, 0));
+    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(12, 9999));
+    // Recovery delay helpers remain for busy-retry alt-slot math / tests only.
     uint32_t recovery0 = channelAckRecoveryDelayMs(11, 0, 0);
     TEST_ASSERT_TRUE(recovery0 > channelInsuranceDelayMs(11, 9999));
-    TEST_ASSERT_EQUAL_UINT32(
-        channelInsuranceDelayMs(11, 1500) + 2200 +
-            channelAckAltSlotIndex(0) * 1800,
-        recovery0);
+    TEST_ASSERT_TRUE(recovery0 <= CHANNEL_ACK_RECOVERY_DELAY_CAP_MS);
+    TEST_ASSERT_TRUE(channelAckRecoveryDelayMs(12, 0, 9999) <= CHANNEL_ACK_RECOVERY_DELAY_CAP_MS);
+    // Hard caps keep SF11/12 from pinning radios for tens of seconds.
+    TEST_ASSERT_TRUE(channelAckMaxDelayMs(11) <= CHANNEL_ACK_MAX_DELAY_CAP_MS);
+    TEST_ASSERT_TRUE(channelInsuranceDelayMs(11, 9999) <= CHANNEL_INSURANCE_DELAY_CAP_MS);
 }
 
 void test_deadline_order_handles_millis_wrap() {

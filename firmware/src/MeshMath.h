@@ -149,13 +149,23 @@ inline uint32_t radioBusyRetryDelayMs(uint32_t jitterMs) {
     return 120u + (jitterMs > 180u ? 180u : jitterMs);
 }
 
-// Multi-hearer channel ACK spacing: deterministic slot from node id so 3–4
+// Multi-hearer channel ACK spacing: deterministic slot from node id so a few
 // hearers do not all CAD-collide in the same random window. Slot WIDTH must
-// be >= typical ACK airtime — otherwise adjacent unique slots still overlap
-// on the air and the originator loses all but one. 12 slots keep birthday
-// odds tolerable; a second recovery ACK uses an alternate mixer so same-slot
-// hidden-terminal colliders separate after insurance.
-constexpr uint32_t CHANNEL_ACK_SLOT_COUNT = 12;
+// cover typical ACK airtime, but SLOT_COUNT × WIDTH must stay short — a 12×
+// 1.8s grid pinned SF11 radios for ~20–45s (insurance + recovery), filled the
+// 8-deep rebroadcast queue with ACKs, and dropped channel text / insurance.
+// Four slots + modest widths keep collisions rare without deafening the mesh.
+// MeshRouter now emits ONE ACK attempt (no recovery wave), prioritizes local
+// text above ACKs, caps pending local ACKs, and treats overheard rebroadcasts
+// of our own channel text as Meshtastic-style implicit HEARD.
+constexpr uint32_t CHANNEL_ACK_SLOT_COUNT = 4;
+// Hard caps so SF bumps cannot recreate multi-tens-of-seconds ACK holds.
+constexpr uint32_t CHANNEL_ACK_MAX_DELAY_CAP_MS = 4000;
+// Insurance only needs to clear the primary ACK window (no recovery wave).
+constexpr uint32_t CHANNEL_INSURANCE_DELAY_CAP_MS = 5000;
+// Kept for unit tests / alt-slot busy retry; channel path no longer schedules
+// a second recovery ACK into the TX queue.
+constexpr uint32_t CHANNEL_ACK_RECOVERY_DELAY_CAP_MS = 12000;
 
 inline uint32_t channelAckSlotIndex(uint32_t nodeId) {
     // Murmur-inspired mix — plain (id ^ id>>8) clustered sequential ESP MAC
@@ -180,12 +190,14 @@ inline uint32_t channelAckAltSlotIndex(uint32_t nodeId) {
 }
 
 inline uint32_t channelAckSlotWidthMs(uint8_t sf) {
-    // >= typical small-ACK airtime at this SF so adjacent slots do not overlap.
-    if (sf >= 12) return 3000;
-    if (sf >= 11) return 1800;
-    if (sf >= 10) return 1100;
-    if (sf >= 9) return 650;
-    return 400;
+    // >= typical small-ACK airtime at this SF so adjacent slots do not overlap,
+    // but keep the full slot grid short enough that insurance/recovery stay
+    // under CHANNEL_*_DELAY_CAP_MS (see CHANNEL_ACK_SLOT_COUNT notes).
+    if (sf >= 12) return 1200;
+    if (sf >= 11) return 700;
+    if (sf >= 10) return 500;
+    if (sf >= 9) return 350;
+    return 250;
 }
 
 inline uint32_t channelAckJitterCapMs(uint8_t sf) {
@@ -205,10 +217,12 @@ inline uint32_t channelAckBaseDelayMs(uint8_t sf) {
 }
 
 inline uint32_t channelInsuranceJitterCapMs(uint8_t sf) {
-    if (sf >= 12) return 1500;
-    if (sf >= 11) return 1500;
-    if (sf >= 10) return 1000;
-    return 800;
+    // Keep insurance near the old 1.8–3.2s cadence once the ACK window clears;
+    // large jitter on top of SF11/12 airtime margin recreated long deaf windows.
+    if (sf >= 12) return 800;
+    if (sf >= 11) return 800;
+    if (sf >= 10) return 600;
+    return 500;
 }
 
 // Typical ACK / insurance airtime margin past the last slotted start time.
@@ -231,9 +245,11 @@ inline uint32_t channelAckDelayMs(uint8_t sf, uint32_t nodeId, uint32_t jitterMs
 // Worst-case first-ACK deadline (last slot + full jitter). Used so insurance
 // TX clears the entire primary hearer ACK window.
 inline uint32_t channelAckMaxDelayMs(uint8_t sf) {
-    return channelAckBaseDelayMs(sf) +
-           (CHANNEL_ACK_SLOT_COUNT - 1u) * channelAckSlotWidthMs(sf) +
-           channelAckJitterCapMs(sf);
+    uint32_t d = channelAckBaseDelayMs(sf) +
+                 (CHANNEL_ACK_SLOT_COUNT - 1u) * channelAckSlotWidthMs(sf) +
+                 channelAckJitterCapMs(sf);
+    if (d > CHANNEL_ACK_MAX_DELAY_CAP_MS) d = CHANNEL_ACK_MAX_DELAY_CAP_MS;
+    return d;
 }
 
 // Delay before the originator's single channel-text insurance TX. Must clear
@@ -245,7 +261,9 @@ inline uint32_t channelInsuranceDelayMs(uint8_t sf, uint32_t jitterMs) {
     uint32_t jitterCap = channelInsuranceJitterCapMs(sf);
     uint32_t base = channelAckMaxDelayMs(sf) + channelAckAirtimeMarginMs(sf);
     uint32_t j = jitterMs > jitterCap ? jitterCap : jitterMs;
-    return base + j;
+    uint32_t d = base + j;
+    if (d > CHANNEL_INSURANCE_DELAY_CAP_MS) d = CHANNEL_INSURANCE_DELAY_CAP_MS;
+    return d;
 }
 
 // Second ACK attempt after the originator insurance TX should have finished.
@@ -261,8 +279,10 @@ inline uint32_t channelAckRecoveryDelayMs(uint8_t sf, uint32_t nodeId,
     uint32_t postInsuranceRx = channelAckAirtimeMarginMs(sf);
     uint32_t jitterCap = channelAckJitterCapMs(sf);
     uint32_t j = jitterMs > jitterCap ? jitterCap : jitterMs;
-    return afterInsurance + postInsuranceRx +
-           channelAckAltSlotIndex(nodeId) * channelAckSlotWidthMs(sf) + j;
+    uint32_t d = afterInsurance + postInsuranceRx +
+                 channelAckAltSlotIndex(nodeId) * channelAckSlotWidthMs(sf) + j;
+    if (d > CHANNEL_ACK_RECOVERY_DELAY_CAP_MS) d = CHANNEL_ACK_RECOVERY_DELAY_CAP_MS;
+    return d;
 }
 
 // Busy/CAD deferral for queued ACKs. Shorter radioBusyRetryDelayMs spins faster
