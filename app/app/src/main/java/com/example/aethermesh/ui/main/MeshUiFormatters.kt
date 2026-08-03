@@ -301,6 +301,15 @@ fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): St
 }
 
 
+/** Share via chooser; safe from non-Activity contexts (avoids NEW_TASK crash). */
+private fun startShareChooser(context: Context, intent: android.content.Intent, title: String) {
+    val chooser = android.content.Intent.createChooser(intent, title)
+    if (context !is android.app.Activity) {
+        chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.startActivity(chooser)
+}
+
 fun exportRangeTestLogsToCsv(
     context: Context,
     logs: List<com.example.aethermesh.data.RangeTestLog>,
@@ -353,7 +362,7 @@ fun exportRangeTestLogsToCsv(
             putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Range Test Export")
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(android.content.Intent.createChooser(intent, if (spanish) "Exportar CSV de rango" else "Export Range Test CSV"))
+        startShareChooser(context, intent, if (spanish) "Exportar CSV de rango" else "Export Range Test CSV")
     } catch (e: Exception) {
         // Fall back to the clipboard if no app can take the file
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -407,7 +416,7 @@ fun exportMeshDiagnosticsToCsv(
             putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh Mesh Health Export")
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(android.content.Intent.createChooser(intent, if (spanish) "Exportar salud del mesh" else "Export Mesh Health CSV"))
+        startShareChooser(context, intent, if (spanish) "Exportar salud del mesh" else "Export Mesh Health CSV")
     } catch (e: Exception) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Mesh Health", csv.toString()))
@@ -443,11 +452,10 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLang
             putExtra(android.content.Intent.EXTRA_STREAM, uri)
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(
-            android.content.Intent.createChooser(
-                intent,
-                if (spanish) "Compartir mensajes CSV" else "Share messages CSV"
-            )
+        startShareChooser(
+            context,
+            intent,
+            if (spanish) "Compartir mensajes CSV" else "Share messages CSV"
         )
     } catch (e: Exception) {
         AppUiFeedback.show(
@@ -511,11 +519,10 @@ fun exportBreadcrumbsToKml(
             putExtra(android.content.Intent.EXTRA_STREAM, uri)
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(
-            android.content.Intent.createChooser(
-                intent,
-                if (spanish) "Compartir rastro KML" else "Share KML Tracklog"
-            )
+        startShareChooser(
+            context,
+            intent,
+            if (spanish) "Compartir rastro KML" else "Share KML Tracklog"
         )
     } catch (e: java.lang.Exception) {
         AppUiFeedback.show(if (spanish) "Error al exportar: ${e.localizedMessage}" else "Export failed: ${e.localizedMessage}", duration = SnackbarDuration.Long)

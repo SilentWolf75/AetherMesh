@@ -245,6 +245,11 @@ class AetherMeshRepository(private val context: Context) {
     val remoteConfigResult: SharedFlow<RemoteConfigResultEvent> = _remoteConfigResult.asSharedFlow()
 
     private var pendingAuthPassword: String? = null
+    /** True while waiting for AuthResponse to a change-password request. */
+    @Volatile
+    private var pendingPasswordChange: Boolean = false
+    private val _passwordChangeResult = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
+    val passwordChangeResult: SharedFlow<Boolean> = _passwordChangeResult.asSharedFlow()
     private var autoAuthJob: Job? = null
     @Volatile
     private var lastAuthChallengeResubmitMs: Long = 0L
@@ -411,11 +416,24 @@ class AetherMeshRepository(private val context: Context) {
                 autoAuthJob?.cancel()
                 autoAuthJob = null
                 authSessionGeneration += 1
+                pendingPasswordChange = false
+                pendingAuthPassword = null
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
                 _needsRegionSetup.value = false
                 if (_isRangeTestActive.value) {
                     stopRangeTest()
+                }
+                // In-flight traceroute / remote-config waiters must not hang until
+                // their own timeouts after BLE drops (device switch or link loss).
+                if (_traceRouteState.value.active) {
+                    traceRouteJob?.cancel()
+                    _traceRouteState.value = _traceRouteState.value.copy(
+                        active = false,
+                        showDialog = true,
+                        error = "Disconnected",
+                        finishedAtMs = System.currentTimeMillis()
+                    )
                 }
                 refreshData()
             }
@@ -635,8 +653,14 @@ class AetherMeshRepository(private val context: Context) {
             .setAuthRequest(authBuilder)
             .build()
             
+        pendingPasswordChange = true
         pendingAuthPassword = newPassword
-        return bleManager.sendPacket(packet.toByteArray())
+        val sent = bleManager.sendPacket(packet.toByteArray())
+        if (!sent) {
+            pendingPasswordChange = false
+            pendingAuthPassword = null
+        }
+        return sent
     }
 
     private fun handleMeshPacket(packet: MeshPacket) {
@@ -648,6 +672,27 @@ class AetherMeshRepository(private val context: Context) {
         if (packet.payloadCase == MeshPacket.PayloadCase.AUTH_RESPONSE) {
             val authResp = packet.authResponse
             Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}")
+
+            // Password-change replies must not go through unlock/lock handling:
+            // a wrong current password would otherwise clear the session and wipe
+            // the remembered password while the firmware stays authenticated.
+            if (pendingPasswordChange) {
+                pendingPasswordChange = false
+                if (authResp.success) {
+                    val mac = bleManager.getConnectedDeviceAddress()
+                    val passwordToSave = pendingAuthPassword
+                    if (!passwordToSave.isNullOrEmpty()) {
+                        saveNodePassword(mac, senderId, passwordToSave)
+                    }
+                    pendingAuthPassword = null
+                    _passwordChangeResult.tryEmit(true)
+                } else {
+                    pendingAuthPassword = null
+                    _passwordChangeResult.tryEmit(false)
+                }
+                return
+            }
+
             if (authResp.success) {
                 val oldNodeId = bleManager.connectedNodeId
                 // Correct the connectedNodeId in bleManager with the actual hardware node ID from the node
@@ -1876,9 +1921,10 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun cancelFirmwareUpdate() {
+        // Abort DFU first so the progress listener can own the final status.
+        dfuController?.abort()
         otaJob?.cancel()
         bleManager.otaExclusive = false
-        dfuController?.abort()
     }
 
     // --- RAK/nRF52 firmware update via the Nordic DFU bootloader ---
@@ -2007,6 +2053,10 @@ class AetherMeshRepository(private val context: Context) {
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
             try {
+                // SAF content:// grants are activity-scoped; the DFU service needs a
+                // FileProvider URI under our cacheDir.
+                val readableZip = copyZipForDfuService(zipUri)
+
                 _otaState.value = OtaState(active = true, status = "Rebooting node into DFU bootloader...")
                 while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
 
@@ -2035,7 +2085,7 @@ class AetherMeshRepository(private val context: Context) {
                     dfuController = no.nordicsemi.android.dfu.DfuServiceInitiator(dfuMac)
                         .setDeviceName(deviceName)
                         .setKeepBond(false)
-                        .setZip(zipUri)
+                        .setZip(readableZip)
                         .setForeground(true)
                         .setDisableNotification(false)
                         .start(context, com.example.aethermesh.ble.DfuService::class.java)
@@ -2049,12 +2099,38 @@ class AetherMeshRepository(private val context: Context) {
                     throw Exception("DFU service never engaged the bootloader")
                 }
                 // From here the DfuProgressListener drives otaState.
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // abort() listener usually sets "DFU cancelled"; don't overwrite as failure.
+                if (_otaState.value.active &&
+                    !_otaState.value.status.contains("cancel", ignoreCase = true)
+                ) {
+                    _otaState.value = OtaState(error = true, status = "DFU cancelled")
+                    bleManager.resumeAfterDfu()
+                }
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "DFU start failed: ${e.message}")
                 _otaState.value = OtaState(error = true, status = "DFU failed: ${e.message}")
                 bleManager.resumeAfterDfu()
             }
         }
+    }
+
+    /** Copy a DFU zip into cacheDir so the Nordic DFU service can open it. */
+    private fun copyZipForDfuService(zipUri: android.net.Uri): android.net.Uri {
+        val bytes = context.contentResolver.openInputStream(zipUri)?.use { it.readBytes() }
+            ?: throw Exception("Could not read DFU zip")
+        if (bytes.isEmpty()) throw Exception("DFU zip is empty")
+        val dir = java.io.File(context.cacheDir, "firmware").apply { mkdirs() }
+        val nameHint = zipUri.lastPathSegment?.substringAfterLast('/') ?: "firmware.zip"
+        val safeName = nameHint.ifBlank { "firmware.zip" }.let {
+            if (it.lowercase().endsWith(".zip")) it else "$it.zip"
+        }
+        val file = java.io.File(dir, safeName)
+        file.writeBytes(bytes)
+        return androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
     }
 
     fun resetOtaState() {
@@ -2528,7 +2604,11 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun loadRangeTestLogs(targetId: Long) {
-        rangeTestTargetId = targetId
+        // Never retarget a live test — the banner / reopen / stop path keys off
+        // rangeTestTargetId, and dialogs for other nodes only need historical logs.
+        if (!_isRangeTestActive.value) {
+            rangeTestTargetId = targetId
+        }
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
     }
 
@@ -2721,7 +2801,7 @@ class AetherMeshRepository(private val context: Context) {
             pending.sentAtMs,
             failureReason = if (success) null else failureReason
         )
-        if (pending.targetId == rangeTestTargetId) {
+        if (sameMeshNodeId(pending.targetId, rangeTestTargetId)) {
             _rangeTestLogs.value = dbHelper.getRangeTestLogs(pending.targetId)
         }
     }
@@ -2767,6 +2847,19 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun insertChannel(channel: ChannelConfig): Long {
+        // CONFLICT_REPLACE on unique name would delete the existing row — joining a
+        // link that matches the primary channel must not demote/destroy it.
+        val existing = dbHelper.getChannelsList()
+            .firstOrNull { it.name.equals(channel.name, ignoreCase = true) }
+        if (existing != null) {
+            updateChannel(
+                channel.copy(
+                    id = existing.id,
+                    isPrimary = existing.isPrimary
+                )
+            )
+            return existing.id
+        }
         saveChatKey("CHANNEL_${channel.name}", channel.psk)
         val id = dbHelper.insertChannel(channel.copy(psk = ""))
         refreshChannelsList()

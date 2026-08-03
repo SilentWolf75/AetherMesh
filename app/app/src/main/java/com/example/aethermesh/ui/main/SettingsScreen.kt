@@ -132,6 +132,7 @@ fun SettingsView(
     var changeCurrentPasswordInput by remember { mutableStateOf("") }
     var changeNewPasswordInput by remember { mutableStateOf("") }
     var changePasswordError by remember { mutableStateOf(false) }
+    var settingsImportDirty by remember { mutableStateOf(false) }
 
     var showClearChatDialog by remember { mutableStateOf(false) }
     var showResetNodesDialog by remember { mutableStateOf(false) }
@@ -216,6 +217,32 @@ fun SettingsView(
                     fixedLatInput = json.optDouble("fixed_latitude", fixedLatInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedLonInput = json.optDouble("fixed_longitude", fixedLonInput.toDoubleOrNull() ?: 0.0).toFloat().toString()
                     fixedAltInput = json.optInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0).toString()
+
+                    // Persist so a concurrent device-config sync doesn't wipe the form.
+                    val nodeKey = viewModel.connectedNodeId
+                    if (nodeKey != 0L) {
+                        context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("node_name", nodeName)
+                            .putString("node_short_name", nodeShortName)
+                            .putInt("lora_sf", sf)
+                            .putFloat("lora_bw", bw)
+                            .putInt("lora_tx_power", txPower)
+                            .putInt("region", region)
+                            .putInt("node_role", role)
+                            .putInt("telemetry_interval", telemetryIntervalSecs)
+                            .putInt("screen_timeout", screenTimeoutSecs)
+                            .putBoolean("power_save_mode", powerSaveModeEnabled)
+                            .putInt("position_precision", positionPrecisionM)
+                            .putInt("gps_mode", nodeGpsMode)
+                            .putInt("gps_duty_interval_secs", gpsDutyIntervalSecs)
+                            .putBoolean("fixed_position", fixedPositionEnabled)
+                            .putFloat("fixed_latitude", fixedLatInput.toFloatOrNull() ?: 0f)
+                            .putFloat("fixed_longitude", fixedLonInput.toFloatOrNull() ?: 0f)
+                            .putInt("fixed_altitude", fixedAltInput.toIntOrNull() ?: 0)
+                            .apply()
+                    }
+                    settingsImportDirty = true
                     
                     AppUiFeedback.show(if (sharedPrefs.getString("app_language", "English") == "Spanish")
                             "Ajustes importados. Pulsa Aplicar Ajustes para enviarlos al dispositivo."
@@ -290,7 +317,9 @@ fun SettingsView(
         val shouldReloadConfig = nodeKey != 0L && (
             nodeKey != configLoadedForNode || deviceConfigSyncEpoch != lastDeviceConfigSyncEpoch
         )
-        if (shouldReloadConfig) {
+        // Skip device/prefs reload while an imported JSON is pending Apply —
+        // otherwise post-auth config sync snaps the form back to the old values.
+        if (shouldReloadConfig && !settingsImportDirty) {
             configLoadedForNode = nodeKey
             lastDeviceConfigSyncEpoch = deviceConfigSyncEpoch
             val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
@@ -364,6 +393,7 @@ fun SettingsView(
             rebroadcastTxdelayX100 = rebroadcastTxdelayX100
         )
         if (success) {
+            settingsImportDirty = false
             val nodeKey = viewModel.connectedNodeId
             if (nodeKey != 0L) {
                 val nodePrefs = context.getSharedPreferences("node_settings_$nodeKey", Context.MODE_PRIVATE)
@@ -2123,7 +2153,7 @@ fun SettingsView(
                         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
                         if (bytes != null && bytes.isNotEmpty()) {
-                            val treatAsRak = isRakNode || name.lowercase().endsWith(".zip")
+                            val treatAsRak = isRakNode
                             val err = isValidOtaPayload(bytes, name, treatAsRak)
                             if (err != null) {
                                 otaFileBytes = null
@@ -2329,7 +2359,7 @@ fun SettingsView(
                                     firmwareScope.launch {
                                         val result = viewModel.downloadGithubFirmware(context, artifact)
                                         if (result != null) {
-                                            val treatAsRak = isRakNode || result.fileName.lowercase().endsWith(".zip") || artifact.isZip
+                                            val treatAsRak = isRakNode
                                             val err = isValidOtaPayload(
                                                 result.bytes,
                                                 result.fileName,
@@ -2513,7 +2543,7 @@ fun SettingsView(
                     confirmButton = {
                         TextButton(onClick = {
                             showOtaWarning = false
-                            val useRakDfu = isRakNode || otaFileName.lowercase().endsWith(".zip")
+                            val useRakDfu = isRakNode
                             if (useRakDfu) {
                                 otaFileUri?.let { viewModel.startRakDfuUpdate(it) }
                             } else {
@@ -2843,7 +2873,7 @@ fun SettingsView(
                 
                 // Restore Settings button
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable { restoreSettingsLauncher.launch(arrayOf("application/json")) }.padding(vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().clickable { restoreSettingsLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream", "*/*")) }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, tint = AccentMint, modifier = Modifier.size(20.dp))
@@ -3099,6 +3129,23 @@ fun SettingsView(
     }
 
     if (showChangePasswordDialog) {
+        LaunchedEffect(Unit) {
+            viewModel.passwordChangeResult.collect { ok ->
+                if (ok) {
+                    showChangePasswordDialog = false
+                    changeCurrentPasswordInput = ""
+                    changeNewPasswordInput = ""
+                    changePasswordError = false
+                    AppUiFeedback.show(
+                        if (appLanguage == "Spanish") "Contraseña del dispositivo actualizada"
+                        else "Device password updated",
+                        duration = SnackbarDuration.Short
+                    )
+                } else {
+                    changePasswordError = true
+                }
+            }
+        }
         AlertDialog(
             onDismissRequest = { showChangePasswordDialog = false },
             title = { Text(t("Change Device Password", appLanguage), color = TextLight, fontWeight = FontWeight.Bold) },
@@ -3155,13 +3202,12 @@ fun SettingsView(
                         val curr = changeCurrentPasswordInput.trim()
                         val new = changeNewPasswordInput.trim()
                         if (curr.isNotEmpty() && new.isNotEmpty()) {
+                            changePasswordError = false
                             val success = viewModel.changeDevicePassword(curr, new)
-                            if (success) {
-                                showChangePasswordDialog = false
-                                AppUiFeedback.show(if (appLanguage == "Spanish") "¡Petición de cambio de contraseña enviada!" else "Password change request sent!", duration = SnackbarDuration.Short)
-                            } else {
+                            if (!success) {
                                 changePasswordError = true
                             }
+                            // Keep dialog open until AuthResponse via passwordChangeResult.
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)
@@ -3660,25 +3706,50 @@ fun SettingsView(
                             val position = uri.getQueryParameter("position")?.toBoolean() ?: true
                             val precise = uri.getQueryParameter("precise")?.toBoolean() ?: true
 
-                            // Join always adds a secondary channel (doesn't replace primary).
-                            val newChan = ChannelConfig(
-                                name = name,
-                                psk = psk,
-                                isPrimary = false,
-                                uplinkEnabled = uplink,
-                                downlinkEnabled = downlink,
-                                positionEnabled = position,
-                                preciseLocation = precise,
-                                precisionMiles = 1f
-                            )
-                            viewModel.insertChannel(newChan)
-                            channelsList = viewModel.getChannelsList()
-                            showImportChannelDialog = false
-                            AppUiFeedback.show(
-                                if (spanish) "Canal secundario «$name» añadido"
-                                else "Secondary channel \"$name\" added",
-                                duration = SnackbarDuration.Short
-                            )
+                            val existing = channelsList.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                            if (existing?.isPrimary == true) {
+                                // Update primary in place — never demote via CONFLICT_REPLACE join.
+                                viewModel.updateChannel(
+                                    existing.copy(
+                                        psk = psk,
+                                        uplinkEnabled = uplink,
+                                        downlinkEnabled = downlink,
+                                        positionEnabled = position,
+                                        preciseLocation = precise
+                                    )
+                                )
+                                channelsList = viewModel.getChannelsList()
+                                showImportChannelDialog = false
+                                AppUiFeedback.show(
+                                    if (spanish) "Canal principal «$name» actualizado (PSK/flags)"
+                                    else "Primary channel \"$name\" updated (PSK/flags)",
+                                    duration = SnackbarDuration.Short
+                                )
+                            } else {
+                                val newChan = ChannelConfig(
+                                    name = name,
+                                    psk = psk,
+                                    isPrimary = false,
+                                    uplinkEnabled = uplink,
+                                    downlinkEnabled = downlink,
+                                    positionEnabled = position,
+                                    preciseLocation = precise,
+                                    precisionMiles = 1f
+                                )
+                                viewModel.insertChannel(newChan)
+                                channelsList = viewModel.getChannelsList()
+                                showImportChannelDialog = false
+                                AppUiFeedback.show(
+                                    if (spanish) {
+                                        if (existing != null) "Canal secundario «$name» actualizado"
+                                        else "Canal secundario «$name» añadido"
+                                    } else {
+                                        if (existing != null) "Secondary channel \"$name\" updated"
+                                        else "Secondary channel \"$name\" added"
+                                    },
+                                    duration = SnackbarDuration.Short
+                                )
+                            }
                         } catch (e: Exception) {
                             AppUiFeedback.show(
                                 if (spanish) "Enlace de canal no válido"

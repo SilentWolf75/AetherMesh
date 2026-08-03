@@ -1401,7 +1401,10 @@ fun TraceRouteResultDialog(
                     state.error != null -> {
                         Text(
                             localizeTraceRouteError(state.error, appLanguage),
-                            color = if (state.error == "Cancelled") AccentAmber else Color(0xFFF87171),
+                            color = if (state.error == "Cancelled" || state.error == "Disconnected")
+                                AccentAmber
+                            else
+                                Color(0xFFF87171),
                             fontWeight = FontWeight.SemiBold
                         )
                     }

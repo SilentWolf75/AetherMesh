@@ -126,7 +126,7 @@ fun RangeTestDialog(
     }
 
     val activeForThisTarget =
-        isRangeTestActive && viewModel.rangeTestTargetId == targetNode.nodeId
+        isRangeTestActive && sameMeshNodeId(viewModel.rangeTestTargetId, targetNode.nodeId)
     val activeForOtherTarget =
         isRangeTestActive && viewModel.rangeTestTargetId != 0L && !activeForThisTarget
     var showClearLogsConfirm by remember { mutableStateOf(false) }

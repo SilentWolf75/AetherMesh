@@ -263,6 +263,10 @@ fun localizeTraceRouteError(error: String?, appLanguage: String): String {
         else
             "No route response received"
         "Cancelled" -> if (spanish) "Trazado cancelado" else "Traceroute cancelled"
+        "Disconnected" -> if (spanish)
+            "Desconectado — traza cancelada"
+        else
+            "Disconnected — traceroute cancelled"
         else -> error
     }
 }
@@ -547,7 +551,9 @@ fun MainScreen(
     }
 
     var authPasswordInput by remember { mutableStateOf("") }
+    var authConfirmPasswordInput by remember { mutableStateOf("") }
     var authError by remember { mutableStateOf(false) }
+    var authSendFailed by remember { mutableStateOf(false) }
     var setupRegion by remember { mutableIntStateOf(0) } // 0 = US915, 1 = EU868
 
     LaunchedEffect(authFailureTick) {
@@ -604,12 +610,18 @@ fun MainScreen(
         }
     }
     val pendingChatDeep by viewModel.pendingChatDeepLink.collectAsStateWithLifecycle()
-    LaunchedEffect(pendingChatDeep, isConnected) {
-        val link = viewModel.consumeChatDeepLink() ?: return@LaunchedEffect
+    LaunchedEffect(pendingChatDeep, isConnected, isDeviceAuthenticated) {
+        val link = pendingChatDeep ?: return@LaunchedEffect
+        // Hold the deep-link until BLE is up and unlocked — cold-start notification
+        // taps often arrive before connect/auth completes.
         if (!isConnected) {
             activeTab = TabItem.CONNECTION
             return@LaunchedEffect
         }
+        if (!isDeviceAuthenticated) {
+            return@LaunchedEffect
+        }
+        viewModel.consumeChatDeepLink() ?: return@LaunchedEffect
         activeTab = TabItem.CHATS
         when {
             link.dmPeerId != null && link.dmPeerId != 0L -> viewModel.selectDirectMessage(link.dmPeerId)
@@ -644,7 +656,9 @@ fun MainScreen(
 
     LaunchedEffect(authenticationRequired, isConnected) {
         authPasswordInput = ""
+        authConfirmPasswordInput = ""
         authError = false
+        authSendFailed = false
     }
 
     // Ensure map HTTP identity is set (also done in Application.onCreate).
@@ -1162,6 +1176,7 @@ fun MainScreen(
                             onValueChange = { 
                                 authPasswordInput = it
                                 authError = false
+                                authSendFailed = false
                             },
                             label = { Text(if (spanish) "Contraseña" else "Password", color = TextMuted) },
                             visualTransformation = PasswordVisualTransformation(),
@@ -1175,14 +1190,51 @@ fun MainScreen(
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
+                        if (isFirstTime) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = authConfirmPasswordInput,
+                                onValueChange = {
+                                    authConfirmPasswordInput = it
+                                    authError = false
+                                    authSendFailed = false
+                                },
+                                label = {
+                                    Text(
+                                        if (spanish) "Confirmar contraseña" else "Confirm password",
+                                        color = TextMuted
+                                    )
+                                },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = TextLight,
+                                    unfocusedTextColor = TextLight,
+                                    cursorColor = AccentCyan,
+                                    focusedBorderColor = AccentCyan,
+                                    unfocusedBorderColor = BorderDark
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                         
-                        if (authError) {
+                        if (authError || authSendFailed) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = if (spanish)
-                                    "Autenticación fallida. Contraseña incorrecta."
-                                else
-                                    "Authentication failed. Incorrect password.",
+                                text = when {
+                                    authSendFailed && spanish ->
+                                        "No se pudo enviar — espera a que Bluetooth esté listo e inténtalo de nuevo."
+                                    authSendFailed ->
+                                        "Could not send — wait for Bluetooth to be ready and try again."
+                                    isFirstTime && spanish ->
+                                        "Las contraseñas no coinciden."
+                                    isFirstTime ->
+                                        "Passwords do not match."
+                                    spanish ->
+                                        "Autenticación fallida. Contraseña incorrecta."
+                                    else ->
+                                        "Authentication failed. Incorrect password."
+                                },
                                 color = AccentRed,
                                 fontSize = 12.sp
                             )
@@ -1193,11 +1245,16 @@ fun MainScreen(
                     Button(
                         onClick = {
                             val pass = authPasswordInput.trim()
-                            if (pass.isNotEmpty()) {
-                                val sent = viewModel.sendAuthRequest(pass)
-                                if (!sent) {
-                                    authError = true
-                                }
+                            if (pass.isEmpty()) return@Button
+                            if (isFirstTime && pass != authConfirmPasswordInput.trim()) {
+                                authError = true
+                                authSendFailed = false
+                                return@Button
+                            }
+                            val sent = viewModel.sendAuthRequest(pass)
+                            if (!sent) {
+                                authSendFailed = true
+                                authError = false
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = DarkBackground)

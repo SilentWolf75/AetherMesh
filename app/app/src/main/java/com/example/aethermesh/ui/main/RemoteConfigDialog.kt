@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aethermesh.data.ConfigApplyMask
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.proto.ConfigResult
@@ -135,6 +136,7 @@ fun RemoteConfigDialog(
     var pendingPacketId by remember(node.nodeId) { mutableIntStateOf(0) }
     var awaitingReport by remember(node.nodeId) { mutableStateOf(false) }
     var awaitingApply by remember(node.nodeId) { mutableStateOf(false) }
+    val isBleConnected by viewModel.isBleConnected.collectAsStateWithLifecycle()
 
     fun hydrateFromConfig(cfg: NodeConfig) {
         remoteName = cfg.nodeName.ifBlank { remoteName }
@@ -357,6 +359,28 @@ fun RemoteConfigDialog(
                 if (event.status == ConfigResult.Status.APPLIED_REBOOTING ||
                     event.status == ConfigResult.Status.APPLIED
                 ) {
+                    // Capture applied values as the new baseline so a second
+                    // Apply doesn't re-send the same mask after success.
+                    baseline = RemoteBaseline(
+                        name = remoteName.trim(),
+                        sf = remoteSF,
+                        bw = remoteBW,
+                        txPower = remoteTxPower,
+                        region = remoteRegion,
+                        role = remoteRole,
+                        telemetry = remoteTelemetryInterval,
+                        screen = remoteScreenTimeout,
+                        powerSave = remotePowerSave,
+                        posPrec = remotePositionPrecision,
+                        gpsMode = remoteGpsMode,
+                        gpsDutySecs = remoteGpsDutySecs,
+                        fixed = remoteFixedPosition,
+                        lat = remoteFixedLat,
+                        lon = remoteFixedLon,
+                        alt = remoteFixedAlt,
+                        hop = remoteHop,
+                        txdelay = remoteTxdelay
+                    )
                     persistRemotePrefs()
                     AppUiFeedback.show(statusText)
                 } else if (event.status == ConfigResult.Status.AUTH_FAILED ||
@@ -366,6 +390,18 @@ fun RemoteConfigDialog(
                     AppUiFeedback.show(statusText)
                 }
             }
+    }
+
+    LaunchedEffect(isBleConnected) {
+        if (!isBleConnected && busy) {
+            busy = false
+            awaitingReport = false
+            awaitingApply = false
+            statusText = if (spanish)
+                "Desconectado — solicitud cancelada."
+            else
+                "Disconnected — request cancelled."
+        }
     }
 
     LaunchedEffect(busy, awaitingReport, awaitingApply, pendingPacketId) {

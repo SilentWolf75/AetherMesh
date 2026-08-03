@@ -490,6 +490,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         return repository.changeDevicePassword(current, new)
     }
 
+    val passwordChangeResult = repository.passwordChangeResult
+
     // E2EE Keys management
     val chatKeysRevision = repository.chatKeysRevision
 
