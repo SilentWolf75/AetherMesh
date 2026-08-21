@@ -16,17 +16,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +46,7 @@ import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.ui.components.AetherSectionHeader
 import com.example.aethermesh.ui.AppUiFeedback
 import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material.icons.filled.Science
 
 @Composable
 fun MeshRoutingDiagnosticsPanel(
@@ -58,7 +65,62 @@ fun MeshRoutingDiagnosticsPanel(
     val context = LocalContext.current
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
     val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
+    val meshSelfTest by viewModel.meshSelfTest.collectAsStateWithLifecycle()
     val spanish = appLanguage == "Spanish"
+    val queuedStoreForward = remember(meshDiagnostics?.timestamp) {
+        viewModel.countQueuedStoreForwardMessages()
+    }
+    var showSelfTestDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(meshSelfTest.finished, meshSelfTest.active) {
+        if (meshSelfTest.finished && !meshSelfTest.active) {
+            showSelfTestDialog = true
+        }
+    }
+
+    if (showSelfTestDialog && meshSelfTest.finished) {
+        AlertDialog(
+            onDismissRequest = {
+                showSelfTestDialog = false
+                viewModel.clearMeshSelfTestResult()
+            },
+            title = {
+                Text(
+                    if (spanish) "Auto-prueba de malla" else "Mesh self-test",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column {
+                    val body = meshSelfTest.errorEs?.takeIf { spanish }
+                        ?: meshSelfTest.errorEn
+                        ?: if (spanish) meshSelfTest.statusLineEs else meshSelfTest.statusLineEn
+                    Text(body, color = TextMuted, fontSize = 13.sp)
+                    if (meshSelfTest.errorEn == null && meshSelfTest.pingsPlanned > 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (spanish)
+                                "Activa recibos de oyentes en Preferencias para puntuación HEARD."
+                            else
+                                "Enable channel hearer receipts in Preferences for HEARD scoring.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSelfTestDialog = false
+                    viewModel.clearMeshSelfTestResult()
+                }) {
+                    Text(if (spanish) "Listo" else "OK", color = AccentCyan)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
 
     if (isConnected && !isDeviceAuthenticated) {
         Card(
@@ -116,7 +178,7 @@ fun MeshRoutingDiagnosticsPanel(
     }
 
     AetherSectionHeader(
-        title = t("Mesh Routing Diagnostics", appLanguage),
+        title = if (appLanguage == "Spanish") "Salud de la malla" else "Mesh Health",
         modifier = Modifier.padding(bottom = 8.dp)
     )
     Text(
@@ -317,6 +379,13 @@ fun MeshRoutingDiagnosticsPanel(
                         Modifier.weight(1f),
                         compact = true
                     )
+                    DiagnosticCard(
+                        if (spanish) "Dupes" else "Dupes",
+                        "${diagnostics.duplicatePackets}",
+                        TextMuted,
+                        Modifier.weight(1f),
+                        compact = true
+                    )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
@@ -333,6 +402,13 @@ fun MeshRoutingDiagnosticsPanel(
                     DiagnosticCard(
                         if (spanish) "Cola ACK" else "ACK Q",
                         "${diagnostics.pendingAckDepth}",
+                        TextMuted,
+                        Modifier.weight(1f),
+                        compact = true
+                    )
+                    DiagnosticCard(
+                        if (spanish) "Timeouts" else "Timeouts",
+                        "${diagnostics.ackTimeouts}",
                         TextMuted,
                         Modifier.weight(1f),
                         compact = true
@@ -415,6 +491,20 @@ fun MeshRoutingDiagnosticsPanel(
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 2.dp)
                 )
+                val queueBusy = diagnostics.rebroadcastQueueDepth > 0 ||
+                    diagnostics.pendingAckDepth > 0 ||
+                    queuedStoreForward > 0
+                if (queueBusy) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        if (spanish)
+                            "Catch-up / cola: DM en espera $queuedStoreForward · rebroadcast ${diagnostics.rebroadcastQueueDepth} · ACK pendientes ${diagnostics.pendingAckDepth}. Los routers pueden reenviar backlog de canal al despertar nodos."
+                        else
+                            "Catch-up / queue: queued DMs $queuedStoreForward · rebroadcast ${diagnostics.rebroadcastQueueDepth} · pending ACK ${diagnostics.pendingAckDepth}. Routers may replay channel backlog when nodes wake.",
+                        color = AccentAmber,
+                        fontSize = 11.sp
+                    )
+                }
                 if (diagnostics.rangePingsRx > 0L || diagnostics.rangePongsSent > 0L || diagnostics.quietMode) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -437,18 +527,96 @@ fun MeshRoutingDiagnosticsPanel(
                         fontSize = 11.sp
                     )
                 }
-                TextButton(
-                    onClick = {
-                        exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory(), appLanguage)
-                    },
-                    contentPadding = PaddingValues(0.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
+                    TextButton(
+                        onClick = {
+                            shareMeshDiagnosticsSnapshotText(
+                                context,
+                                diagnostics,
+                                queuedStoreForward,
+                                appLanguage
+                            )
+                        },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (spanish) "Compartir aire/cola" else "Share airtime/queue",
+                            fontSize = 11.sp
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            exportMeshDiagnosticsToCsv(context, viewModel.getMeshDiagnosticsHistory(), appLanguage)
+                        },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (spanish) "Exportar CSV" else "Export CSV",
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (spanish) "Auto-prueba de malla" else "Mesh self-test",
+                    color = TextLight,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    if (spanish)
+                        "Envía 5 pings cortos al canal activo y puntúa recibos HEARD / ΔRX."
+                    else
+                        "Sends 5 short pings on the active channel; scores HEARD receipts / RX Δ.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                if (meshSelfTest.active) {
                     Text(
-                        if (appLanguage == "Spanish") "Exportar salud mesh CSV" else "Export mesh health CSV",
+                        if (spanish) meshSelfTest.statusLineEs else meshSelfTest.statusLineEn,
+                        color = AccentMint,
                         fontSize = 11.sp
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.stopMeshSelfTest() },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(if (spanish) "Detener" else "Stop", color = AccentAmber)
+                    }
+                } else {
+                    Button(
+                        onClick = { viewModel.startMeshSelfTest(5) },
+                        enabled = isConnected && isDeviceAuthenticated,
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentMint),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Science,
+                            contentDescription = null,
+                            tint = DarkBackground,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (spanish) "Ejecutar auto-prueba" else "Run self-test",
+                            color = DarkBackground,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
                 HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 8.dp))
             } ?: Text(

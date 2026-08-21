@@ -41,6 +41,16 @@
 #define ACK_QUEUE_TTL_MS 12000UL
 #define STORE_FORWARD_TTL_MS 1800000UL
 #define STORE_FORWARD_RETRY_MS 60000UL
+// Phase D: Routers/Repeaters hold recent channel text for offline neighbors.
+// Shared recent-channel ring (not N×M copies) + paced unicast catch-up.
+#define MAX_CHANNEL_STORE 8
+#define MAX_CHANNEL_CATCHUP_DESTS 8
+#define MAX_CHANNEL_REPLAY_QUEUE 4
+#define CHANNEL_STORE_TTL_MS STORE_FORWARD_TTL_MS
+// Neighbor silent this long → offline; next sighting schedules catch-up.
+#define CHANNEL_NEIGHBOR_OFFLINE_MS 120000UL
+// Spacing between catch-up unicasts (plus SF wake / congestion defer).
+#define CHANNEL_CATCHUP_SPACING_MS 800UL
 // Per-target / global discovery gaps are SF-scaled via MeshMath
 // (routeDiscoveryCooldownMs / routeDiscoveryGlobalGapMs). These macros remain
 // as documentation defaults matching SF≤9.
@@ -111,6 +121,31 @@ struct ChannelReceiptTrack {
     uint32_t hearers[MAX_CHANNEL_HEARERS];
     uint8_t heardCount;
     uint32_t expiresAt;
+    bool active;
+};
+
+// Recent channel/broadcast text retained by Router/Repeater roles for catch-up.
+struct ChannelStoreEntry {
+    aethermesh_MeshPacket packet;
+    uint32_t storedAt;
+    bool active;
+};
+
+// Known destinations that may need channel backlog after an offline gap.
+struct ChannelCatchupDest {
+    uint32_t nodeId;
+    uint32_t lastHeardMs;
+    // Replay only messages with storedAt > catchupFromMs (progress watermark).
+    uint32_t catchupFromMs;
+    bool needsCatchup;
+    bool active;
+};
+
+// Paced unicast replay of a stored channel message toward one returning node.
+// Preserves original (sender_id, packet_id); want_ack forced false.
+struct PendingChannelReplay {
+    aethermesh_MeshPacket packet;
+    uint32_t sendAt;
     bool active;
 };
 
@@ -224,6 +259,9 @@ private:
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
     ChannelReceiptTrack channelReceipts[MAX_CHANNEL_RECEIPTS];
+    ChannelStoreEntry channelStore[MAX_CHANNEL_STORE];
+    ChannelCatchupDest channelCatchups[MAX_CHANNEL_CATCHUP_DESTS];
+    PendingChannelReplay channelReplays[MAX_CHANNEL_REPLAY_QUEUE];
     PendingPongReply pendingPongs[MAX_PENDING_PONGS];
     RouteDiscoveryState routeDiscoveries[6];
     RouteFailure routeFailures[MAX_ROUTE_FAILURES];
@@ -274,6 +312,14 @@ private:
     void refreshPendingDirectedNextHop(uint32_t targetId, uint32_t newNextHop);
     // Phase 5: accelerate STORED want_ack retries when a route reappears.
     void wakeStoredPendingForTarget(uint32_t targetId);
+    // Phase D: store recent channel text; catch up offline neighbors on sighting.
+    void storeChannelBroadcast(const aethermesh_MeshPacket& packet);
+    void noteChannelNeighborSighting(uint32_t nodeId);
+    void scheduleChannelCatchups(uint32_t now);
+    void drainChannelReplays(uint32_t now);
+    bool queueChannelReplay(const aethermesh_MeshPacket& stored, uint32_t destId,
+                            uint32_t sendAt);
+    uint8_t countActiveChannelReplays() const;
     // Phase 5: refresh primary + soft-nudge backup on DELIVERED.
     void reinforceRouteOnDelivery(uint32_t destId, float ackSnr);
     // Phase 6: congestion score from queue depth + recent airtime.

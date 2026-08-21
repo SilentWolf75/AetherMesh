@@ -55,6 +55,7 @@ fun AetherAppNavigation(
     isConnected: Boolean,
     /** When Connection is open while linked, keep this primary tab visually selected. */
     linkedHighlightTab: TabItem = TabItem.CHATS,
+    chatsUnreadCount: Int = 0,
     onTabSelected: (TabItem) -> Unit
 ) {
     data class NavTab(
@@ -109,12 +110,31 @@ fun AetherAppNavigation(
                         .padding(vertical = 12.dp, horizontal = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(
-                        imageVector = item.icon,
-                        contentDescription = t(item.labelKey, appLanguage),
-                        tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
-                        modifier = Modifier.size(24.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = t(item.labelKey, appLanguage),
+                            tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        if (item.tab == TabItem.CHATS && chatsUnreadCount > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(start = 14.dp, bottom = 14.dp)
+                                    .clip(CircleShape)
+                                    .background(AccentCyan)
+                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    if (chatsUnreadCount > 9) "9+" else "$chatsUnreadCount",
+                                    color = Color.Black,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = t(item.labelKey, appLanguage),
@@ -174,6 +194,23 @@ fun AetherAppNavigation(
                                         .clip(CircleShape)
                                         .background(AccentAmber)
                                 )
+                            }
+                            if (item.tab == TabItem.CHATS && chatsUnreadCount > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(start = 12.dp, bottom = 12.dp)
+                                        .clip(CircleShape)
+                                        .background(AccentCyan)
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        if (chatsUnreadCount > 9) "9+" else "$chatsUnreadCount",
+                                        color = Color.Black,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))

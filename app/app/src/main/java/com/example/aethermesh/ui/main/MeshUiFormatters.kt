@@ -160,6 +160,101 @@ fun formatUptime(seconds: Long, appLanguage: String = "English"): String {
     }
 }
 
+/** Firmware low-voltage safe enter threshold (LiPo pack volts). Phone UI matches. */
+const val LOW_VOLTAGE_SAFE_ENTER_V = 3.50f
+
+fun isLowVoltageSafeHint(voltage: Float, isCharging: Boolean): Boolean {
+    return voltage > 0f && voltage < LOW_VOLTAGE_SAFE_ENTER_V && !isCharging
+}
+
+/** Whole days since last heard (0 if within 24h or never). */
+fun daysSinceHeard(lastActive: Long): Long {
+    if (lastActive <= 0L) return 0L
+    val elapsed = (System.currentTimeMillis() - lastActive).coerceAtLeast(0L)
+    return elapsed / 86_400_000L
+}
+
+fun formatDaysSinceHeard(lastActive: Long, appLanguage: String = "English"): String? {
+    val d = daysSinceHeard(lastActive)
+    if (d < 1L) return null
+    val spanish = appLanguage == "Spanish"
+    return if (spanish) {
+        if (d == 1L) "1 día sin oír" else "$d días sin oír"
+    } else {
+        if (d == 1L) "1 day since heard" else "$d days since heard"
+    }
+}
+
+enum class VoltageTrend { UNKNOWN, RISING, FALLING, FLAT }
+
+fun voltageTrend(history: List<com.example.aethermesh.data.TelemetrySample>): VoltageTrend {
+    val samples = history.filter { it.voltage > 0f }
+    if (samples.size < 2) return VoltageTrend.UNKNOWN
+    val newest = samples.takeLast(minOf(12, samples.size))
+    val first = newest.first().voltage
+    val last = newest.last().voltage
+    val delta = last - first
+    return when {
+        delta >= 0.04f -> VoltageTrend.RISING
+        delta <= -0.04f -> VoltageTrend.FALLING
+        else -> VoltageTrend.FLAT
+    }
+}
+
+fun formatVoltageTrend(history: List<com.example.aethermesh.data.TelemetrySample>, appLanguage: String): String? {
+    val spanish = appLanguage == "Spanish"
+    val samples = history.filter { it.voltage > 0f }
+    if (samples.size < 2) return null
+    val newest = samples.takeLast(minOf(12, samples.size))
+    val first = newest.first().voltage
+    val last = newest.last().voltage
+    val delta = last - first
+    val arrow = when {
+        delta >= 0.04f -> "↑"
+        delta <= -0.04f -> "↓"
+        else -> "→"
+    }
+    val label = when {
+        delta >= 0.04f -> if (spanish) "subiendo" else "rising"
+        delta <= -0.04f -> if (spanish) "bajando" else "falling"
+        else -> if (spanish) "estable" else "flat"
+    }
+    return "$arrow ${"%.2f".format(last)} V ($label ${"%+.2f".format(delta)} V)"
+}
+
+fun formatGpsLockAge(lastPositionAt: Long, appLanguage: String = "English"): String {
+    val spanish = appLanguage == "Spanish"
+    if (lastPositionAt <= 0L) {
+        return if (spanish) "Sin fijación GPS" else "No GPS lock yet"
+    }
+    val age = formatLastHeard(lastPositionAt, appLanguage)
+    return if (spanish) "GPS: $age" else "GPS $age"
+}
+
+/** gps_mode: 0 on, 1 off, 2 duty. Returns null when prefs unknown. */
+fun formatGpsDutyStatus(gpsMode: Int?, dutyIntervalSecs: Int, appLanguage: String = "English"): String? {
+    if (gpsMode == null || gpsMode !in 0..2) return null
+    val spanish = appLanguage == "Spanish"
+    val mins = ((dutyIntervalSecs.coerceAtLeast(60) + 59) / 60)
+    return when (gpsMode) {
+        0 -> if (spanish) "GPS: siempre encendido" else "GPS: always on"
+        1 -> if (spanish) "GPS: apagado" else "GPS: off"
+        else -> if (spanish) "GPS: periódico (${mins} min)" else "GPS: duty (${mins} min)"
+    }
+}
+
+fun readCachedGpsMode(context: android.content.Context, nodeId: Long): Pair<Int?, Int> {
+    val prefs = context.getSharedPreferences("node_settings_$nodeId", android.content.Context.MODE_PRIVATE)
+    val mode = if (prefs.contains("gps_mode")) prefs.getInt("gps_mode", 0).coerceIn(0, 2) else null
+    val duty = prefs.getInt("gps_duty_interval_secs", 900).let {
+        when {
+            it <= 0 -> 900
+            else -> it.coerceIn(300, 3600)
+        }
+    }
+    return mode to duty
+}
+
 fun getInitials(name: String): String {
     if (name.isBlank()) return "??"
     val cleanName = name.replace("AetherMesh-", "").replace("Node ", "")
@@ -425,6 +520,191 @@ fun exportMeshDiagnosticsToCsv(
     }
 }
 
+/** One-tap plain-text snapshot of airtime / queue health (Phase J). */
+fun shareMeshDiagnosticsSnapshotText(
+    context: Context,
+    snapshot: com.example.aethermesh.data.MeshDiagnosticsSnapshot?,
+    queuedStoreForward: Int = 0,
+    appLanguage: String = "English"
+) {
+    val spanish = appLanguage == "Spanish"
+    if (snapshot == null) {
+        AppUiFeedback.show(
+            if (spanish) "Aún no hay telemetría de salud del mesh."
+            else "No mesh health telemetry yet.",
+            duration = SnackbarDuration.Short
+        )
+        return
+    }
+    val text = buildString {
+        appendLine("AetherMesh mesh health snapshot")
+        appendLine("ts_ms=${snapshot.timestamp}")
+        appendLine("tx=${snapshot.txPackets} rx=${snapshot.rxPackets} tx_fail=${snapshot.txFailures}")
+        appendLine(
+            "ack=${snapshot.ackedPackets} ack_timeout=${snapshot.ackTimeouts} " +
+                "retries=${snapshot.retries} drops=${snapshot.queueDrops}"
+        )
+        appendLine(
+            "airtime_ms=${snapshot.airtimeMs} uptime_s=${snapshot.uptimeSeconds} " +
+                "rebroadcast_q=${snapshot.rebroadcastQueueDepth} pending_ack_q=${snapshot.pendingAckDepth}"
+        )
+        appendLine(
+            "relayed=${snapshot.relayedPackets} routes=${snapshot.activeRoutes} " +
+                "route_changes=${snapshot.routeChanges} quiet=${snapshot.quietMode}"
+        )
+        appendLine("queued_dm_store_forward=$queuedStoreForward")
+        appendLine("proto_v=${snapshot.protocolVersion}")
+    }
+    try {
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh mesh health")
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+        }
+        startShareChooser(
+            context,
+            intent,
+            if (spanish) "Compartir salud del mesh" else "Share mesh health"
+        )
+    } catch (e: Exception) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Mesh Health", text))
+        AppUiFeedback.show(
+            if (spanish) "No se pudo compartir; texto copiado."
+            else "Share failed; text copied.",
+            duration = SnackbarDuration.Long
+        )
+    }
+}
+
+/** APRS-IS comment-style position line for paste into an external client (Phase I). */
+fun shareAprsPositionTemplate(
+    context: Context,
+    callsign: String,
+    nodeName: String,
+    nodeId: Long,
+    latitude: Float,
+    longitude: Float,
+    altitudeM: Int? = null,
+    appLanguage: String = "English"
+) {
+    val spanish = appLanguage == "Spanish"
+    val cs = callsign.trim().uppercase(java.util.Locale.US).ifBlank { "NOCALL" }
+    if (!hasValidPosition(latitude, longitude)) {
+        AppUiFeedback.show(
+            if (spanish) "Sin posición válida del nodo para APRS."
+            else "No valid node position for APRS export.",
+            duration = SnackbarDuration.Short
+        )
+        return
+    }
+    val lat = String.format(java.util.Locale.US, "%.5f", latitude)
+    val lon = String.format(java.util.Locale.US, "%.5f", longitude)
+    val altPart = altitudeM?.let { " alt=${it}m" } ?: ""
+    val comment =
+        "AetherMesh $nodeName 0x${nodeId.toString(16)} lat=$lat lon=$lon$altPart (not on-air APRS)"
+    val line = "$cs>APRS,TCPIP*:$comment"
+    try {
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh APRS comment")
+            putExtra(android.content.Intent.EXTRA_TEXT, line)
+        }
+        startShareChooser(
+            context,
+            intent,
+            if (spanish) "Compartir plantilla APRS" else "Share APRS template"
+        )
+    } catch (e: Exception) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("APRS", line))
+        AppUiFeedback.show(
+            if (spanish) "Plantilla APRS copiada al portapapeles."
+            else "APRS template copied to clipboard.",
+            duration = SnackbarDuration.Short
+        )
+    }
+}
+
+/** Share one chat thread as plain text or CSV (NEW_TASK-safe chooser). */
+fun exportThreadMessages(
+    context: Context,
+    messages: List<ChatMessage>,
+    threadTitle: String,
+    asCsv: Boolean,
+    appLanguage: String = "English",
+    nodeNames: Map<Long, String> = emptyMap()
+) {
+    val spanish = appLanguage == "Spanish"
+    if (messages.isEmpty()) {
+        AppUiFeedback.show(
+            if (spanish) "No hay mensajes para exportar." else "No messages to export.",
+            duration = SnackbarDuration.Short
+        )
+        return
+    }
+    try {
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val safeTitle = threadTitle.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifEmpty { "thread" }
+        val exportDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        if (asCsv) {
+            val csv = StringBuilder("Timestamp,SenderId,SenderName,Content,Channel,Status,Encrypted\n")
+            messages.forEach { msg ->
+                val date = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(msg.timestamp))
+                val name = nodeNames[msg.senderId]?.replace("\"", "\"\"") ?: ""
+                csv.append(
+                    "\"$date\",0x${msg.senderId.toString(16).uppercase()},\"$name\"," +
+                        "\"${msg.content.replace("\"", "\"\"")}\",\"${msg.channel}\"," +
+                        "\"${msg.status}\",${msg.isEncrypted}\n"
+                )
+            }
+            val file = java.io.File(exportDir, "aethermesh_${safeTitle}_$stamp.csv")
+            file.writeText(csv.toString())
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.fileprovider", file
+            )
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/csv"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                putExtra(android.content.Intent.EXTRA_SUBJECT, threadTitle)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startShareChooser(
+                context,
+                intent,
+                if (spanish) "Exportar hilo CSV" else "Export thread CSV"
+            )
+        } else {
+            val body = StringBuilder()
+            body.appendLine(threadTitle)
+            body.appendLine("---")
+            val timeFmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+            messages.forEach { msg ->
+                val who = nodeNames[msg.senderId]
+                    ?: "0x${msg.senderId.toString(16).uppercase()}"
+                body.appendLine("[${timeFmt.format(java.util.Date(msg.timestamp))}] $who: ${msg.content}")
+            }
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_SUBJECT, threadTitle)
+                putExtra(android.content.Intent.EXTRA_TEXT, body.toString())
+            }
+            startShareChooser(
+                context,
+                intent,
+                if (spanish) "Exportar hilo" else "Export thread"
+            )
+        }
+    } catch (e: Exception) {
+        AppUiFeedback.show(
+            if (spanish) "Error al exportar: ${e.localizedMessage}"
+            else "Export failed: ${e.localizedMessage}",
+            duration = SnackbarDuration.Long
+        )
+    }
+}
+
 fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLanguage: String = "English") {
     val spanish = appLanguage == "Spanish"
     if (messages.isEmpty()) {
@@ -470,15 +750,50 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLang
 fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String {
     if (appLanguage != "Spanish" || status.isBlank()) return status
     return when {
+        status.startsWith("Checking GitHub Releases") ->
+            "Consultando GitHub Releases (estable)…"
+        status.startsWith("Checking GitHub Pages") ->
+            "Consultando GitHub Pages (último)…"
         status.startsWith("Checking GitHub") -> "Consultando GitHub por firmware…"
+        status.startsWith("Found ") && status.contains("(stable") -> {
+            val name = status.substringAfter("Found ").substringBefore(" (stable")
+            val tag = status.substringAfter("(stable ").removeSuffix(")")
+            "Encontrado $name (estable $tag)"
+        }
+        status.startsWith("Found ") && status.contains("(latest") -> {
+            val name = status.substringAfter("Found ").substringBefore(" (latest")
+            "Encontrado $name (último / Pages)"
+        }
         status.startsWith("Found ") -> "Encontrado ${status.removePrefix("Found ")}"
         status == "No OTA builds published yet." -> "Aún no hay builds OTA publicados."
         status == "No OTA package matches this node model." ->
             "Ningún paquete OTA coincide con este modelo de nodo."
+        status.startsWith("No GitHub Release assets yet") ->
+            status.replace(
+                "No GitHub Release assets yet — using latest Pages build:",
+                "Aún no hay assets en GitHub Releases — usando el build Pages más reciente:"
+            )
+        status.startsWith("No stable GitHub Release for this board yet.") ->
+            "Aún no hay Release estable para esta placa. " +
+                localizeGithubFirmwareStatus(
+                    status.removePrefix("No stable GitHub Release for this board yet. ").trim(),
+                    appLanguage
+                )
+        status.startsWith("No stable Release asset matches") ->
+            "Ningún asset de Release estable coincide con esta placa" +
+                status.substringAfter("this board")
+        status.startsWith("Stable Releases found, but node model") ->
+            "Hay Releases estables, pero el modelo del nodo es desconocido — elige un archivo local o espera la telemetría."
+        status.startsWith("Connect a known board") ->
+            "Conecta una placa conocida para elegir automáticamente, o elige un archivo local."
+        status.startsWith("Releases unavailable") ->
+            "Releases no disponibles" + status.removePrefix("Releases unavailable")
         status.startsWith("OTA catalog not on GitHub Pages") ->
             "El catálogo OTA aún no está en GitHub Pages. Usa un .bin local por ahora, o reintenta tras el redespliegue."
         status.startsWith("OTA catalog not published") ->
             "Catálogo OTA no publicado aún."
+        status.startsWith("Could not reach GitHub Releases:") ->
+            "No se pudo contactar GitHub Releases:${status.removePrefix("Could not reach GitHub Releases:")}"
         status.startsWith("Could not reach GitHub:") ->
             "No se pudo contactar GitHub:${status.removePrefix("Could not reach GitHub:")}"
         status.startsWith("Downloading… ") ->
@@ -487,6 +802,8 @@ fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String {
             "Descargando ${status.removePrefix("Downloading ")}"
         status.startsWith("Verified ") ->
             "Verificado ${status.removePrefix("Verified ")}"
+        status.startsWith("Downloaded ") && status.contains("(size OK)") ->
+            "Descargado ${status.removePrefix("Downloaded ").removeSuffix(" (size OK)")} (tamaño OK)"
         status.startsWith("Download failed") ->
             "Error de descarga${status.removePrefix("Download failed")}"
         else -> status

@@ -103,6 +103,21 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
         channelReceipts[i].heardCount = 0;
         channelReceipts[i].packetId = 0;
     }
+    for (int i = 0; i < MAX_CHANNEL_STORE; i++) {
+        channelStore[i].active = false;
+        channelStore[i].storedAt = 0;
+    }
+    for (int i = 0; i < MAX_CHANNEL_CATCHUP_DESTS; i++) {
+        channelCatchups[i].active = false;
+        channelCatchups[i].nodeId = 0;
+        channelCatchups[i].lastHeardMs = 0;
+        channelCatchups[i].catchupFromMs = 0;
+        channelCatchups[i].needsCatchup = false;
+    }
+    for (int i = 0; i < MAX_CHANNEL_REPLAY_QUEUE; i++) {
+        channelReplays[i].active = false;
+        channelReplays[i].sendAt = 0;
+    }
     for (int i = 0; i < MAX_PENDING_PONGS; i++) {
         pendingPongs[i].active = false;
         pendingPongs[i].sendCount = 0;
@@ -466,6 +481,235 @@ void MeshRouter::wakeStoredPendingForTarget(uint32_t targetId) {
         Serial.printf("Waking stored packet %u for 0x%08X via 0x%08X\n",
                       pendingAcks[i].packet.packet_id, targetId,
                       pendingAcks[i].packet.next_hop_id);
+    }
+}
+
+void MeshRouter::storeChannelBroadcast(const aethermesh_MeshPacket& packet) {
+    if (!meshmath::shouldStoreChannelBroadcast(
+            canRelay(),
+            packet.recipient_id == 0xFFFFFFFFu,
+            packet.which_payload == aethermesh_MeshPacket_text_tag,
+            isRangeTestTextPacket(packet))) {
+        return;
+    }
+    // Dedup by (sender_id, packet_id) — insurance retries share packet_id.
+    for (int i = 0; i < MAX_CHANNEL_STORE; i++) {
+        if (!channelStore[i].active) continue;
+        if (channelStore[i].packet.sender_id == packet.sender_id &&
+            channelStore[i].packet.packet_id == packet.packet_id) {
+            channelStore[i].storedAt = millis();
+            return;
+        }
+    }
+    uint32_t now = millis();
+    int slot = -1;
+    for (int i = 0; i < MAX_CHANNEL_STORE; i++) {
+        if (!channelStore[i].active ||
+            !meshmath::channelStoreEntryFresh(now, channelStore[i].storedAt,
+                                              CHANNEL_STORE_TTL_MS)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+        for (int i = 1; i < MAX_CHANNEL_STORE; i++) {
+            if ((int32_t)(channelStore[i].storedAt - channelStore[slot].storedAt) < 0) {
+                slot = i;
+            }
+        }
+    }
+    // Snapshot as broadcast; catch-up restamps recipient/want_ack on replay.
+    channelStore[slot].packet = packet;
+    channelStore[slot].packet.recipient_id = 0xFFFFFFFFu;
+    channelStore[slot].packet.next_hop_id = 0;
+    channelStore[slot].storedAt = now;
+    channelStore[slot].active = true;
+    Serial.printf("Channel store: kept packet %u from 0x%08X (slot %d)\n",
+                  packet.packet_id, packet.sender_id, slot);
+}
+
+void MeshRouter::noteChannelNeighborSighting(uint32_t nodeId) {
+    if (!canRelay() || nodeId == 0 || nodeId == localNodeId ||
+        nodeId == 0xFFFFFFFFu) {
+        return;
+    }
+    uint32_t now = millis();
+    int freeSlot = -1;
+    for (int i = 0; i < MAX_CHANNEL_CATCHUP_DESTS; i++) {
+        if (channelCatchups[i].active && channelCatchups[i].nodeId == nodeId) {
+            bool wasOffline = meshmath::neighborWasOffline(
+                now, channelCatchups[i].lastHeardMs, CHANNEL_NEIGHBOR_OFFLINE_MS);
+            if (wasOffline) {
+                channelCatchups[i].catchupFromMs = channelCatchups[i].lastHeardMs;
+                channelCatchups[i].needsCatchup = true;
+                Serial.printf("Channel catch-up armed for 0x%08X (offline gap)\n",
+                              nodeId);
+            }
+            channelCatchups[i].lastHeardMs = now;
+            return;
+        }
+        if (freeSlot < 0 && !channelCatchups[i].active) {
+            freeSlot = i;
+        }
+    }
+    // Evict coldest if full (first sighting — no catch-up until an offline gap).
+    if (freeSlot < 0) {
+        freeSlot = 0;
+        for (int i = 1; i < MAX_CHANNEL_CATCHUP_DESTS; i++) {
+            if ((int32_t)(channelCatchups[i].lastHeardMs -
+                          channelCatchups[freeSlot].lastHeardMs) < 0) {
+                freeSlot = i;
+            }
+        }
+    }
+    channelCatchups[freeSlot].nodeId = nodeId;
+    channelCatchups[freeSlot].lastHeardMs = now;
+    channelCatchups[freeSlot].catchupFromMs = now;
+    channelCatchups[freeSlot].needsCatchup = false;
+    channelCatchups[freeSlot].active = true;
+}
+
+uint8_t MeshRouter::countActiveChannelReplays() const {
+    uint8_t n = 0;
+    for (int i = 0; i < MAX_CHANNEL_REPLAY_QUEUE; i++) {
+        if (channelReplays[i].active) n++;
+    }
+    return n;
+}
+
+bool MeshRouter::queueChannelReplay(const aethermesh_MeshPacket& stored,
+                                    uint32_t destId, uint32_t sendAt) {
+    // Skip if already queued for this (sender, packet, dest).
+    for (int i = 0; i < MAX_CHANNEL_REPLAY_QUEUE; i++) {
+        if (!channelReplays[i].active) continue;
+        if (channelReplays[i].packet.sender_id == stored.sender_id &&
+            channelReplays[i].packet.packet_id == stored.packet_id &&
+            channelReplays[i].packet.recipient_id == destId) {
+            return true;
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < MAX_CHANNEL_REPLAY_QUEUE; i++) {
+        if (!channelReplays[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return false;
+
+    aethermesh_MeshPacket replay = stored;
+    replay.recipient_id = destId;
+    // Never request ACKs on catch-up — avoid storms; receipts setting is for
+    // the original flood only.
+    replay.want_ack = false;
+    replay.prev_hop_id = localNodeId;
+    replay.hop_limit = defaultHopLimit;
+    replay.next_hop_id = 0;
+    replay.retry_count = 0;
+    applyDirectedNextHop(&replay);
+
+    channelReplays[slot].packet = replay;
+    channelReplays[slot].sendAt = sendAt;
+    channelReplays[slot].active = true;
+    Serial.printf("Channel catch-up queued packet %u → 0x%08X at +%lums\n",
+                  stored.packet_id, destId,
+                  (unsigned long)(sendAt - millis()));
+    return true;
+}
+
+void MeshRouter::scheduleChannelCatchups(uint32_t now) {
+    if (!canRelay() || quietMode) return;
+    uint8_t cong = currentCongestionScore();
+    if (meshmath::shouldDeferCongestedStoredWake(cong)) {
+        return;
+    }
+    uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+    for (int d = 0; d < MAX_CHANNEL_CATCHUP_DESTS; d++) {
+        if (!channelCatchups[d].active || !channelCatchups[d].needsCatchup) {
+            continue;
+        }
+        RouteEntry* route = getRoute(channelCatchups[d].nodeId);
+        const bool hasRoute = route != nullptr && route->nextHopId != 0;
+        if (!meshmath::shouldChannelCatchup(canRelay(), quietMode, true, hasRoute)) {
+            continue;
+        }
+        uint32_t delayBase =
+            meshmath::storeForwardWakeDelayMs(sf, (uint32_t)random(0, 201));
+        delayBase += meshmath::congestionDeferMs(cong, true, sf,
+                                                 (uint32_t)random(0, 101));
+        int paced = 0;
+        bool moreRemain = false;
+        for (int s = 0; s < MAX_CHANNEL_STORE; s++) {
+            if (!channelStore[s].active) continue;
+            if (!meshmath::channelStoreEntryFresh(now, channelStore[s].storedAt,
+                                                  CHANNEL_STORE_TTL_MS)) {
+                channelStore[s].active = false;
+                continue;
+            }
+            // Do not replay a node's own messages back to it.
+            if (channelStore[s].packet.sender_id == channelCatchups[d].nodeId) {
+                continue;
+            }
+            if (!(channelStore[s].storedAt > channelCatchups[d].catchupFromMs)) {
+                continue;
+            }
+            if (countActiveChannelReplays() >= MAX_CHANNEL_REPLAY_QUEUE) {
+                moreRemain = true;
+                break;
+            }
+            uint32_t sendAt =
+                now + delayBase + (uint32_t)paced * CHANNEL_CATCHUP_SPACING_MS;
+            if (!queueChannelReplay(channelStore[s].packet,
+                                    channelCatchups[d].nodeId, sendAt)) {
+                moreRemain = true;
+                break;
+            }
+            // Progress watermark so a full queue can resume later.
+            channelCatchups[d].catchupFromMs = channelStore[s].storedAt;
+            paced++;
+        }
+        if (!moreRemain) {
+            channelCatchups[d].needsCatchup = false;
+            if (paced > 0) {
+                Serial.printf("Channel catch-up scheduled %d msg(s) for 0x%08X\n",
+                              paced, channelCatchups[d].nodeId);
+            }
+        }
+    }
+}
+
+void MeshRouter::drainChannelReplays(uint32_t now) {
+    if (quietMode) return;
+    for (int i = 0; i < MAX_CHANNEL_REPLAY_QUEUE; i++) {
+        if (!channelReplays[i].active) continue;
+        if ((int32_t)(now - channelReplays[i].sendAt) < 0) continue;
+        // Drop if destination route vanished; leave catch-up armed via store TTL.
+        RouteEntry* route = getRoute(channelReplays[i].packet.recipient_id);
+        if (route == nullptr || route->nextHopId == 0) {
+            channelReplays[i].active = false;
+            continue;
+        }
+        uint8_t cong = currentCongestionScore();
+        if (meshmath::shouldDeferCongestedStoredWake(cong)) {
+            uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+            channelReplays[i].sendAt =
+                now + meshmath::congestionDeferMs(cong, true, sf,
+                                                  (uint32_t)random(0, 101));
+            continue;
+        }
+        applyDirectedNextHop(&channelReplays[i].packet);
+        if (serializeAndSend(&channelReplays[i].packet)) {
+            Serial.printf("Channel catch-up TX packet %u → 0x%08X\n",
+                          channelReplays[i].packet.packet_id,
+                          channelReplays[i].packet.recipient_id);
+            channelReplays[i].active = false;
+            // One TX per loop pass — half-duplex.
+            break;
+        }
+        channelReplays[i].sendAt =
+            now + meshmath::radioBusyRetryDelayMs(random(0, 181));
+        break;
     }
 }
 
@@ -937,10 +1181,18 @@ void MeshRouter::loop() {
             channelReceipts[i].active = false;
         }
     }
+
+    // Phase D: paced channel catch-up for neighbors returning from offline.
+    drainChannelReplays(now);
+    scheduleChannelCatchups(now);
 }
 
 void MeshRouter::addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric) {
     if (targetId == localNodeId) return;
+
+    // Phase D: any fresh route observation may arm channel catch-up after an
+    // offline gap (telemetry / text / RREP all funnel through addRoute).
+    noteChannelNeighborSighting(targetId);
     
     // Phase 6: demote multi-hop paths through flaky ACK-history neighbors.
     // Direct neighbor rows already carry live RX hopCost — do not double-penalize.
@@ -1350,6 +1602,8 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 if (!packetIdSeenBefore && textCallback) {
                     textCallback(packet.sender_id, packet.payload.text.content);
                 }
+                // Routers/Repeaters retain recent channel text for offline neighbors.
+                storeChannelBroadcast(packet);
                 break;
             case aethermesh_MeshPacket_telemetry_tag:
                 if (telemetryCallback) {
@@ -1490,6 +1744,7 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
     applyDirectedNextHop(&packet);
     if (recipientId == 0xFFFFFFFFu) {
         trackChannelReceipt(packet.packet_id);
+        storeChannelBroadcast(packet);
     } else {
         trackForAck(packet);
     }
@@ -1833,6 +2088,11 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
         } else {
             trackForAck(*packet);
         }
+    }
+    // Phone/local channel floods: Router/Repeater keep a recent backlog copy.
+    if (packet->recipient_id == 0xFFFFFFFFu &&
+        packet->which_payload == aethermesh_MeshPacket_text_tag) {
+        storeChannelBroadcast(*packet);
     }
     bool sent = serializeAndSend(packet, urgent);
 

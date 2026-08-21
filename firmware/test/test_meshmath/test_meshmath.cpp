@@ -111,6 +111,22 @@ void test_store_forward_wake_helpers() {
     TEST_ASSERT_TRUE(storeForwardWakeDelayMs(12, 0) > storeForwardWakeDelayMs(7, 0));
 }
 
+void test_channel_store_forward_helpers() {
+    TEST_ASSERT_TRUE(channelStoreEntryFresh(1000, 900, 500));
+    TEST_ASSERT_FALSE(channelStoreEntryFresh(1000, 400, 500));
+    TEST_ASSERT_TRUE(neighborWasOffline(5000, 1000, 2000));
+    TEST_ASSERT_FALSE(neighborWasOffline(2500, 1000, 2000));
+    TEST_ASSERT_TRUE(shouldChannelCatchup(true, false, true, true));
+    TEST_ASSERT_FALSE(shouldChannelCatchup(false, false, true, true)); // Client
+    TEST_ASSERT_FALSE(shouldChannelCatchup(true, true, true, true));  // quiet
+    TEST_ASSERT_FALSE(shouldChannelCatchup(true, false, false, true));
+    TEST_ASSERT_FALSE(shouldChannelCatchup(true, false, true, false)); // no route
+    TEST_ASSERT_TRUE(shouldStoreChannelBroadcast(true, true, true, false));
+    TEST_ASSERT_FALSE(shouldStoreChannelBroadcast(false, true, true, false));
+    TEST_ASSERT_FALSE(shouldStoreChannelBroadcast(true, false, true, false));
+    TEST_ASSERT_FALSE(shouldStoreChannelBroadcast(true, true, true, true)); // range test
+}
+
 void test_delivery_soft_age_nudge() {
     TEST_ASSERT_EQUAL_UINT32(900, nudgedSoftAgeTimestamp(1000, 900, 200000)); // fresh: keep timestamp
     // Soft-stale backup pulled forward to now - softAge/2.
@@ -461,6 +477,7 @@ int main(int, char**) {
     RUN_TEST(test_packet_sequence_seed_is_deterministic_nonzero_and_well_mixed);
     RUN_TEST(test_ack_retry_delay_backs_off_and_caps_route_penalty);
     RUN_TEST(test_store_forward_wake_helpers);
+    RUN_TEST(test_channel_store_forward_helpers);
     RUN_TEST(test_delivery_soft_age_nudge);
     RUN_TEST(test_repair_phase_guardrails);
     RUN_TEST(test_radio_busy_retry_delay_is_bounded);

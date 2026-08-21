@@ -35,3 +35,26 @@ python tools/hardware_qualification.py release-hardware.csv
 ```
 
 Maintainer signing keys are intentionally not present in this repository.
+
+## OTA trust (Phase H — pragmatic)
+
+The companion app (1.2.6+) hardens wireless updates without requiring image
+signing keys in-tree:
+
+1. **Path separation** — Heltec/ESP32 BLE OTA accepts `.bin` only; RAK Nordic
+   DFU accepts `.zip` only. USB `-usb.bin` / `.uf2` packages are refused for BLE.
+2. **Board match** — asset / filename board ids (`heltec-v4`, `rak4631`, …) must
+   match the connected node’s telemetry model when inferable.
+3. **Integrity** — GitHub Pages `ota-manifest.json` downloads verify size +
+   SHA-256. GitHub Release assets verify size (API has no digest field).
+4. **Channels** — **Stable** prefers non-prerelease GitHub Releases assets
+   tagged/named for PlatformIO envs (`heltec_v4`, `rak4631`, …). **Latest** uses
+   the Pages catalog. Publish field-stable firmware as a GitHub Release with
+   board-named OTA assets so Stable has something to pick.
+
+### Follow-up (not in Phase H)
+
+- Detached signature or signed manifest over OTA images (Ed25519 / cosign).
+- Firmware-side reject of images that fail signature / board-id header checks.
+- Attestation verify from the phone (optional; Pages already attests in CI).
+

@@ -24,8 +24,8 @@ android {
         applicationId = "com.example.aethermesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 3
-        versionName = providers.gradleProperty("versionName").orNull ?: "1.2.1"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 9
+        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.0"
     }
 
     signingConfigs {

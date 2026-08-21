@@ -191,20 +191,42 @@ fun isEspOtaTarget(vararg hints: String?): Boolean {
         haystack.contains("esp32")
 }
 
-/** Reject clearly wrong OTA payloads before flashing (Heltec .bin / RAK .zip). */
-fun isValidOtaPayload(bytes: ByteArray, fileName: String, isRakNode: Boolean): String? {
+/**
+ * Reject clearly wrong OTA payloads before flashing.
+ * Heltec/ESP32: `.bin` only (never Nordic DFU `.zip` / UF2 / USB merge).
+ * RAK/nRF52: `.zip` DFU package only.
+ * When [expectedBoardId] is known, refuse filename board mismatches.
+ */
+fun isValidOtaPayload(
+    bytes: ByteArray,
+    fileName: String,
+    isRakNode: Boolean,
+    expectedBoardId: String? = null
+): String? {
     if (bytes.isEmpty()) return "Empty file"
     val lower = fileName.lowercase()
+    if (lower.contains("-usb") || lower.endsWith("-usb.bin")) {
+        return "USB images cannot be flashed over BLE OTA — use a -ota.bin or DFU .zip"
+    }
+    if (lower.endsWith(".uf2")) {
+        return "UF2 is for USB drag-and-drop, not BLE OTA"
+    }
+    com.example.aethermesh.data.FirmwareCatalog.boardMismatchError(fileName, expectedBoardId)?.let {
+        return it
+    }
     return if (isRakNode) {
         when {
+            lower.endsWith(".bin") -> "RAK nodes need a Nordic DFU .zip — not an ESP32 .bin"
             !lower.endsWith(".zip") -> "RAK updates need a .zip DFU package"
             bytes.size < 256 -> "File too small to be a DFU package"
-            bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte() -> "Not a valid ZIP (DFU) package"
+            bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte() ->
+                "Not a valid ZIP (DFU) package"
             else -> null
         }
     } else {
         when {
-            lower.endsWith(".zip") -> "Heltec updates need a .bin image (not .zip)"
+            lower.endsWith(".zip") ->
+                "Heltec/ESP32 updates need a .bin image — not a Nordic DFU .zip"
             bytes.size < 1024 -> "Firmware image looks too small"
             bytes[0] != 0xE9.toByte() && !lower.endsWith(".bin") ->
                 "Does not look like an ESP32 .bin image"
@@ -242,15 +264,48 @@ fun localizeOtaStatus(status: String, appLanguage: String): String {
 
 fun localizeOtaPickError(error: String, appLanguage: String): String {
     if (appLanguage != "Spanish") return error
-    return when (error) {
-        "Empty file" -> "Archivo vacío"
-        "RAK updates need a .zip DFU package" -> "Las actualizaciones RAK requieren un paquete DFU .zip"
-        "File too small to be a DFU package" -> "El archivo es demasiado pequeño para ser un paquete DFU"
-        "Not a valid ZIP (DFU) package" -> "No es un paquete ZIP (DFU) válido"
-        "Heltec updates need a .bin image (not .zip)" -> "Las actualizaciones Heltec requieren una imagen .bin (no .zip)"
-        "Firmware image looks too small" -> "La imagen de firmware parece demasiado pequeña"
-        "Does not look like an ESP32 .bin image" -> "No parece una imagen .bin de ESP32"
+    return when {
+        error == "Empty file" -> "Archivo vacío"
+        error == "RAK updates need a .zip DFU package" ->
+            "Las actualizaciones RAK requieren un paquete DFU .zip"
+        error == "RAK nodes need a Nordic DFU .zip — not an ESP32 .bin" ->
+            "Los nodos RAK necesitan un .zip DFU de Nordic — no un .bin de ESP32"
+        error == "File too small to be a DFU package" ->
+            "El archivo es demasiado pequeño para ser un paquete DFU"
+        error == "Not a valid ZIP (DFU) package" -> "No es un paquete ZIP (DFU) válido"
+        error == "Heltec updates need a .bin image (not .zip)" ||
+            error == "Heltec/ESP32 updates need a .bin image — not a Nordic DFU .zip" ->
+            "Las actualizaciones Heltec/ESP32 requieren una imagen .bin — no un .zip DFU de Nordic"
+        error == "Firmware image looks too small" ->
+            "La imagen de firmware parece demasiado pequeña"
+        error == "Does not look like an ESP32 .bin image" ->
+            "No parece una imagen .bin de ESP32"
+        error == "USB images cannot be flashed over BLE OTA — use a -ota.bin or DFU .zip" ->
+            "Las imágenes USB no se pueden flashear por BLE OTA — usa un -ota.bin o .zip DFU"
+        error == "UF2 is for USB drag-and-drop, not BLE OTA" ->
+            "UF2 es para arrastrar por USB, no para BLE OTA"
+        error.startsWith("Wrong board firmware:") -> {
+            val rest = error.removePrefix("Wrong board firmware:")
+            "Firmware de placa incorrecto:$rest"
+                .replace("file looks like", "el archivo parece")
+                .replace("node is", "el nodo es")
+        }
         else -> error
+    }
+}
+
+/** User-visible recovery guidance after a failed mid-OTA / DFU attempt. */
+fun otaRollbackGuidance(isRakNode: Boolean, spanish: Boolean): String {
+    return if (spanish) {
+        if (isRakNode)
+            "Si el DFU falló a medias: el bootloader suele conservar el firmware actual al agotar el tiempo. Si el nodo no vuelve a BLE, flashea el .uf2 por USB (arrastrar al disco RAK) o usa el flasher web."
+        else
+            "Si la OTA falló a medias: el nodo normalmente sigue con el firmware anterior (partición activa). Si no responde por BLE, recupera por USB con el flasher web y la imagen -usb.bin."
+    } else {
+        if (isRakNode)
+            "If DFU failed mid-way: the bootloader usually keeps the current image when it times out. If the node never returns to BLE, flash the .uf2 over USB (drag onto the RAK drive) or use the web flasher."
+        else
+            "If OTA failed mid-way: the node normally keeps running the previous firmware (active partition). If it will not reconnect over BLE, recover over USB with the web flasher and the -usb.bin image."
     }
 }
 
@@ -304,6 +359,8 @@ fun t(text: String, lang: String): String {
         "Reset Node Directory" -> "Reiniciar Directorio de Nodos"
         "Clear all discovered nodes and restart directory" -> "Borrar todos los nodos descubiertos y reiniciar directorio"
         "App Preferences" -> "Preferencias de la Aplicación"
+        "Interop (experimental)" -> "Interop (experimental)"
+        "MQTT prefs stub, APRS export, and interop notes" -> "Stub MQTT, export APRS y notas de interop"
         "Theme" -> "Tema"
         "Language" -> "Idioma"
         "Device DB cache limit" -> "Límite de caché de la base de datos"
@@ -389,6 +446,7 @@ fun t(text: String, lang: String): String {
         "Firmware Version" -> "Versión de Firmware"
         "Disconnect" -> "Desconectar"
         "Mesh Routing Diagnostics" -> "Diagnósticos de Enrutamiento Mesh"
+        "Mesh Health" -> "Salud de la malla"
         "Mesh Routing" -> "Enrutamiento Mesh"
         "Live mesh health, quiet-mode status, and observed routes" -> "Salud del mesh en vivo, estado de modo silencioso y rutas observadas"
         "No routing paths observed yet.\nPaths are dynamically built as nodes transmit." -> "Aún no se han observado rutas.\nLas rutas se construyen dinámicamente a medida que transmiten los nodos."
@@ -405,6 +463,8 @@ fun t(text: String, lang: String): String {
         "Short Name (max 4 chars)" -> "Nombre corto (máx. 4 caracteres)"
         "Firmware Update" -> "Actualización de Firmware"
         "Flash new firmware to the connected node over Bluetooth (BLE OTA)" -> "Flashea firmware nuevo al nodo conectado por Bluetooth (BLE OTA)"
+        "Stable Releases or Pages OTA; Heltec .bin / RAK .zip only" ->
+            "Releases estables o Pages OTA; solo .bin Heltec / .zip RAK"
         "Configure GPS enable, telemetry interval, and view satellite lock status" -> "Configura GPS (siempre / periódico / apagado), telemetría y estado de satélites"
         "Configure onboard GPS mode, telemetry interval, and satellite lock status" -> "Configura el GPS del nodo, telemetría y estado de satélites"
         "Phone GPS Sharing" -> "Compartir GPS del teléfono"
@@ -475,7 +535,7 @@ enum class TabItem {
 }
 
 enum class SettingsCategory {
-    CHANNELS, RADIO, POSITION, FIRMWARE, SECURITY, ROUTING, PREFERENCES, DEVELOPER
+    CHANNELS, RADIO, POSITION, FIRMWARE, SECURITY, ROUTING, PREFERENCES, INTEROP, DEVELOPER
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -563,6 +623,7 @@ fun MainScreen(
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
+    var chatPrefsTick by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(bleReconnectGaveUp, appLanguage) {
         if (bleReconnectGaveUp) {
@@ -591,6 +652,35 @@ fun MainScreen(
     val activeChatId by viewModel.activeChatId.collectAsStateWithLifecycle()
     val chatDeepLinkEpoch by viewModel.chatDeepLinkEpoch.collectAsStateWithLifecycle()
     val chatKeysRevision by viewModel.chatKeysRevision.collectAsStateWithLifecycle()
+
+    val chatsUnreadCount = remember(
+        messages,
+        channels,
+        nodes,
+        chatPrefsTick,
+        viewModel.connectedNodeId
+    ) {
+        val localId = viewModel.connectedNodeId
+        val channelPreviews = viewModel.getChannelInboxPreviews()
+        val dmPreviews = viewModel.getDmInboxPreviews(localId)
+        var n = 0
+        for (ch in channels) {
+            val key = com.example.aethermesh.data.ChatThreadPrefs.channelKey(ch)
+            if (com.example.aethermesh.data.ChatThreadPrefs.isUnreadPreview(
+                    sharedPrefs, key, channelPreviews[ch], localId
+                )
+            ) n++
+        }
+        for (node in nodes) {
+            if (node.nodeId == localId) continue
+            val key = com.example.aethermesh.data.ChatThreadPrefs.dmKey(node.nodeId)
+            if (com.example.aethermesh.data.ChatThreadPrefs.isUnreadPreview(
+                    sharedPrefs, key, dmPreviews[node.nodeId], localId
+                )
+            ) n++
+        }
+        n
+    }
 
     val pendingOpenChats by viewModel.pendingOpenChatsTab.collectAsStateWithLifecycle()
     LaunchedEffect(pendingOpenChats, isConnected) {
@@ -646,6 +736,9 @@ fun MainScreen(
             }
             if (key == "use_imperial_units") {
                 useImperialUnitsSetting = prefs.getBoolean("use_imperial_units", true)
+            }
+            if (com.example.aethermesh.data.ChatThreadPrefs.isChatPrefsKey(key)) {
+                chatPrefsTick++
             }
         }
         sharedPrefs.registerOnSharedPreferenceChangeListener(listener)
@@ -762,6 +855,7 @@ fun MainScreen(
                     useRail = true,
                     isConnected = isConnected,
                     linkedHighlightTab = previousTabBeforeConnection,
+                    chatsUnreadCount = chatsUnreadCount,
                     onTabSelected = { tab ->
                         if (tab == TabItem.CONNECTION) openConnectionTab() else activeTab = tab
                     }
@@ -1085,6 +1179,7 @@ fun MainScreen(
                         useRail = false,
                         isConnected = isConnected,
                         linkedHighlightTab = previousTabBeforeConnection,
+                        chatsUnreadCount = chatsUnreadCount,
                         onTabSelected = { tab ->
                             if (tab == TabItem.CONNECTION) openConnectionTab() else activeTab = tab
                         }

@@ -207,6 +207,13 @@ class AetherMeshRepository(private val context: Context) {
     private val _meshDiagnostics = MutableStateFlow<MeshDiagnosticsSnapshot?>(null)
     val meshDiagnostics: StateFlow<MeshDiagnosticsSnapshot?> = _meshDiagnostics.asStateFlow()
 
+    private val _meshSelfTest = MutableStateFlow(MeshSelfTestResult())
+    val meshSelfTest: StateFlow<MeshSelfTestResult> = _meshSelfTest.asStateFlow()
+    private var meshSelfTestJob: Job? = null
+    /** Packet id of the last successful [sendMessage] (for self-test scoring). */
+    @Volatile
+    private var lastOutboundPacketId: Int = 0
+
     private val _traceRouteState = MutableStateFlow(TraceRouteState())
     val traceRouteState: StateFlow<TraceRouteState> = _traceRouteState.asStateFlow()
     private var traceRouteJob: Job? = null
@@ -709,6 +716,7 @@ class AetherMeshRepository(private val context: Context) {
                 _authenticationRequired.value = null
                 _authFailureTick.value = 0
                 expectPostSettingsReconnect = false
+                ChatThreadPrefs.recordBleController(context, senderId)
                 
                 // Remember this node so reconnect unlocks without retyping.
                 val mac = bleManager.getConnectedDeviceAddress()
@@ -975,8 +983,21 @@ class AetherMeshRepository(private val context: Context) {
                     return
                 }
 
-                val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$targetChan" else "DM_$senderId"
-                val cryptoContext = ChatContext.authenticatedLabel(senderId, recipientId, targetChan)
+                val chatIdentifier = if (recipientId == 0xFFFFFFFFL || targetChan.isNotEmpty()) {
+                    "CHANNEL_${targetChan.ifEmpty { "General" }}"
+                } else {
+                    "DM_$senderId"
+                }
+                // Catch-up unicasts keep the channel name but restamp recipient;
+                // decrypt with the original channel AAD, not a DM pair.
+                val cryptoRecipient =
+                    if (recipientId == 0xFFFFFFFFL || targetChan.isNotEmpty()) 0xFFFFFFFFL
+                    else recipientId
+                val cryptoContext = ChatContext.authenticatedLabel(
+                    senderId,
+                    cryptoRecipient,
+                    targetChan.ifEmpty { "General" }
+                )
                 
                 val finalContent = if (isEncrypted) {
                     val passcode = getChatKey(chatIdentifier)
@@ -989,22 +1010,32 @@ class AetherMeshRepository(private val context: Context) {
                     contentReceived
                 }
 
+                val channelForRow = when {
+                    recipientId == 0xFFFFFFFFL -> targetChan.ifEmpty { "General" }
+                    targetChan.isNotEmpty() -> targetChan // Phase D catch-up unicast
+                    else -> ""
+                }
                 dbHelper.insertMessage(
                     senderId = senderId,
                     recipientId = recipientId,
                     content = finalContent,
-                    channel = targetChan,
+                    channel = channelForRow,
                     packetId = packet.packetId,
                     status = "SENT",
                     isEncrypted = isEncrypted
-                )
+                ).also { rowId ->
+                    if (rowId < 0L) {
+                        Log.d(TAG, "Skipping duplicate message sender=0x${senderId.toString(16)} packetId=${packet.packetId}")
+                        return
+                    }
+                }
                 refreshData()
                 notifyIncomingMessage(
                     senderId = senderId,
                     chatIdentifier = chatIdentifier,
-                    channel = targetChan,
+                    channel = channelForRow,
                     content = finalContent,
-                    isBroadcast = recipientId == 0xFFFFFFFFL
+                    isBroadcast = channelForRow.isNotEmpty() || recipientId == 0xFFFFFFFFL
                 )
             }
             MeshPacket.PayloadCase.TELEMETRY -> {
@@ -1208,14 +1239,16 @@ class AetherMeshRepository(private val context: Context) {
             .setChannel(if (recipientId == 0xFFFFFFFFL) boundedChannel else "")
             .setIsEncrypted(isEncrypted)
 
-        // DMs: end-to-end node ACK. Channel: want_ack asks each hearer to ACK so
-        // the originator can report "heard by N" (not a single DELIVERED).
+        // DMs: always want_ack (end-to-end DELIVERED). Channel: optional hearer
+        // receipts (Settings → channel_hearer_receipts); default off = flood-style.
+        val isChannelSend = recipientId == 0xFFFFFFFFL
+        val channelWantAck = !isChannelSend || prefs.getBoolean("channel_hearer_receipts", false)
         val packet = MeshPacket.newBuilder()
             .setSenderId(localNodeId.toInt())
             .setRecipientId(recipientId.toInt())
             .setPacketId(generatedPacketId)
             .setHopLimit(4)
-            .setWantAck(true)
+            .setWantAck(channelWantAck)
             .setPrevHopId(localNodeId.toInt())
             .setText(textBuilder)
             .build()
@@ -1223,6 +1256,7 @@ class AetherMeshRepository(private val context: Context) {
         // Commit the local bubble only after Android accepted the BLE write.
         // Otherwise the composer retains the text and reports the failed handoff.
         if (!bleManager.sendPacket(packet.toByteArray())) return SendMessageResult.NotReady
+        lastOutboundPacketId = generatedPacketId
         dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
@@ -2327,6 +2361,8 @@ class AetherMeshRepository(private val context: Context) {
     ) {
         val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("bg_alerts_enabled", true)) return
+        // Mute still stores the message; only the system notification is skipped.
+        if (ChatThreadPrefs.isMuted(prefs, chatIdentifier)) return
         val app = context.applicationContext as? com.example.aethermesh.AetherMeshApplication
         if (app?.isActivityVisible == true) return
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -2821,6 +2857,134 @@ class AetherMeshRepository(private val context: Context) {
     fun getMeshDiagnosticsHistory(): List<MeshDiagnosticsSnapshot> =
         dbHelper.getMeshDiagnosticsHistory()
 
+    fun countQueuedStoreForwardMessages(): Int =
+        dbHelper.countQueuedStoreForwardMessages()
+
+    /**
+     * Channel mesh self-test: send N short channel texts, score HEARD receipts
+     * (when hearer receipts are on) plus RX packet delta from diagnostics.
+     */
+    fun startMeshSelfTest(pingCount: Int = 5) {
+        if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
+            _meshSelfTest.value = MeshSelfTestResult(
+                finished = true,
+                errorEn = "Connect and unlock the node first.",
+                errorEs = "Conecta y desbloquea el nodo primero."
+            )
+            return
+        }
+        if (_isRangeTestActive.value) {
+            _meshSelfTest.value = MeshSelfTestResult(
+                finished = true,
+                errorEn = "Stop the range test before running mesh self-test.",
+                errorEs = "Detén la prueba de rango antes de la auto-prueba de malla."
+            )
+            return
+        }
+        stopMeshSelfTest()
+        val planned = pingCount.coerceIn(3, 10)
+        val localNodeId = bleManager.connectedNodeId
+        val sf = try {
+            context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
+                .getInt("lora_sf", 11)
+        } catch (_: Exception) {
+            11
+        }
+        val settleMs = when {
+            sf >= 11 -> 8_000L
+            sf >= 10 -> 6_000L
+            else -> 4_000L
+        }
+        val channel = _selectedChannel.value.ifBlank { DEFAULT_CHANNEL }
+        val rxBaseline = _meshDiagnostics.value?.rxPackets ?: 0L
+        val packetIds = mutableListOf<Int>()
+        _meshSelfTest.value = MeshSelfTestResult(
+            active = true,
+            pingsPlanned = planned,
+            statusLineEn = "Sending $planned channel pings…",
+            statusLineEs = "Enviando $planned pings de canal…"
+        )
+        meshSelfTestJob = repositoryScope.launch {
+            try {
+                for (i in 1..planned) {
+                    if (!isActive) return@launch
+                    val content = "MESHTEST_${System.currentTimeMillis() % 100_000}_${i}"
+                    val result = sendMessage(0xFFFFFFFFL, content, channel)
+                    if (result != SendMessageResult.Sent) {
+                        _meshSelfTest.value = _meshSelfTest.value.copy(
+                            active = false,
+                            finished = true,
+                            errorEn = "Could not send self-test ping ($result).",
+                            errorEs = "No se pudo enviar ping de auto-prueba ($result)."
+                        )
+                        return@launch
+                    }
+                    val newId = lastOutboundPacketId
+                    if (newId != 0) packetIds += newId
+                    _meshSelfTest.value = _meshSelfTest.value.copy(
+                        pingsSent = i,
+                        statusLineEn = "Sent $i / $planned — waiting for hearers…",
+                        statusLineEs = "Enviados $i / $planned — esperando oyentes…"
+                    )
+                    delay(settleMs)
+                }
+                delay(2_000L)
+                val heardPings = packetIds.count { dbHelper.getMessageHeardCount(it) > 0 }
+                val hearers = dbHelper.collectUniqueHearers(packetIds)
+                val rxNow = _meshDiagnostics.value?.rxPackets ?: rxBaseline
+                val rxDelta = (rxNow - rxBaseline).coerceAtLeast(0L)
+                val score = when {
+                    planned <= 0 -> 0
+                    heardPings > 0 -> (heardPings * 100) / planned
+                    rxDelta > 0 -> minOf(40, (rxDelta * 10).toInt())
+                    else -> 0
+                }
+                val en =
+                    "Heard $heardPings/$planned · ${hearers.size} unique hearers · RX Δ$rxDelta · score $score%"
+                val es =
+                    "Oídos $heardPings/$planned · ${hearers.size} oyentes · RX Δ$rxDelta · puntuación $score%"
+                _meshSelfTest.value = MeshSelfTestResult(
+                    active = false,
+                    pingsSent = planned,
+                    pingsPlanned = planned,
+                    pingsHeard = heardPings,
+                    uniqueHearers = hearers.size,
+                    rxDelta = rxDelta,
+                    scorePercent = score,
+                    statusLineEn = en,
+                    statusLineEs = es,
+                    finished = true
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Mesh self-test failed: ${e.message}")
+                _meshSelfTest.value = MeshSelfTestResult(
+                    finished = true,
+                    errorEn = "Self-test failed: ${e.message}",
+                    errorEs = "Auto-prueba falló: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun stopMeshSelfTest() {
+        meshSelfTestJob?.cancel()
+        meshSelfTestJob = null
+        if (_meshSelfTest.value.active) {
+            _meshSelfTest.value = _meshSelfTest.value.copy(
+                active = false,
+                finished = true,
+                statusLineEn = "Self-test stopped.",
+                statusLineEs = "Auto-prueba detenida."
+            )
+        }
+    }
+
+    fun clearMeshSelfTestResult() {
+        if (!_meshSelfTest.value.active) {
+            _meshSelfTest.value = MeshSelfTestResult()
+        }
+    }
+
     /** Latest phone GPS fix (fresh only while a range test is running). */
     fun lastPhoneFix(): android.location.Location? = lastPhoneLocation
 
@@ -2830,6 +2994,12 @@ class AetherMeshRepository(private val context: Context) {
 
     fun getDmInboxPreviews(localNodeId: Long): Map<Long, ChatInboxPreview> =
         dbHelper.getDmInboxPreviews(localNodeId)
+
+    fun countUnreadChannelMessages(channel: String, afterTs: Long, excludeSenderId: Long): Int =
+        dbHelper.countUnreadChannelMessages(channel, afterTs, excludeSenderId)
+
+    fun countUnreadDmMessages(peerId: Long, localNodeId: Long, afterTs: Long): Int =
+        dbHelper.countUnreadDmMessages(peerId, localNodeId, afterTs)
 
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList().map { channel ->

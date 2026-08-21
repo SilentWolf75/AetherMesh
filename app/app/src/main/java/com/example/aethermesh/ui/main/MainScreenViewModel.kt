@@ -34,6 +34,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val activeChatId: StateFlow<Long?> = repository.activeChatId
     val observedRoutes: StateFlow<Map<Long, RouteHopInfo>> = repository.observedRoutes
     val meshDiagnostics = repository.meshDiagnostics
+    val meshSelfTest = repository.meshSelfTest
     val traceRouteState = repository.traceRouteState
     val isDeviceAuthenticated: StateFlow<Boolean> = repository.isDeviceAuthenticated
     val authenticationRequired: StateFlow<Boolean?> = repository.authenticationRequired
@@ -42,6 +43,14 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val deviceConfigSyncEpoch: StateFlow<Int> = repository.deviceConfigSyncEpoch
 
     fun getMeshDiagnosticsHistory() = repository.getMeshDiagnosticsHistory()
+
+    fun countQueuedStoreForwardMessages() = repository.countQueuedStoreForwardMessages()
+
+    fun startMeshSelfTest(pingCount: Int = 5) = repository.startMeshSelfTest(pingCount)
+
+    fun stopMeshSelfTest() = repository.stopMeshSelfTest()
+
+    fun clearMeshSelfTestResult() = repository.clearMeshSelfTestResult()
 
     val connectedDeviceName: String?
         get() = repository.bleManager.connectedDeviceName
@@ -407,21 +416,33 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val githubFirmwareBusy = _githubFirmwareBusy.asStateFlow()
     private val _githubDownloadProgress = MutableStateFlow(0)
     val githubDownloadProgress = _githubDownloadProgress.asStateFlow()
+    private val _firmwareChannel =
+        MutableStateFlow(com.example.aethermesh.data.FirmwareCatalog.Channel.STABLE)
+    val firmwareChannel = _firmwareChannel.asStateFlow()
+
+    fun setFirmwareChannel(channel: com.example.aethermesh.data.FirmwareCatalog.Channel) {
+        if (_firmwareChannel.value == channel) return
+        _firmwareChannel.value = channel
+    }
 
     fun refreshGithubFirmware(nodeModel: String?) {
         viewModelScope.launch {
             _githubFirmwareBusy.value = true
-            _githubFirmwareStatus.value = "Checking GitHub for firmware…"
+            val channel = _firmwareChannel.value
+            _githubFirmwareStatus.value = when (channel) {
+                com.example.aethermesh.data.FirmwareCatalog.Channel.STABLE ->
+                    "Checking GitHub Releases (stable)…"
+                com.example.aethermesh.data.FirmwareCatalog.Channel.LATEST ->
+                    "Checking GitHub Pages (latest)…"
+            }
             _githubFirmware.value = null
             try {
-                val list = com.example.aethermesh.data.FirmwareCatalog.fetchOtaManifest()
-                val match = com.example.aethermesh.data.FirmwareCatalog.pickForModel(list, nodeModel)
-                _githubFirmware.value = match
-                _githubFirmwareStatus.value = when {
-                    match != null -> "Found ${match.name}"
-                    list.isEmpty() -> "No OTA builds published yet."
-                    else -> "No OTA package matches this node model."
-                }
+                val result = com.example.aethermesh.data.FirmwareCatalog.fetchForModel(
+                    nodeModel,
+                    channel
+                )
+                _githubFirmware.value = result.artifact
+                _githubFirmwareStatus.value = result.status
             } catch (e: Exception) {
                 Log.e(TAG, "GitHub firmware catalog failed: ${e.message}")
                 val detail = e.message.orEmpty()
@@ -439,7 +460,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     }
 
     /**
-     * Download + SHA-256 verify the selected GitHub OTA package.
+     * Download + verify the selected GitHub OTA package (SHA-256 when catalog provides it;
+     * size always when known).
      * @return Triple(bytes, fileName, zipUri?) or null on failure
      */
     suspend fun downloadGithubFirmware(
@@ -454,7 +476,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 _githubDownloadProgress.value = pct
                 _githubFirmwareStatus.value = "Downloading… $pct%"
             }
-            _githubFirmwareStatus.value = "Verified ${artifact.file}"
+            _githubFirmwareStatus.value = if (artifact.sha256.isNotBlank())
+                "Verified ${artifact.file}"
+            else
+                "Downloaded ${artifact.file} (size OK)"
             _githubDownloadProgress.value = 100
             result
         } catch (e: Exception) {
@@ -473,6 +498,12 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun getChannelInboxPreviews() = repository.getChannelInboxPreviews()
 
     fun getDmInboxPreviews(localNodeId: Long) = repository.getDmInboxPreviews(localNodeId)
+
+    fun countUnreadChannelMessages(channel: String, afterTs: Long, excludeSenderId: Long) =
+        repository.countUnreadChannelMessages(channel, afterTs, excludeSenderId)
+
+    fun countUnreadDmMessages(peerId: Long, localNodeId: Long, afterTs: Long) =
+        repository.countUnreadDmMessages(peerId, localNodeId, afterTs)
 
     fun sendAuthRequest(password: String): Boolean {
         return repository.sendAuthRequest(password)

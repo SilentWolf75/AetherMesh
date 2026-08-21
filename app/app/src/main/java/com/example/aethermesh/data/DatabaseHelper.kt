@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 21
+        private const val DATABASE_VERSION = 22
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -70,6 +70,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_PROTOCOL_VERSION = "protocol_version"
         const val COL_NODE_LORA_SF = "lora_sf"
         const val COL_NODE_REGION = "lora_region"
+        /** Epoch ms of last telemetry that carried a valid lat/lon (GPS lock age). */
+        const val COL_NODE_LAST_POSITION = "last_position_at"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -148,7 +150,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_POS_PRECISION INTEGER DEFAULT 0,
                 $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1,
                 $COL_NODE_LORA_SF INTEGER DEFAULT 0,
-                $COL_NODE_REGION INTEGER DEFAULT -1
+                $COL_NODE_REGION INTEGER DEFAULT -1,
+                $COL_NODE_LAST_POSITION INTEGER DEFAULT 0
             )
         """.trimIndent()
 
@@ -428,6 +431,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN early_repairs INTEGER NOT NULL DEFAULT 0")
             } catch (_: Exception) { }
         }
+        if (oldVersion < 22) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_LAST_POSITION INTEGER DEFAULT 0")
+                // Seed from last_active when a stored position looks real.
+                db.execSQL(
+                    "UPDATE $TABLE_NODES SET $COL_NODE_LAST_POSITION = $COL_NODE_LAST_ACTIVE " +
+                        "WHERE $COL_NODE_LAST_POSITION = 0 AND NOT ($COL_NODE_LATITUDE = 0 AND $COL_NODE_LONGITUDE = 0)"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add last_position_at: ${e.message}")
+            }
+        }
     }
 
     private fun meshDiagnosticsTableSql() = """
@@ -625,6 +640,19 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     }
 
     // Message insertion
+    fun hasMessage(senderId: Long, packetId: Int): Boolean {
+        if (packetId == 0) return false
+        val db = this.readableDatabase
+        val canonicalSender = resolveCanonicalNodeId(db, senderId)
+        val cursor = db.rawQuery(
+            "SELECT 1 FROM $TABLE_MESSAGES WHERE $COL_MSG_SENDER = ? AND $COL_MSG_PACKET_ID = ? LIMIT 1",
+            arrayOf(canonicalSender.toString(), packetId.toString())
+        )
+        val exists = cursor.moveToFirst()
+        cursor.close()
+        return exists
+    }
+
     fun insertMessage(
         senderId: Long,
         recipientId: Long,
@@ -637,6 +665,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = this.writableDatabase
         val canonicalSender = resolveCanonicalNodeId(db, senderId)
         val canonicalRecipient = resolveCanonicalNodeId(db, recipientId)
+        // Phase D: catch-up replays keep (sender_id, packet_id); skip duplicates.
+        if (packetId != 0 && hasMessage(canonicalSender, packetId)) {
+            return -1L
+        }
         val values = ContentValues().apply {
             put(COL_MSG_SENDER, canonicalSender)
             put(COL_MSG_RECIPIENT, canonicalRecipient)
@@ -722,6 +754,53 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_MSG_STATUS, "HEARD")
         }
         db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
+    }
+
+    /** Heard count for a packet, or 0 if unknown. */
+    fun getMessageHeardCount(packetId: Int): Int {
+        if (packetId == 0) return 0
+        val db = this.readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT $COL_MSG_HEARD_COUNT FROM $TABLE_MESSAGES WHERE $COL_MSG_PACKET_ID = ? LIMIT 1",
+            arrayOf(packetId.toString())
+        )
+        val count = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        cursor.close()
+        return count
+    }
+
+    /** Unique hearer node-id tokens across the given packet IDs. */
+    fun collectUniqueHearers(packetIds: Collection<Int>): Set<Long> {
+        if (packetIds.isEmpty()) return emptySet()
+        val out = linkedSetOf<Long>()
+        val db = this.readableDatabase
+        for (packetId in packetIds) {
+            if (packetId == 0) continue
+            val cursor = db.rawQuery(
+                "SELECT $COL_MSG_HEARD_NODES FROM $TABLE_MESSAGES WHERE $COL_MSG_PACKET_ID = ? LIMIT 1",
+                arrayOf(packetId.toString())
+            )
+            if (cursor.moveToFirst()) {
+                cursor.getString(0).orEmpty().split(',')
+                    .mapNotNull { it.trim().toLongOrNull() }
+                    .filter { it != 0L }
+                    .forEach { out.add(it) }
+            }
+            cursor.close()
+        }
+        return out
+    }
+
+    /** DMs currently queued / store-forward waiting (firmware STORED → app QUEUED). */
+    fun countQueuedStoreForwardMessages(): Int {
+        val db = this.readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM $TABLE_MESSAGES WHERE $COL_MSG_STATUS = ?",
+            arrayOf("QUEUED")
+        )
+        val count = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        cursor.close()
+        return count
     }
 
     fun updateMessageStatusById(messageId: Long, status: String) {
@@ -971,6 +1050,47 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return list
     }
 
+    /** Unread inbound channel messages after [afterTs] (excludes [excludeSenderId]). */
+    fun countUnreadChannelMessages(channel: String, afterTs: Long, excludeSenderId: Long): Int {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            """
+                SELECT COUNT(*) FROM $TABLE_MESSAGES
+                WHERE $COL_MSG_CHANNEL = ?
+                  AND $COL_MSG_TIMESTAMP > ?
+                  AND $COL_MSG_SENDER != ?
+            """.trimIndent(),
+            arrayOf(channel, afterTs.toString(), excludeSenderId.toString())
+        )
+        val count = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        cursor.close()
+        return count
+    }
+
+    /** Unread inbound DMs with [peerId] after [afterTs]. */
+    fun countUnreadDmMessages(peerId: Long, localNodeId: Long, afterTs: Long): Int {
+        val db = readableDatabase
+        val peer = resolveCanonicalNodeId(db, peerId)
+        val cursor = db.rawQuery(
+            """
+                SELECT COUNT(*) FROM $TABLE_MESSAGES
+                WHERE $COL_MSG_CHANNEL = ''
+                  AND $COL_MSG_TIMESTAMP > ?
+                  AND $COL_MSG_SENDER = ?
+                  AND ($COL_MSG_RECIPIENT = ? OR ? = 0)
+            """.trimIndent(),
+            arrayOf(
+                afterTs.toString(),
+                peer.toString(),
+                localNodeId.toString(),
+                localNodeId.toString()
+            )
+        )
+        val count = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        cursor.close()
+        return count
+    }
+
     /** Latest message per named channel for inbox previews. */
     fun getChannelInboxPreviews(): Map<String, ChatInboxPreview> {
         val db = readableDatabase
@@ -1180,11 +1300,18 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             advertisedName
         )
 
+        val nowMs = System.currentTimeMillis()
+        val hasFix = !(lat == 0f && lon == 0f) &&
+            lat in -90f..90f && lon in -180f..180f
         val values = ContentValues().apply {
             put(COL_NODE_BATTERY, battery)
-            put(COL_NODE_LATITUDE, lat)
-            put(COL_NODE_LONGITUDE, lon)
-            put(COL_NODE_LAST_ACTIVE, System.currentTimeMillis())
+            // Leave-behind: keep last known coords when this packet has no fix (0,0).
+            if (hasFix) {
+                put(COL_NODE_LATITUDE, lat)
+                put(COL_NODE_LONGITUDE, lon)
+                put(COL_NODE_LAST_POSITION, nowMs)
+            }
+            put(COL_NODE_LAST_ACTIVE, nowMs)
             put(COL_NODE_MODEL, model)
             put(COL_NODE_NAME, canonicalName.longName)
             put(COL_NODE_SHORT_NAME, canonicalName.shortName)
@@ -1214,10 +1341,17 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 put(COL_NODE_REGION, region)
             }
         }
-        
+
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
         if (rows == 0) {
             values.put(COL_NODE_ID, canonicalId)
+            if (!values.containsKey(COL_NODE_LATITUDE)) {
+                values.put(COL_NODE_LATITUDE, 0f)
+                values.put(COL_NODE_LONGITUDE, 0f)
+            }
+            if (!values.containsKey(COL_NODE_LAST_POSITION)) {
+                values.put(COL_NODE_LAST_POSITION, 0L)
+            }
             if (!values.containsKey(COL_NODE_LORA_SF)) values.put(COL_NODE_LORA_SF, 0)
             if (!values.containsKey(COL_NODE_REGION)) values.put(COL_NODE_REGION, -1)
             db.insert(TABLE_NODES, null, values)
@@ -1255,6 +1389,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                     region = run {
                         val idx = cursor.getColumnIndex(COL_NODE_REGION)
                         if (idx >= 0 && !cursor.isNull(idx)) cursor.getInt(idx) else -1
+                    },
+                    lastPositionAt = run {
+                        val idx = cursor.getColumnIndex(COL_NODE_LAST_POSITION)
+                        if (idx >= 0 && !cursor.isNull(idx)) cursor.getLong(idx) else 0L
                     }
                 ))
             } while (cursor.moveToNext())
@@ -1469,7 +1607,9 @@ data class MeshNode(
     /** Last advertised SF from telemetry; 0 = unknown / older firmware. */
     val loraSf: Int = 0,
     /** Last advertised region; -1 = unknown, 0 = US915, 1 = EU868. */
-    val region: Int = -1
+    val region: Int = -1,
+    /** Epoch ms of last valid GPS/fixed position from telemetry; 0 = never. */
+    val lastPositionAt: Long = 0L
 )
 
 data class TelemetrySample(

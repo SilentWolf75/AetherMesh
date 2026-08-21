@@ -100,6 +100,16 @@ fun NodeDetailsScreen(
     val _heardClock = relativeTick
     val stale = isNodeStale(node.lastActive)
     val history = remember(node.nodeId, node.lastActive) { getTelemetryHistory(node.nodeId) }
+    val context = LocalContext.current
+    val (cachedGpsMode, cachedDutySecs) = remember(node.nodeId) {
+        readCachedGpsMode(context, node.nodeId)
+    }
+    val voltageTrendLabel = remember(history, appLanguage) { formatVoltageTrend(history, appLanguage) }
+    val daysLabel = remember(node.lastActive, appLanguage) { formatDaysSinceHeard(node.lastActive, appLanguage) }
+    val gpsDutyLabel = remember(cachedGpsMode, cachedDutySecs, appLanguage) {
+        formatGpsDutyStatus(cachedGpsMode, cachedDutySecs, appLanguage)
+    }
+    val lvSafe = isLowVoltageSafeHint(node.voltage, node.isCharging)
 
     val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
         val km = calculateDistance(
@@ -308,7 +318,7 @@ fun NodeDetailsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                if (appLanguage == "Spanish") "Historial de batería" else "Battery history",
+                                if (appLanguage == "Spanish") "Historial de batería / solar" else "Battery / solar history",
                                 color = TextMuted,
                                 fontSize = 11.sp
                             )
@@ -326,6 +336,51 @@ fun NodeDetailsScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         BatteryHistorySparkline(history)
+                        voltageTrendLabel?.let { trend ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(trend, color = TextMuted, fontSize = 11.sp)
+                        }
+                    }
+
+                    if (lvSafe || daysLabel != null || gpsDutyLabel != null || node.lastPositionAt > 0L ||
+                        hasValidPosition(node.latitude, node.longitude)
+                    ) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        HorizontalDivider(color = BorderDark)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (appLanguage == "Spanish") "Campo / leave-behind" else "Field / leave-behind",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        if (lvSafe) {
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "Modo seguro por bajo voltaje (< ${"%.2f".format(LOW_VOLTAGE_SAFE_ENTER_V)} V)"
+                                else
+                                    "Low-voltage safe mode (< ${"%.2f".format(LOW_VOLTAGE_SAFE_ENTER_V)} V)",
+                                color = AccentAmber,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        daysLabel?.let {
+                            Text(it, color = AccentAmber, fontSize = 12.sp)
+                        }
+                        if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
+                            Text(
+                                formatGpsLockAge(
+                                    if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
+                                    appLanguage
+                                ),
+                                color = TextLight,
+                                fontSize = 12.sp
+                            )
+                        }
+                        gpsDutyLabel?.let {
+                            Text(it, color = TextLight, fontSize = 12.sp)
+                        }
                     }
                 }
 
@@ -347,7 +402,14 @@ fun NodeDetailsScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 14.sp
                                 )
-                                Text(formatLastHeard(node.lastActive, appLanguage), color = TextMuted, fontSize = 12.sp)
+                                Text(
+                                    formatGpsLockAge(
+                                        if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
+                                        appLanguage
+                                    ),
+                                    color = TextMuted,
+                                    fontSize = 12.sp
+                                )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     "%.5f, %.5f".format(node.latitude, node.longitude),
@@ -451,6 +513,9 @@ private fun DetailsCard(
                         }
                     )
                     MetaItem(Icons.Default.Refresh, if (appLanguage == "Spanish") "Último oído" else "Last heard", formatLastHeard(node.lastActive, appLanguage))
+                    formatDaysSinceHeard(node.lastActive, appLanguage)?.let { days ->
+                        MetaItem(Icons.Default.Timer, if (appLanguage == "Spanish") "Días sin oír" else "Days since heard", days)
+                    }
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     MetaItem(
@@ -632,7 +697,16 @@ private fun BatteryHistorySparkline(history: List<TelemetrySample>) {
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text("${history.first().battery}%", color = TextMuted, fontSize = 9.sp)
-        Text("${history.size} samples", color = TextMuted, fontSize = 9.sp)
+        Text(
+            if (history.any { it.voltage > 0f }) {
+                val v = history.last { it.voltage > 0f }.voltage
+                "${history.size} · ${"%.2f".format(v)} V"
+            } else {
+                "${history.size}"
+            },
+            color = TextMuted,
+            fontSize = 9.sp
+        )
         Text("${history.last().battery}%", color = TextMuted, fontSize = 9.sp)
     }
 }

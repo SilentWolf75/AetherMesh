@@ -19,13 +19,32 @@ Full MeshCore path-cache / Meshtastic NextHop redesign is a larger project. This
 2. **Cap pending local ACKs** (`MAX_PENDING_LOCAL_ACKS = 2`) so hearer storms cannot fill the TX queue.
 3. **Implicit HEARD** — overhearing a rebroadcast of our own channel text counts the relay as heard and cancels pending insurance (Meshtastic-style).
 4. **Shorter insurance cap** (5s) — only need to clear the primary ACK window.
-5. Keep channel `want_ack=true` so Client-role nodes (no relay) can still report HEARD; DMs unchanged (retransmit + DELIVERED).
+5. Keep channel `want_ack` optional in the app (Settings → Channel hearer receipts, default **off**). When on, Client-role nodes can still report HEARD; DMs unchanged (retransmit + DELIVERED). When off, channel sends use `wantAck=false` and UI SENT means on-air (flood-style).
+
+## App notes (1.2.3)
+
+- Pref key: `channel_hearer_receipts` in `aethermesh_prefs` (default false).
+- Composer is never blocked on pending HEARD.
+- HEARD copy is a bonus receipt, not a delivery mailbox.
+- Status labels: QUEUED = queued for mesh; channel SENT = on air; HEARD = bonus.
+- Incoming rows dedupe on `(sender_id, packet_id)` so channel catch-up replays
+  do not create duplicate chat bubbles.
+
+## Phase D — Channel store-and-forward
+
+Routers/Repeaters retain up to 8 recent channel text packets (30 min TTL). After
+a neighbor is offline ≥2 min and a route/telemetry sighting returns, paced
+unicast catch-up replays the backlog (`want_ack=false`, P6 congestion defer).
+Serial hints: `Channel store: kept…`, `Channel catch-up armed…`,
+`Channel catch-up TX…`. Clients never store/relay.
 
 ## Files
 
 - `firmware/src/MeshRouter.cpp` / `.h`
 - `firmware/src/MeshMath.h`
 - `firmware/test/test_meshmath/test_meshmath.cpp`
+- `app/.../ChatScreen.kt`, `DatabaseHelper.kt`, `AetherMeshRepository.kt`
+- `docs/MESH-RELIABILITY.md`
 
 ## Flash
 

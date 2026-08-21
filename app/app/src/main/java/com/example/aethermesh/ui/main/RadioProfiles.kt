@@ -119,6 +119,63 @@ val RADIO_PROFILES = listOf(
     RadioProfile("Max range", 12, 125f, "+7.5 dB range vs Fast, 8x airtime. Use 10s+ ping intervals.")
 )
 
+/** App-side deploy presets (mirrors serial DEPLOY_LB for Leave-behind). */
+data class DeployProfile(
+    val id: String,
+    val labelEn: String,
+    val labelEs: String,
+    val role: Int,
+    val gpsMode: Int,
+    val gpsDutyIntervalSecs: Int,
+    val powerSave: Boolean,
+    val telemetryIntervalSecs: Int,
+    val txPower: Int?,
+    val hintEn: String,
+    val hintEs: String
+)
+
+val DEPLOY_PROFILES = listOf(
+    DeployProfile(
+        id = "leave_behind",
+        labelEn = "Leave-behind",
+        labelEs = "Dejar atrás",
+        role = 1,
+        gpsMode = 2,
+        gpsDutyIntervalSecs = 900,
+        powerSave = true,
+        telemetryIntervalSecs = 300,
+        txPower = null,
+        hintEn = "Router + GPS every 15m + Battery Saver (same as serial DEPLOY_LB).",
+        hintEs = "Router + GPS cada 15m + Ahorro de batería (igual que DEPLOY_LB por serial)."
+    ),
+    DeployProfile(
+        id = "handheld",
+        labelEn = "Handheld",
+        labelEs = "Portátil",
+        role = 0,
+        gpsMode = 0,
+        gpsDutyIntervalSecs = 900,
+        powerSave = false,
+        telemetryIntervalSecs = 60,
+        txPower = 22,
+        hintEn = "Client companion: GPS on, full BLE, 1m telemetry.",
+        hintEs = "Cliente compañero: GPS siempre, BLE completo, telemetría 1m."
+    ),
+    DeployProfile(
+        id = "repeater",
+        labelEn = "Repeater",
+        labelEs = "Repetidor",
+        role = 2,
+        gpsMode = 1,
+        gpsDutyIntervalSecs = 900,
+        powerSave = true,
+        telemetryIntervalSecs = 300,
+        txPower = null,
+        hintEn = "LoRa infrastructure only; BLE off after apply. GPS off.",
+        hintEs = "Solo infraestructura LoRa; BLE se apaga al aplicar. GPS apagado."
+    )
+)
+
 fun radioProfileLabel(sf: Int): String =
     RADIO_PROFILES.firstOrNull { it.sf == sf }?.label ?: if (sf in 7..12) "SF$sf" else "Unknown"
 

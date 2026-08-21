@@ -859,6 +859,14 @@ static bool gpsRailPowered = false;
 static uint8_t gpsDutyState = 0; // 0 = sleeping, 1 = acquiring
 static uint32_t gpsDutyWakeAtMs = 0;
 static uint32_t gpsDutyOnSinceMs = 0;
+
+// Leave-behind low-voltage safe mode (phone UI matches 3.50 V enter).
+static constexpr float LV_SAFE_ENTER_V = 3.50f;
+static constexpr float LV_SAFE_EXIT_V = 3.65f;
+static constexpr int8_t LV_SAFE_TX_CAP_DBM = 14;
+bool lowVoltageSafeMode = false;
+static int8_t lvAppliedTxDbm = -128;
+
 float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
 bool hasInheritedLocation = false;
@@ -1028,6 +1036,8 @@ static void setOnboardGpsPowered(bool on) {
 }
 
 static bool gpsHardwareActive() {
+    // LV safe powers down always-on GPS until the pack recovers.
+    if (lowVoltageSafeMode && gpsMode == 0) return false;
     return gpsMode == 0 || (gpsMode == 2 && gpsDutyState == 1);
 }
 
@@ -1037,6 +1047,65 @@ static void gpsDutyResetSchedule(uint32_t delayMs = 0) {
     gpsDutyWakeAtMs = millis() + delayMs;
     if (gpsMode == 2) {
         setOnboardGpsPowered(false);
+    }
+}
+
+static void applyEffectiveTxPower() {
+    int32_t want = loraTxPower;
+    if (lowVoltageSafeMode && want > (int32_t)LV_SAFE_TX_CAP_DBM) {
+        want = LV_SAFE_TX_CAP_DBM;
+    }
+    if ((int8_t)want != lvAppliedTxDbm) {
+        radioMgr.setTxPower((int8_t)want);
+        lvAppliedTxDbm = (int8_t)want;
+        Serial.printf("TX power now %d dBm%s\n", (int)want,
+                      lowVoltageSafeMode ? " (LV safe)" : "");
+    }
+}
+
+static uint32_t effectiveGpsDutyIntervalSecs() {
+    uint32_t secs = clampGpsDutyIntervalSecs(gpsDutyIntervalSecs);
+    if (lowVoltageSafeMode) {
+        uint32_t stretched = secs * 2u;
+        if (stretched < 1800u) stretched = 1800u;
+        if (stretched > GPS_DUTY_MAX_INTERVAL_SECS) stretched = GPS_DUTY_MAX_INTERVAL_SECS;
+        return stretched;
+    }
+    return secs;
+}
+
+static void persistLowVoltageSafeFlag(bool on) {
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
+    preferences.begin("aethermesh", false);
+    preferences.putBool("lv_safe", on);
+    preferences.end();
+#else
+    (void)on;
+#endif
+}
+
+static void serviceLowVoltageSafeMode() {
+    if (batteryVoltage < 2.5f) return;
+    if (!lowVoltageSafeMode) {
+        if (!batteryCharging && batteryVoltage < LV_SAFE_ENTER_V) {
+            lowVoltageSafeMode = true;
+            persistLowVoltageSafeFlag(true);
+            Serial.printf("LV_SAFE ON (%.3f V) — TX cap %d dBm, stretch telem/GPS\n",
+                          batteryVoltage, (int)LV_SAFE_TX_CAP_DBM);
+            if (gpsMode == 0 && hasOnboardGps) {
+                setOnboardGpsPowered(false);
+            }
+            applyEffectiveTxPower();
+        }
+    } else if (batteryCharging || batteryVoltage >= LV_SAFE_EXIT_V) {
+        lowVoltageSafeMode = false;
+        persistLowVoltageSafeFlag(false);
+        Serial.printf("LV_SAFE OFF (%.3f V)%s\n",
+                      batteryVoltage, batteryCharging ? " charging" : "");
+        if (gpsMode == 0 && hasOnboardGps) {
+            setOnboardGpsPowered(true);
+        }
+        applyEffectiveTxPower();
     }
 }
 
@@ -4451,6 +4520,8 @@ void setup() {
     // Apply NVS radio parameters
     float freq = (nodeRegion == 1) ? 869.525f : 906.875f;
     radioMgr.reinit(freq, loraBW, (uint8_t)loraSF, (int8_t)loraTxPower);
+    lvAppliedTxDbm = -128;
+    applyEffectiveTxPower();
     radioMgr.onReceive(onLoRaPacketReceived);
     radioMgr.onTransmitDone(onLoRaPacketTransmitted);
     
@@ -4881,15 +4952,19 @@ void loop() {
             bool gotFix = gps.location.isValid() && gps.location.age() < 5000;
             bool timedOut = (int32_t)(millis() - gpsDutyOnSinceMs) >= (int32_t)GPS_DUTY_FIX_TIMEOUT_MS;
             if (gotFix || timedOut) {
-                Serial.printf("GPS duty: %s — sleeping %us.\n",
+                uint32_t nextDuty = effectiveGpsDutyIntervalSecs();
+                Serial.printf("GPS duty: %s — sleeping %us%s.\n",
                               gotFix ? "fix OK" : "timeout",
-                              (unsigned)gpsDutyIntervalSecs);
+                              (unsigned)nextDuty,
+                              lowVoltageSafeMode ? " (LV safe)" : "");
                 setOnboardGpsPowered(false);
                 gpsDutyState = 0;
-                gpsDutyWakeAtMs = millis() + (gpsDutyIntervalSecs * 1000UL);
+                gpsDutyWakeAtMs = millis() + (nextDuty * 1000UL);
             }
         }
     }
+
+    serviceLowVoltageSafeMode();
 
     // Read and parse NMEA while the module is powered (always-on or duty acquire).
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
@@ -4988,6 +5063,12 @@ void loop() {
                 effectiveTelemetrySec *= 2; // double otherwise
             }
         }
+        if (lowVoltageSafeMode) {
+            // Extra stretch on top of battery-saver intervals.
+            if (effectiveTelemetrySec < 600) effectiveTelemetrySec = 600;
+            else effectiveTelemetrySec *= 2;
+        }
+        serviceLowVoltageSafeMode();
         if (millis() - lastTelemetry > (effectiveTelemetrySec * 1000L)) {
             lastTelemetry = millis();
             

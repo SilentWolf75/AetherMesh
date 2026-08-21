@@ -133,6 +133,27 @@ inline bool shouldWakeStoredPending(bool isStored, bool storedWakeDone,
     return isStored && !storedWakeDone && hasActiveRoute;
 }
 
+// Phase D: channel store-and-forward helpers (host-tested).
+inline bool channelStoreEntryFresh(uint32_t nowMs, uint32_t storedAtMs,
+                                   uint32_t ttlMs) {
+    return (int32_t)(nowMs - storedAtMs) < (int32_t)ttlMs;
+}
+
+inline bool neighborWasOffline(uint32_t nowMs, uint32_t lastHeardMs,
+                               uint32_t offlineMs) {
+    return (int32_t)(nowMs - lastHeardMs) >= (int32_t)offlineMs;
+}
+
+inline bool shouldChannelCatchup(bool canRelay, bool quietMode, bool needsCatchup,
+                                 bool hasActiveRoute) {
+    return canRelay && !quietMode && needsCatchup && hasActiveRoute;
+}
+
+inline bool shouldStoreChannelBroadcast(bool canRelay, bool isBroadcast,
+                                        bool isText, bool isRangeTest) {
+    return canRelay && isBroadcast && isText && !isRangeTest;
+}
+
 // On DELIVERED: pull a soft-stale backup timestamp toward "half soft-age" so a
 // proven topology is not demoted immediately after a successful delivery.
 inline uint32_t nudgedSoftAgeTimestamp(uint32_t nowMs, uint32_t timestamp,

@@ -1410,6 +1410,7 @@ fun MapViewCompose(
         } ?: selectedMapNode
         // Compact map callout — tap opens full Details (Meshtastic-style).
         val mapRelativeTick = rememberRelativeTimeTick()
+        val mapContext = LocalContext.current
         activeMapNode?.let { node ->
             val nodeShortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
             @Suppress("UNUSED_VARIABLE")
@@ -1440,6 +1441,9 @@ fun MapViewCompose(
                     "%.2f km".format(km)
                 }
             } else null
+            val (mapGpsMode, mapGpsDuty) = remember(node.nodeId) {
+                readCachedGpsMode(mapContext, node.nodeId)
+            }
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1483,11 +1487,39 @@ fun MapViewCompose(
                             Text(
                                 buildString {
                                     append(formatLastHeard(node.lastActive, appLanguage))
+                                    formatDaysSinceHeard(node.lastActive, appLanguage)?.let {
+                                        append("  ·  $it")
+                                    }
                                     if (distanceLabel != null) append("  ·  $distanceLabel")
                                 },
                                 color = TextMuted,
                                 fontSize = 12.sp
                             )
+                            val mapGpsBits = buildList {
+                                if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
+                                    add(
+                                        formatGpsLockAge(
+                                            if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
+                                            appLanguage
+                                        )
+                                    )
+                                }
+                                val (mode, duty) = mapGpsMode to mapGpsDuty
+                                formatGpsDutyStatus(mode, duty, appLanguage)?.let { add(it) }
+                                if (isLowVoltageSafeHint(node.voltage, node.isCharging)) {
+                                    add(if (appLanguage == "Spanish") "Modo bajo voltaje" else "Low-V safe")
+                                } else if (node.voltage > 0f) {
+                                    add("%.2f V".format(node.voltage))
+                                }
+                            }
+                            if (mapGpsBits.isNotEmpty()) {
+                                Text(
+                                    mapGpsBits.joinToString("  ·  "),
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
                             if (nearbyClusterCount > 1) {
                                 Text(
                                     if (appLanguage == "Spanish")

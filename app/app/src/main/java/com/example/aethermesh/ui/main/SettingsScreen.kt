@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
+import com.example.aethermesh.data.FirmwareCatalog
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
 import com.example.aethermesh.ui.AppUiFeedback
@@ -137,12 +138,27 @@ fun SettingsView(
     var showClearChatDialog by remember { mutableStateOf(false) }
     var showResetNodesDialog by remember { mutableStateOf(false) }
     var showRepeaterConfirmDialog by remember { mutableStateOf(false) }
+    var showDeployConfirmDialog by remember { mutableStateOf(false) }
+    var deployConfirmProfile by remember { mutableStateOf<DeployProfile?>(null) }
     var channelPendingDelete by remember { mutableStateOf<ChannelConfig?>(null) }
 
     val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     var bgAlertsEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("bg_alerts_enabled", true)) }
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
     var enablePhoneGpsSharing by remember { mutableStateOf(sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) }
+    var channelHearerReceipts by remember {
+        mutableStateOf(sharedPrefs.getBoolean("channel_hearer_receipts", false))
+    }
+    var mqttEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("mqtt_enabled", false)) }
+    var mqttBrokerUrl by remember {
+        mutableStateOf(sharedPrefs.getString("mqtt_broker_url", "tcp://broker.hivemq.com:1883") ?: "tcp://broker.hivemq.com:1883")
+    }
+    var mqttTopicPrefix by remember {
+        mutableStateOf(sharedPrefs.getString("mqtt_topic_prefix", "aethermesh/") ?: "aethermesh/")
+    }
+    var mqttUsername by remember { mutableStateOf(sharedPrefs.getString("mqtt_username", "") ?: "") }
+    var aprsCallsign by remember { mutableStateOf(sharedPrefs.getString("aprs_callsign", "") ?: "") }
+    var showInteropDocDialog by remember { mutableStateOf(false) }
 
     val consoleMessages by viewModel.messages.collectAsStateWithLifecycle()
     val diagnosticLogs by viewModel.diagnosticLogs.collectAsStateWithLifecycle()
@@ -277,6 +293,7 @@ fun SettingsView(
 
     var appTheme by remember { mutableStateOf(sharedPrefs.getString("app_theme", "System") ?: "System") }
     var appLanguage by remember { mutableStateOf(sharedPrefs.getString("app_language", "English") ?: "English") }
+    val spanishUi = appLanguage == "Spanish"
     var phoneLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var isExpandedTheme by remember { mutableStateOf(false) }
     var isExpandedLanguage by remember { mutableStateOf(false) }
@@ -296,6 +313,9 @@ fun SettingsView(
             }
             if (key == "use_imperial_units") {
                 useImperialUnitsSetting = sharedPrefs.getBoolean("use_imperial_units", true)
+            }
+            if (key == "channel_hearer_receipts") {
+                channelHearerReceipts = sharedPrefs.getBoolean("channel_hearer_receipts", false)
             }
         }
         sharedPrefs.registerOnSharedPreferenceChangeListener(listener)
@@ -422,10 +442,16 @@ fun SettingsView(
                 }
             }
             AppUiFeedback.show(
-                if (appLanguage == "Spanish")
-                    "¡Ajustes enviados! El nodo se reiniciará. Otros nodos no cambian — usa Configuración remota para igualar el perfil de radio."
-                else
-                    "Config sent! Node will reboot. Other nodes are unchanged — use Remote Config to match the radio profile.",
+                when {
+                    powerSaveModeEnabled && appLanguage == "Spanish" ->
+                        "¡Ajustes enviados! El nodo se reiniciará. Con Ahorro de batería: pulsa el botón del nodo, luego escanea — BLE anuncia ~5 min."
+                    powerSaveModeEnabled ->
+                        "Config sent! Node will reboot. With Battery Saver: press the device button, then scan — BLE advertises ~5 min."
+                    appLanguage == "Spanish" ->
+                        "¡Ajustes enviados! El nodo se reiniciará. Otros nodos no cambian — usa Configuración remota para igualar el perfil de radio."
+                    else ->
+                        "Config sent! Node will reboot. Other nodes are unchanged — use Remote Config to match the radio profile."
+                },
                 duration = SnackbarDuration.Long
             )
         } else {
@@ -444,17 +470,19 @@ fun SettingsView(
             Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
             Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure onboard GPS mode, telemetry interval, and satellite lock status"),
             Triple(SettingsCategory.ROUTING, "Mesh Routing", "Hop limit, rebroadcast pace, and route health"),
-            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Flash new firmware to the connected node over Bluetooth (BLE OTA)"),
+            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Stable Releases or Pages OTA; Heltec .bin / RAK .zip only"),
             Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password")
         )
         val appCategories = listOf(
             Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, units, and background alerts"),
+            Triple(SettingsCategory.INTEROP, "Interop (experimental)", "MQTT prefs stub, APRS export, and interop notes"),
             Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
         )
-        val spanish = appLanguage == "Spanish"
 
         fun categoryNeedsDevice(cat: SettingsCategory): Boolean =
-            cat != SettingsCategory.PREFERENCES && cat != SettingsCategory.DEVELOPER
+            cat != SettingsCategory.PREFERENCES &&
+                cat != SettingsCategory.DEVELOPER &&
+                cat != SettingsCategory.INTEROP
 
         @Composable
         fun SettingsCategoryCard(cat: SettingsCategory, title: String, desc: String) {
@@ -468,6 +496,7 @@ fun SettingsView(
                 SettingsCategory.SECURITY -> Icons.Default.Lock
                 SettingsCategory.ROUTING -> Icons.Default.AltRoute
                 SettingsCategory.PREFERENCES -> Icons.Default.Palette
+                SettingsCategory.INTEROP -> Icons.Default.Hub
                 SettingsCategory.DEVELOPER -> Icons.Default.Terminal
             }
             val iconColor = when (cat) {
@@ -478,6 +507,7 @@ fun SettingsView(
                 SettingsCategory.SECURITY -> Color(0xFFEF4444)
                 SettingsCategory.ROUTING -> AccentCyan
                 SettingsCategory.PREFERENCES -> Color(0xFFFBBF24)
+                SettingsCategory.INTEROP -> Color(0xFF34D399)
                 SettingsCategory.DEVELOPER -> AccentSteel
             }
             Card(
@@ -519,7 +549,7 @@ fun SettingsView(
                         )
                         Text(
                             text = if (!enabled) {
-                                if (spanish) "Conecta un nodo para configurar esto."
+                                if (spanishUi) "Conecta un nodo para configurar esto."
                                 else "Connect a node to configure this."
                             } else {
                                 t(desc, appLanguage)
@@ -548,7 +578,7 @@ fun SettingsView(
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             Text(
-                if (spanish) "Nodo" else "Device",
+                if (spanishUi) "Nodo" else "Device",
                 color = TextMuted,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -588,7 +618,7 @@ fun SettingsView(
                 }
             }
             Text(
-                if (spanish) "Aplicación" else "App",
+                if (spanishUi) "Aplicación" else "App",
                 color = TextMuted,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -622,7 +652,7 @@ fun SettingsView(
             }
             if (activeCategory == null) {
                 Text(
-                    if (spanish)
+                    if (spanishUi)
                         "Elige una categoría arriba. Los ajustes del nodo requieren Bluetooth."
                     else
                         "Choose a category above. Device settings require a Bluetooth link.",
@@ -661,7 +691,7 @@ fun SettingsView(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (spanish)
+                            text = if (spanishUi)
                                 "Ajustes del nodo (Bluetooth) y preferencias de la app."
                             else
                                 "Device settings (Bluetooth) and app preferences.",
@@ -674,7 +704,7 @@ fun SettingsView(
 
             if (!isConnected) {
                 Text(
-                    if (spanish)
+                    if (spanishUi)
                         "Sin radio conectada — solo están disponibles los ajustes de la app."
                     else
                         "No radio linked — only app settings are available.",
@@ -686,8 +716,8 @@ fun SettingsView(
             }
 
             AetherSectionHeader(
-                title = if (spanish) "Nodo" else "Device",
-                trailing = if (isConnected) null else if (spanish) "Bloqueado" else "Locked",
+                title = if (spanishUi) "Nodo" else "Device",
+                trailing = if (isConnected) null else if (spanishUi) "Bloqueado" else "Locked",
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             deviceCategories.forEach { (cat, title, desc) ->
@@ -695,7 +725,7 @@ fun SettingsView(
             }
             Spacer(modifier = Modifier.height(8.dp))
             AetherSectionHeader(
-                title = if (spanish) "Aplicación" else "App",
+                title = if (spanishUi) "Aplicación" else "App",
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             appCategories.forEach { (cat, title, desc) ->
@@ -725,6 +755,7 @@ fun SettingsView(
                         SettingsCategory.SECURITY -> t("Security & Keys", appLanguage)
                         SettingsCategory.ROUTING -> t("Mesh Routing", appLanguage)
                         SettingsCategory.PREFERENCES -> t("App Preferences", appLanguage)
+                        SettingsCategory.INTEROP -> t("Interop (experimental)", appLanguage)
                         SettingsCategory.DEVELOPER -> t("Developer & Diagnostics", appLanguage)
                         SettingsCategory.FIRMWARE -> t("Firmware Update", appLanguage)
                         SettingsCategory.POSITION -> t("GPS & Position Settings", appLanguage)
@@ -1231,6 +1262,93 @@ fun SettingsView(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // Deploy role presets (Leave-behind ≈ serial DEPLOY_LB)
+                    Text(
+                        text = if (appLanguage == "Spanish") "Perfil de despliegue" else "Deploy profile",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (appLanguage == "Spanish")
+                            "Ajusta rol, GPS, ahorro y telemetría. Pulsa Aplicar para enviar (el nodo reinicia). DEPLOY_LB por USB sigue disponible."
+                        else
+                            "Sets role, GPS, power-save, and telemetry. Tap Apply to send (node reboots). Serial DEPLOY_LB still works.",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DEPLOY_PROFILES.forEach { profile ->
+                            val selected = role == profile.role &&
+                                nodeGpsMode == profile.gpsMode &&
+                                powerSaveModeEnabled == profile.powerSave &&
+                                gpsDutyIntervalSecs == profile.gpsDutyIntervalSecs &&
+                                telemetryIntervalSecs == profile.telemetryIntervalSecs &&
+                                (profile.txPower == null || txPower == profile.txPower)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) AccentMint.copy(alpha = 0.22f) else SurfaceDark)
+                                    .border(
+                                        1.dp,
+                                        if (selected) AccentMint else BorderDark,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable {
+                                        role = profile.role
+                                        nodeGpsMode = profile.gpsMode
+                                        gpsDutyIntervalSecs = profile.gpsDutyIntervalSecs
+                                        powerSaveModeEnabled = profile.powerSave
+                                        telemetryIntervalSecs = profile.telemetryIntervalSecs
+                                        profile.txPower?.let { txPower = it }
+                                        if (profile.powerSave && screenTimeoutSecs > 10) {
+                                            screenTimeoutSecs = 10
+                                        }
+                                    }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (appLanguage == "Spanish") profile.labelEs else profile.labelEn,
+                                    color = if (selected) AccentMint else TextLight,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                    val activeDeploy = DEPLOY_PROFILES.firstOrNull { p ->
+                        role == p.role && nodeGpsMode == p.gpsMode && powerSaveModeEnabled == p.powerSave
+                    }
+                    if (activeDeploy != null) {
+                        Text(
+                            text = if (appLanguage == "Spanish") activeDeploy.hintEs else activeDeploy.hintEn,
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    if (powerSaveModeEnabled || role == 1 || role == 2) {
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Tras reinicio con Ahorro / dejar atrás: pulsa el botón del nodo y luego escanea — BLE anuncia ~5 min."
+                            else
+                                "After reboot with Battery Saver / leave-behind: press the device button, then scan — BLE advertises ~5 min.",
+                            color = AccentAmber,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     // Node Role Dropdown
                     Text(
                         text = t("Node Operation Role", appLanguage),
@@ -1351,10 +1469,21 @@ fun SettingsView(
 
                     Button(
                         onClick = {
-                            if (role == 2) {
-                                showRepeaterConfirmDialog = true
-                            } else {
-                                saveConfigAndNotify()
+                            val matched = DEPLOY_PROFILES.firstOrNull { p ->
+                                role == p.role &&
+                                    nodeGpsMode == p.gpsMode &&
+                                    powerSaveModeEnabled == p.powerSave &&
+                                    gpsDutyIntervalSecs == p.gpsDutyIntervalSecs &&
+                                    telemetryIntervalSecs == p.telemetryIntervalSecs &&
+                                    (p.txPower == null || txPower == p.txPower)
+                            }
+                            when {
+                                matched != null -> {
+                                    deployConfirmProfile = matched
+                                    showDeployConfirmDialog = true
+                                }
+                                role == 2 -> showRepeaterConfirmDialog = true
+                                else -> saveConfigAndNotify()
                             }
                         },
                         modifier = Modifier
@@ -2062,9 +2191,9 @@ fun SettingsView(
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     text = if (appLanguage == "Spanish")
-                                        "Pantalla máx. 10s; telemetría más lenta; apaga el anuncio BLE tras 5 min sin conexión (pulsa el botón del nodo para reactivarlo)."
+                                        "Pantalla máx. 10s; telemetría más lenta; apaga el anuncio BLE tras 5 min sin conexión. Pulsa el botón del nodo, luego escanea — BLE anuncia ~5 min."
                                     else
-                                        "Caps screen to 10s, slows telemetry, and stops BLE advertising after 5 min idle (press the node button to wake it for scanning).",
+                                        "Caps screen to 10s, slows telemetry, stops BLE advertising after 5 min idle. Press the device button, then scan — BLE advertises ~5 min.",
                                     color = TextMuted,
                                     fontSize = 11.sp
                                 )
@@ -2121,6 +2250,10 @@ fun SettingsView(
             val otaModelHint = connectedNode?.model
                 ?: viewModel.connectedDeviceName
                 ?: connectedNode?.name
+            val expectedBoardId = FirmwareCatalog.boardIdForModel(connectedNode?.model)
+            val boardLabel = expectedBoardId
+                ?: connectedNode?.model?.takeIf { it.isNotBlank() }
+                ?: (if (appLanguage == "Spanish") "desconocido" else "unknown")
             val isRakNode = isRakOtaTarget(
                 connectedNode?.model,
                 viewModel.connectedDeviceName,
@@ -2141,8 +2274,9 @@ fun SettingsView(
             val githubStatus by viewModel.githubFirmwareStatus.collectAsStateWithLifecycle()
             val githubBusy by viewModel.githubFirmwareBusy.collectAsStateWithLifecycle()
             val githubProgress by viewModel.githubDownloadProgress.collectAsStateWithLifecycle()
+            val firmwareChannel by viewModel.firmwareChannel.collectAsStateWithLifecycle()
             val firmwareScope = rememberCoroutineScope()
-            LaunchedEffect(otaModelHint, isConnected, otaSupported) {
+            LaunchedEffect(otaModelHint, isConnected, otaSupported, firmwareChannel) {
                 if (isConnected && otaSupported) {
                     viewModel.refreshGithubFirmware(otaModelHint)
                 }
@@ -2154,7 +2288,7 @@ fun SettingsView(
                         val name = uri.lastPathSegment?.substringAfterLast('/') ?: "firmware"
                         if (bytes != null && bytes.isNotEmpty()) {
                             val treatAsRak = isRakNode
-                            val err = isValidOtaPayload(bytes, name, treatAsRak)
+                            val err = isValidOtaPayload(bytes, name, treatAsRak, expectedBoardId)
                             if (err != null) {
                                 otaFileBytes = null
                                 otaFileUri = null
@@ -2277,6 +2411,34 @@ fun SettingsView(
                                 color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
                                 fontSize = 12.sp
                             )
+                            if (otaState.error) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    otaRollbackGuidance(isRakNode, appLanguage == "Spanish"),
+                                    color = AccentAmber,
+                                    fontSize = 11.sp
+                                )
+                                TextButton(
+                                    onClick = {
+                                        try {
+                                            context.startActivity(
+                                                android.content.Intent(
+                                                    android.content.Intent.ACTION_VIEW,
+                                                    android.net.Uri.parse(WEB_FLASHER_URL)
+                                                )
+                                            )
+                                        } catch (_: Exception) { }
+                                    },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text(
+                                        if (appLanguage == "Spanish") "Abrir flasher web (USB)" else "Open web flasher (USB)",
+                                        color = AccentCyan,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     } else if (!otaSupported) {
                         Text(
@@ -2299,7 +2461,67 @@ fun SettingsView(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
-                        // GitHub Pages OTA catalog (published by pages.yml as ota-manifest.json)
+                        // Stable = GitHub Releases; Latest = Pages ota-manifest
+                        Text(
+                            text = if (appLanguage == "Spanish") "Canal de firmware" else "Firmware channel",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val stableSelected = firmwareChannel == FirmwareCatalog.Channel.STABLE
+                            val latestSelected = firmwareChannel == FirmwareCatalog.Channel.LATEST
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.setFirmwareChannel(FirmwareCatalog.Channel.STABLE)
+                                    viewModel.refreshGithubFirmware(otaModelHint)
+                                },
+                                enabled = !githubBusy && !otaState.active,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (stableSelected) AccentCyan.copy(alpha = 0.18f) else DarkBackground,
+                                    contentColor = TextLight
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (stableSelected) AccentCyan else BorderDark
+                                )
+                            ) {
+                                Text(
+                                    if (appLanguage == "Spanish") "Estable" else "Stable",
+                                    fontSize = 12.sp,
+                                    fontWeight = if (stableSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.setFirmwareChannel(FirmwareCatalog.Channel.LATEST)
+                                    viewModel.refreshGithubFirmware(otaModelHint)
+                                },
+                                enabled = !githubBusy && !otaState.active,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (latestSelected) AccentMint.copy(alpha = 0.18f) else DarkBackground,
+                                    contentColor = TextLight
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (latestSelected) AccentMint else BorderDark
+                                )
+                            ) {
+                                Text(
+                                    if (appLanguage == "Spanish") "Último" else "Latest",
+                                    fontSize = 12.sp,
+                                    fontWeight = if (latestSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = { viewModel.refreshGithubFirmware(otaModelHint) },
                             enabled = !githubBusy && !otaState.active,
@@ -2318,8 +2540,34 @@ fun SettingsView(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                if (appLanguage == "Spanish") "Buscar en GitHub" else "Check GitHub for updates",
+                                if (firmwareChannel == FirmwareCatalog.Channel.STABLE) {
+                                    if (appLanguage == "Spanish") "Buscar Releases (estable)"
+                                    else "Check GitHub Releases (stable)"
+                                } else {
+                                    if (appLanguage == "Spanish") "Buscar Pages (último)"
+                                    else "Check GitHub Pages (latest)"
+                                },
                                 fontSize = 12.sp
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(FirmwareCatalog.GITHUB_RELEASES_WEB)
+                                        )
+                                    )
+                                } catch (_: Exception) { }
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                if (appLanguage == "Spanish") "Abrir Releases en GitHub"
+                                else "Open GitHub Releases",
+                                color = AccentCyan,
+                                fontSize = 11.sp
                             )
                         }
                         if (githubStatus.isNotEmpty()) {
@@ -2363,7 +2611,8 @@ fun SettingsView(
                                             val err = isValidOtaPayload(
                                                 result.bytes,
                                                 result.fileName,
-                                                treatAsRak
+                                                treatAsRak,
+                                                expectedBoardId
                                             )
                                             if (err != null) {
                                                 otaPickError = localizeOtaPickError(err, appLanguage)
@@ -2468,6 +2717,14 @@ fun SettingsView(
                                 color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
                                 fontSize = 12.sp
                             )
+                            if (otaState.error) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    otaRollbackGuidance(isRakNode, appLanguage == "Spanish"),
+                                    color = AccentAmber,
+                                    fontSize = 11.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -2475,9 +2732,9 @@ fun SettingsView(
 
             Text(
                 text = if (appLanguage == "Spanish")
-                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin; RAK usa el paquete .zip (DFU). También puedes descargar el paquete OTA publicado en GitHub Pages."
+                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin (nunca .zip DFU); RAK usa el paquete .zip (nunca .bin ESP). Canal Estable = GitHub Releases; Último = Pages. Se rechazan placas/archivos cruzados y se verifica tamaño/SHA-256 cuando hay catálogo."
                 else
-                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin; RAK takes the .zip DFU package. You can also download the matching OTA package from GitHub Pages.",
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin (never a Nordic DFU .zip); RAK takes the .zip DFU package (never an ESP .bin). Stable = GitHub Releases; Latest = Pages. Cross-board/wrong-format packages are refused; size/SHA-256 are checked when the catalog provides them.",
                 color = TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
@@ -2523,18 +2780,18 @@ fun SettingsView(
                             )
                             Text(
                                 if (appLanguage == "Spanish")
-                                    "• Verifica que este build coincida con el hardware (Heltec V4)."
+                                    "• Verifica que este build coincida con el hardware ($boardLabel)."
                                 else
-                                    "• Verify this build matches the hardware (Heltec V4).",
+                                    "• Verify this build matches the hardware ($boardLabel).",
                                 color = TextMuted,
                                 fontSize = 12.sp
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 if (appLanguage == "Spanish")
-                                    "La imagen se verifica con checksum antes de reiniciar. Si falla la transferencia, el nodo sigue con el firmware actual."
+                                    "La imagen se verifica (tamaño / SHA-256 cuando está disponible) antes de reiniciar. Si falla la transferencia, el nodo suele conservar el firmware actual; si no responde, recupera por USB."
                                 else
-                                    "The image is checksum-verified before the node reboots. If the transfer fails, the node keeps running its current firmware.",
+                                    "The image is verified (size / SHA-256 when available) before reboot. If the transfer fails, the node usually keeps its current firmware; if it will not reconnect, recover over USB.",
                                 color = TextMuted,
                                 fontSize = 11.sp
                             )
@@ -2667,6 +2924,222 @@ fun SettingsView(
             )
         }
 
+        if (activeCategory == SettingsCategory.INTEROP) {
+            AetherSectionHeader(
+                title = t("Interop (experimental)", appLanguage),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.45f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        if (spanishUi) "Aviso" else "Disclaimer",
+                        color = AccentAmber,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        if (spanishUi)
+                            "AetherMesh no es compatible con Meshtastic en el aire. El tramo LoRa, el cifrado y los canales son distintos."
+                        else
+                            "AetherMesh is not Meshtastic-compatible on the air. LoRa framing, crypto, and channels differ.",
+                        color = TextLight,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = { showInteropDocDialog = true },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            if (spanishUi) "Ver notas (docs/INTEROP.md)" else "View notes (docs/INTEROP.md)",
+                            color = AccentCyan,
+                            fontSize = 12.sp
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse(
+                                            "https://github.com/SilentWolf75/AetherMesh/blob/main/docs/INTEROP.md"
+                                        )
+                                    )
+                                )
+                            } catch (_: Exception) {
+                                showInteropDocDialog = true
+                            }
+                        },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            if (spanishUi) "Abrir INTEROP.md en GitHub" else "Open INTEROP.md on GitHub",
+                            color = AccentMint,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        if (spanishUi) "MQTT (salida)" else "MQTT (outbound)",
+                        color = TextLight,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        if (spanishUi)
+                            "Las preferencias se guardan. La publicación en vivo no está cableada en 1.3.0 (sin cliente MQTT)."
+                        else
+                            "Prefs are saved. Live publish is not wired in 1.3.0 (no MQTT client dependency).",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (spanishUi) "Habilitar (futuro)" else "Enable (future)",
+                            color = TextLight,
+                            fontSize = 13.sp
+                        )
+                        Switch(
+                            checked = mqttEnabled,
+                            onCheckedChange = {
+                                mqttEnabled = it
+                                sharedPrefs.edit().putBoolean("mqtt_enabled", it).apply()
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = mqttBrokerUrl,
+                        onValueChange = {
+                            mqttBrokerUrl = it
+                            sharedPrefs.edit().putString("mqtt_broker_url", it).apply()
+                        },
+                        label = { Text(if (spanishUi) "Broker URL" else "Broker URL") },
+                        singleLine = true,
+                        colors = aetherTextFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = mqttTopicPrefix,
+                        onValueChange = {
+                            mqttTopicPrefix = it
+                            sharedPrefs.edit().putString("mqtt_topic_prefix", it).apply()
+                        },
+                        label = { Text(if (spanishUi) "Prefijo de tema" else "Topic prefix") },
+                        singleLine = true,
+                        colors = aetherTextFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = mqttUsername,
+                        onValueChange = {
+                            mqttUsername = it
+                            sharedPrefs.edit().putString("mqtt_username", it).apply()
+                        },
+                        label = { Text(if (spanishUi) "Usuario (opcional)" else "Username (optional)") },
+                        singleLine = true,
+                        colors = aetherTextFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        if (spanishUi) "APRS (exportar)" else "APRS (export)",
+                        color = TextLight,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        if (spanishUi)
+                            "Comparte una plantilla de comentario APRS-IS con la posición del nodo. No hay puerta APRS en la app."
+                        else
+                            "Share an APRS-IS comment template with the node position. No in-app APRS-IS gateway.",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = aprsCallsign,
+                        onValueChange = {
+                            aprsCallsign = it
+                            sharedPrefs.edit().putString("aprs_callsign", it).apply()
+                        },
+                        label = { Text(if (spanishUi) "Indicativo" else "Callsign") },
+                        singleLine = true,
+                        colors = aetherTextFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            val node = connectedNode
+                            if (node == null) {
+                                AppUiFeedback.show(
+                                    if (spanishUi) "Conecta un nodo con posición para exportar."
+                                    else "Connect a node with a position to export.",
+                                    duration = SnackbarDuration.Short
+                                )
+                            } else {
+                                shareAprsPositionTemplate(
+                                    context = context,
+                                    callsign = aprsCallsign,
+                                    nodeName = node.name,
+                                    nodeId = node.nodeId,
+                                    latitude = node.latitude,
+                                    longitude = node.longitude,
+                                    appLanguage = appLanguage
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AccentCyan,
+                            contentColor = DarkBackground
+                        )
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            if (spanishUi) "Compartir plantilla APRS" else "Share APRS template",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
         if (activeCategory == SettingsCategory.PREFERENCES) {
             // --- 4. APP PREFERENCES CARD ---
             AetherSectionHeader(
@@ -2779,6 +3252,54 @@ fun SettingsView(
                             )
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Channel hearer receipts (optional want_ack on broadcasts)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(DarkBackground)
+                        .border(1.dp, BorderDark, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Recibos de oyentes (canal)"
+                            else
+                                "Channel hearer receipts",
+                            color = TextLight,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (appLanguage == "Spanish")
+                                "Desactivado (predeterminado): el canal se comporta como cobertura flood — SENT = al aire. Activado: pide ACK de oyentes (bonus HEARD, no es un buzón)."
+                            else
+                                "Off (default): channel behaves like flood coverage — SENT means on air. On: ask hearers for ACK (bonus HEARD, not a mailbox).",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Switch(
+                        checked = channelHearerReceipts,
+                        onCheckedChange = {
+                            channelHearerReceipts = it
+                            sharedPrefs.edit().putBoolean("channel_hearer_receipts", it).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = AccentCyan,
+                            checkedTrackColor = AccentCyan.copy(alpha = 0.5f),
+                            uncheckedThumbColor = TextMuted,
+                            uncheckedTrackColor = SurfaceDark
+                        )
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -2965,6 +3486,41 @@ fun SettingsView(
                             uncheckedTrackColor = BorderDark
                         )
                     )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SurfaceRaised)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        Icons.Default.Bluetooth,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(18.dp).padding(top = 2.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Sesión BLE"
+                            else
+                                "BLE session",
+                            color = TextLight,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Solo un teléfono debe controlar la radio por Bluetooth. El teléfono enlazado aparece en Conexión como el dueño de la sesión."
+                            else
+                                "Only one phone should control the radio over Bluetooth. The linked phone is shown on Connection as the BLE session owner.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
                 if (bgAlertsEnabled && !notifPermGranted && android.os.Build.VERSION.SDK_INT >= 33) {
                     Column(
@@ -3343,6 +3899,167 @@ fun SettingsView(
         )
     }
 
+    if (showDeployConfirmDialog) {
+        val profile = deployConfirmProfile
+        AlertDialog(
+            onDismissRequest = {
+                showDeployConfirmDialog = false
+                deployConfirmProfile = null
+            },
+            title = {
+                Text(
+                    if (spanishUi) "Confirmar perfil de despliegue" else "Confirm deploy profile",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        if (profile != null) {
+                            if (spanishUi) profile.labelEs else profile.labelEn
+                        } else "",
+                        color = AccentMint,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val roleLabel = when (role) {
+                        1 -> if (spanishUi) "Router" else "Router"
+                        2 -> if (spanishUi) "Repetidor" else "Repeater"
+                        else -> if (spanishUi) "Cliente" else "Client"
+                    }
+                    val gpsLabel = when (nodeGpsMode) {
+                        1 -> if (spanishUi) "GPS apagado" else "GPS off"
+                        2 -> if (spanishUi) "GPS ciclo ${gpsDutyIntervalSecs / 60}m" else "GPS duty ${gpsDutyIntervalSecs / 60}m"
+                        else -> if (spanishUi) "GPS siempre" else "GPS always on"
+                    }
+                    Text(
+                        buildString {
+                            append(if (spanishUi) "Rol: " else "Role: ")
+                            appendLine(roleLabel)
+                            appendLine(gpsLabel)
+                            append(
+                                if (spanishUi) "Ahorro de batería: "
+                                else "Battery saver: "
+                            )
+                            appendLine(if (powerSaveModeEnabled) (if (spanishUi) "sí" else "yes") else (if (spanishUi) "no" else "no"))
+                            append(if (spanishUi) "Telemetría: ${telemetryIntervalSecs}s" else "Telemetry: ${telemetryIntervalSecs}s")
+                            if (txPower in 10..22) {
+                                append(if (spanishUi) " · TX ${txPower} dBm" else " · TX ${txPower} dBm")
+                            }
+                        },
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (profile != null) {
+                            if (spanishUi) profile.hintEs else profile.hintEn
+                        } else "",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    if (role == 2) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (spanishUi)
+                                "El repetidor apaga BLE tras aplicar; perderás la conexión."
+                            else
+                                "Repeater turns BLE off after apply; you will lose the connection.",
+                            color = AccentAmber,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        if (spanishUi) "El nodo se reiniciará al aplicar." else "The node will reboot on apply.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        saveConfigAndNotify()
+                        showDeployConfirmDialog = false
+                        deployConfirmProfile = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (role == 2) AccentRed else AccentCyan,
+                        contentColor = if (role == 2) TextLight else DarkBackground
+                    )
+                ) {
+                    Text(
+                        if (role == 2) t("Apply & Disconnect", appLanguage)
+                        else t("Apply Settings", appLanguage)
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showDeployConfirmDialog = false
+                    deployConfirmProfile = null
+                }) {
+                    Text(t("Cancel", appLanguage), color = TextLight)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
+
+    if (showInteropDocDialog) {
+        AlertDialog(
+            onDismissRequest = { showInteropDocDialog = false },
+            title = {
+                Text(
+                    if (spanishUi) "Interop (experimental)" else "Interop (experimental)",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        if (spanishUi)
+                            "Solo interop del lado de la app: stubs MQTT, export APRS y notas. No hay puente de malla completo."
+                        else
+                            "App-side pragmatic interop only: MQTT stubs, APRS export, and notes. No full mesh bridge.",
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (spanishUi)
+                            "MQTT: guarda broker/tema; publicar en vivo llega en una versión futura. Prefijo sugerido: aethermesh/{node_id}/telemetry|position."
+                        else
+                            "MQTT: save broker/topic; live publish comes in a future release. Suggested prefix: aethermesh/{node_id}/telemetry|position.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (spanishUi)
+                            "APRS: exporta un comentario de plantilla; el indicativo y passcode son tu responsabilidad."
+                        else
+                            "APRS: export a comment template; callsign and passcode remain your responsibility.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("docs/INTEROP.md", color = AccentCyan, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showInteropDocDialog = false }) {
+                    Text(if (spanishUi) "Cerrar" else "Close", color = AccentCyan)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
+
     if (showRegenKeysDialog) {
         AlertDialog(
             onDismissRequest = { showRegenKeysDialog = false },
@@ -3645,7 +4362,6 @@ fun SettingsView(
     }
 
     if (showImportChannelDialog) {
-        val spanish = appLanguage == "Spanish"
         val parsedJoin = remember(importChannelLinkInput) {
             try {
                 val cleaned = importChannelLinkInput.trim()
@@ -3721,7 +4437,7 @@ fun SettingsView(
                                 channelsList = viewModel.getChannelsList()
                                 showImportChannelDialog = false
                                 AppUiFeedback.show(
-                                    if (spanish) "Canal principal «$name» actualizado (PSK/flags)"
+                                    if (spanishUi) "Canal principal «$name» actualizado (PSK/flags)"
                                     else "Primary channel \"$name\" updated (PSK/flags)",
                                     duration = SnackbarDuration.Short
                                 )
@@ -3740,7 +4456,7 @@ fun SettingsView(
                                 channelsList = viewModel.getChannelsList()
                                 showImportChannelDialog = false
                                 AppUiFeedback.show(
-                                    if (spanish) {
+                                    if (spanishUi) {
                                         if (existing != null) "Canal secundario «$name» actualizado"
                                         else "Canal secundario «$name» añadido"
                                     } else {
@@ -3752,7 +4468,7 @@ fun SettingsView(
                             }
                         } catch (e: Exception) {
                             AppUiFeedback.show(
-                                if (spanish) "Enlace de canal no válido"
+                                if (spanishUi) "Enlace de canal no válido"
                                 else "Invalid channel link",
                                 duration = SnackbarDuration.Short
                             )
@@ -3775,7 +4491,7 @@ fun SettingsView(
             text = {
                 Column {
                     Text(
-                        if (spanish)
+                        if (spanishUi)
                             "Pega un enlace AetherMesh. Se añadirá como canal secundario."
                         else
                             "Paste an AetherMesh link. It will be added as a secondary channel.",
@@ -3792,7 +4508,7 @@ fun SettingsView(
                         maxLines = 3,
                         placeholder = {
                             Text(
-                                if (spanish) "https://aethermesh.org/join#…"
+                                if (spanishUi) "https://aethermesh.org/join#…"
                                 else "https://aethermesh.org/join#...",
                                 color = TextMuted
                             )
@@ -3804,18 +4520,18 @@ fun SettingsView(
                     parsedJoin?.let { (name, psk, _) ->
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            if (spanish) "Vista previa" else "Preview",
+                            if (spanishUi) "Vista previa" else "Preview",
                             color = AccentCyan,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            if (spanish) "Nombre: $name" else "Name: $name",
+                            if (spanishUi) "Nombre: $name" else "Name: $name",
                             color = TextLight,
                             fontSize = 12.sp
                         )
                         Text(
-                            if (spanish)
+                            if (spanishUi)
                                 "PSK: ${if (psk.isNotEmpty()) "presente (${psk.length} car.)" else "ninguna"}"
                             else
                                 "PSK: ${if (psk.isNotEmpty()) "present (${psk.length} chars)" else "none"}",
@@ -3826,7 +4542,7 @@ fun SettingsView(
                     if (importChannelLinkInput.trim().isNotEmpty() && parsedJoin == null) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            if (spanish) "Enlace no reconocido todavía"
+                            if (spanishUi) "Enlace no reconocido todavía"
                             else "Link not recognized yet",
                             color = AccentAmber,
                             fontSize = 11.sp

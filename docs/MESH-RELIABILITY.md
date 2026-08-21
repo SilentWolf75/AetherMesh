@@ -82,11 +82,64 @@ feature checklist. The current routing work uses these targets.
 - Firmware diagnostics for traffic, retries, ACKs, duplicates, CAD contention,
   queue drops, route changes, queue depth, airtime, protocol version, and
   smart-routing counters (directed/suppress/flood/RREQ/early repair), retained
-  and exportable by the Android app (BLE snapshot; not LoRa).
+  and exportable by the Android app (BLE snapshot; not LoRa) — surfaced in
+  Settings → Mesh Health.
 - Versioned V2 remote configuration authenticated with HMAC-SHA256 and a
   persisted session/counter replay window, while legacy nodes retain the old
   password path during migration.
 - ESP32 OTA images streamed with SHA-256 verification before finalization.
+
+## App UX (1.2.6) — Phase H Trust & OTA
+- **Hardened OTA pick path:** Heltec/ESP refuse Nordic DFU `.zip` / UF2 / `-usb`
+  images; RAK refuse ESP `.bin`. Filename board-id mismatch (e.g. `heltec-v3`
+  on a V4 node, wrong RAK variant) is refused with a clear error (EN+ES).
+- **Stable firmware channel:** Settings → Firmware Update defaults to **Stable**
+  (GitHub Releases for [AetherMesh](https://github.com/SilentWolf75/AetherMesh)),
+  matching assets by board / PlatformIO env (`heltec_v4`, `rak4631`, …).
+  **Latest** still uses GitHub Pages `ota-manifest.json`. If no Release assets
+  exist yet, Stable falls back to Pages with an honest status line.
+- **Checksum pragmatism:** Pages downloads keep size + SHA-256 checks; Release
+  downloads enforce size when GitHub reports it. Full cryptographic firmware
+  signing remains a follow-up (`docs/SECURE-RELEASES.md`).
+- **Post-fail recovery copy:** after a failed mid-OTA / DFU, the app shows
+  rollback guidance (active partition / DFU timeout keeps current FW) plus a
+  link to the USB web flasher.
+- App version **1.2.6** / `versionCode` **8**.
+
+## App UX (1.2.5)
+- **Leave-behind field power (Phase F):** Nodes / details / map callout show
+  solar-battery voltage trend from `telemetry_history`, days-since-heard,
+  last GPS lock age (`last_position_at`; no-fix telemetry no longer clears
+  last known coords), and cached GPS duty mode from node settings prefs.
+  Low-voltage safe is inferred when pack volts are below 3.50 V and not charging
+  (matches firmware).
+- **Firmware LV safe:** below 3.50 V (exit 3.65 V / charging) caps TX at 14 dBm,
+  stretches telemetry (≥10 min) and GPS duty (≥30 min), and powers off
+  always-on GPS until recovery. Light `lv_safe` NVS flag on ESP32.
+
+## App UX (1.2.4)
+- **Unread + mute** per channel/DM (persisted; inbox dots + Chats tab badge;
+  mute skips notifications but still stores messages)
+- **Search** in-thread and inbox filter
+- **Export** thread as text or CSV (NEW_TASK-safe share chooser)
+- **BLE session clarity:** Connection shows “this phone is controlling the radio”;
+  Settings notes one-phone BLE ownership
+
+## App UX (1.2.3)
+
+- Channel hearer receipts optional (`channel_hearer_receipts`, default off):
+  flood-style SENT on air; optional HEARD bonus when enabled.
+- Deploy presets in Settings → Radio: Leave-behind (≈ serial `DEPLOY_LB`),
+  Handheld, Repeater — applied via existing NodeConfig Apply + reboot.
+- Nodes list shows last heard + RSSI/SNR when available.
+- Channel status copy: **queued for mesh** / **on air** / **heard** (EN+ES).
+- **Phase D channel store-and-forward:** Router/Repeater roles keep a bounded
+  recent-channel ring (`MAX_CHANNEL_STORE=8`, 30‑minute TTL). When a known
+  neighbor is silent ≥2 minutes then reappears (route/telemetry), the router
+  schedules paced unicast catch-up replays (`want_ack=false`) using P6
+  congestion gates. Dedup is `(sender_id, packet_id)` in firmware seen-cache
+  and the Android message DB so replays never double-deliver. Clients do not
+  store or relay.
 
 ## What Traceroute Means
 
@@ -166,7 +219,38 @@ direction at eight hops and reports truncation.
 | 7 | Done (this work) | Harden P1–P6 (return-path restamp, directed hop gate); BLE/Serial smart-routing counters; field verify checklist |
 | 8+ | Later | Field gates only (multi-hop move / relay loss / congestion under load); revisit path array only if splice gaps appear |
 
-Channel/broadcast semantics stay flood + hearer ACK (unchanged).
+**Product roadmap Phase D (channel store-and-forward):** Done in firmware
+`MeshRouter` + light app status/dedup (see App UX 1.2.3). Unicast want_ack
+store-forward (Phases 5–6) is unchanged; channel catch-up is a separate bounded
+ring + paced replay toward returning neighbors.
+
+**Product roadmap Phase F (leave-behind power / field):** Done in app 1.2.5 +
+firmware LV safe (see App UX 1.2.5). No new telemetry proto fields — phone
+infers LV-safe from `battery_voltage` using the same 3.50 V enter threshold.
+
+**Product roadmap Phase G (hardware cradle):** Mechanical solar enclosure and
+AM-1 PCB exist under `hardware/am1/` but are **design-review / do not
+fabricate** (`hardware/am1/README.md`). No CAD edit in this phase — checklist
+only; skip to Phase H for software until electrical redraw is ready:
+
+1. Confirm PCB footprint vs enclosure (`mechanical/solar` 72×84×34 mm body).
+2. Antenna bulkhead + drip skirt clearance; panel bracket above node (40°).
+3. Cable gland / breather / SMA O-ring BOM match `mechanical/solar/README.md`.
+4. Heat-set M3 inserts + ASA print settings; gasket annual check.
+5. Leave-behind firmware profile: Router + GPS duty + power-save (`DEPLOY_LB`)
+   and verify LV-safe TX/telemetry stretch on a drained pack.
+6. Field soak: days-since-heard + voltage trend visible in app Nodes/details.
+
+**Product roadmap Phase H (Trust & OTA):** Done in app **1.2.6** (see App UX
+1.2.6). Pragmatic trust: format + board refuse, size/SHA-256 where available,
+Stable Releases channel UX. Cryptographic firmware image signing is deferred
+until release-signing infra lands in-repo.
+
+**Product roadmap Phase I (interop):** Later (MQTT / APRS / foreign-mesh
+bridges). Recommend flash/install after Phase H validation before starting I.
+
+Channel/broadcast semantics remain flood-first; hearer ACK stays optional.
+Catch-up unicasts never set `want_ack` (no receipt storms).
 
 **Field readiness:** Phases 1–7 cover the highest remaining software delivery
 leverage in the routing stack. Next value is measured multi-radio / field

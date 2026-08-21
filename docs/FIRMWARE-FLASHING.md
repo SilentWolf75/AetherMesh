@@ -32,17 +32,23 @@ packaged the same way.
 3. Open Settings -> Firmware Update.
 4. Choose the `.bin` file and start the BLE OTA update.
 
-Or download from GitHub Pages inside the app:
+Or download from GitHub inside the app:
 
 1. Connect and authenticate the node.
 2. Open **Settings → Firmware Update**.
-3. Tap **Check GitHub for updates**, then **Download from GitHub**.
-4. The app loads `firmware/ota-manifest.json`, downloads the matching
-   `-ota.bin` / `.zip`, verifies SHA-256, then flash with **Update via BLE OTA**.
+3. Choose **Stable** (GitHub Releases) or **Latest** (Pages `ota-manifest.json`).
+4. Tap **Check GitHub…**, then **Download**. The app picks the asset for the
+   connected board (`heltec_v4` / `rak4631` env tags in Release names, or
+   manifest `board` ids), verifies size (+ SHA-256 on Pages), then flash with
+   **Update via BLE OTA**.
+5. Wrong family (Heltec `.bin` vs RAK `.zip`) or wrong board id is refused with
+   an on-screen error. After a failed mid-transfer, follow the in-app recovery
+   note or use the USB web flasher.
 
 The Pages deploy publishes both the USB/UF2 web-flasher `manifest.json` and the
 app-facing `ota-manifest.json` (ESP32 OTA bins + RAK DFU zips). Do not flash a
-`-usb.bin` over BLE OTA.
+`-usb.bin` over BLE OTA. For field-stable builds, attach the same `-ota.bin` /
+`.zip` files to a GitHub Release so the Stable channel can find them.
 
 The node writes to the inactive OTA partition, verifies the image, and reboots
 only after a successful transfer. A failed transfer leaves the current firmware

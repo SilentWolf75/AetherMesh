@@ -59,6 +59,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
+import com.example.aethermesh.data.ChatThreadPrefs
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
 import com.example.aethermesh.data.takeUtf8Bytes
@@ -118,6 +119,10 @@ fun ChatView(
     var showNewChannelDialog by remember { mutableStateOf(false) }
     var inThread by remember { mutableStateOf(false) }
     var stickToBottom by remember { mutableStateOf(true) }
+    var inboxFilter by remember { mutableStateOf("") }
+    var threadSearchOpen by remember { mutableStateOf(false) }
+    var threadSearchQuery by remember { mutableStateOf("") }
+    var showExportMenu by remember { mutableStateOf(false) }
     val chatTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
     BackHandler(enabled = inThread && !chatTwoPane) { inThread = false }
     val listState = rememberLazyListState()
@@ -130,12 +135,44 @@ fun ChatView(
     val draftPrefs = remember {
         context.getSharedPreferences("chat_drafts", Context.MODE_PRIVATE)
     }
+    val appPrefs = remember {
+        context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+    }
+    var channelHearerReceipts by remember {
+        mutableStateOf(appPrefs.getBoolean("channel_hearer_receipts", false))
+    }
+    var chatPrefsRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(appPrefs) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == "channel_hearer_receipts") {
+                channelHearerReceipts = appPrefs.getBoolean("channel_hearer_receipts", false)
+            }
+            if (ChatThreadPrefs.isChatPrefsKey(key)) {
+                chatPrefsRevision++
+            }
+        }
+        appPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { appPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     // Bump when drafts change so inbox rows refresh "Draft:" snippets.
     var draftsRevision by remember { mutableIntStateOf(0) }
+    val activeThreadKey = if (activeChatId == null) {
+        ChatThreadPrefs.channelKey(selectedChannel)
+    } else {
+        ChatThreadPrefs.dmKey(activeChatId)
+    }
+    var threadMuted by remember(activeThreadKey, chatPrefsRevision) {
+        mutableStateOf(ChatThreadPrefs.isMuted(appPrefs, activeThreadKey))
+    }
+    val displayedMessages = remember(messages, threadSearchQuery, threadSearchOpen) {
+        val q = threadSearchQuery.trim()
+        if (!threadSearchOpen || q.isEmpty()) messages
+        else messages.filter { it.content.contains(q, ignoreCase = true) }
+    }
     val showJumpToBottom by remember {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            messages.isNotEmpty() && lastVisible < messages.lastIndex - 1
+            displayedMessages.isNotEmpty() && lastVisible < displayedMessages.lastIndex - 1
         }
     }
 
@@ -230,19 +267,27 @@ fun ChatView(
 
     LaunchedEffect(activeChatId, selectedChannel, inThread) {
         stickToBottom = true
-        if (inThread && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.lastIndex)
+        threadSearchOpen = false
+        threadSearchQuery = ""
+        if (inThread && displayedMessages.isNotEmpty()) {
+            listState.scrollToItem(displayedMessages.lastIndex)
         }
     }
-    LaunchedEffect(messages.size) {
-        if (inThread && messages.isNotEmpty() && stickToBottom) {
-            listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(inThread, activeThreadKey, messages.lastOrNull()?.id, messages.lastOrNull()?.timestamp) {
+        if (inThread) {
+            val latest = messages.maxOfOrNull { it.timestamp } ?: System.currentTimeMillis()
+            ChatThreadPrefs.markRead(appPrefs, activeThreadKey, latest)
+        }
+    }
+    LaunchedEffect(displayedMessages.size, threadSearchQuery) {
+        if (inThread && displayedMessages.isNotEmpty() && stickToBottom && !threadSearchOpen) {
+            listState.animateScrollToItem(displayedMessages.lastIndex)
         }
     }
     LaunchedEffect(listState.isScrollInProgress) {
         if (!listState.isScrollInProgress) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            stickToBottom = messages.isEmpty() || lastVisible >= messages.lastIndex - 1
+            stickToBottom = displayedMessages.isEmpty() || lastVisible >= displayedMessages.lastIndex - 1
         }
     }
 
@@ -251,12 +296,20 @@ fun ChatView(
         val relativeTick = rememberRelativeTimeTick()
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             val dmNodes = nodes.filter { it.nodeId != localNodeId }
-            val sortedChannels = remember(channels, channelPreviews) {
-                channels.sortedByDescending { channelPreviews[it]?.timestamp ?: 0L }
+            val sortedChannels = remember(channels, channelPreviews, inboxFilter) {
+                val base = channels.sortedByDescending { channelPreviews[it]?.timestamp ?: 0L }
+                val q = inboxFilter.trim()
+                if (q.isEmpty()) base else base.filter { it.contains(q, ignoreCase = true) }
             }
-            val sortedDmNodes = remember(dmNodes, dmPreviews, relativeTick) {
-                dmNodes.sortedByDescending { node ->
+            val sortedDmNodes = remember(dmNodes, dmPreviews, relativeTick, inboxFilter) {
+                val base = dmNodes.sortedByDescending { node ->
                     dmPreviews[node.nodeId]?.timestamp?.takeIf { it > 0L } ?: node.lastActive
+                }
+                val q = inboxFilter.trim()
+                if (q.isEmpty()) base
+                else base.filter {
+                    it.name.contains(q, ignoreCase = true) ||
+                        it.shortName.contains(q, ignoreCase = true)
                 }
             }
             if (!canSend) {
@@ -296,6 +349,33 @@ fun ChatView(
                 Spacer(modifier = Modifier.height(12.dp))
             }
             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    TextField(
+                        value = inboxFilter,
+                        onValueChange = { inboxFilter = it },
+                        singleLine = true,
+                        placeholder = {
+                            Text(
+                                if (spanish) "Filtrar chats…" else "Filter chats…",
+                                color = TextMuted
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                        },
+                        trailingIcon = {
+                            if (inboxFilter.isNotEmpty()) {
+                                IconButton(onClick = { inboxFilter = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = if (spanish) "Borrar" else "Clear", tint = TextMuted)
+                                }
+                            }
+                        },
+                        colors = aetherFilledFieldColors(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -338,6 +418,13 @@ fun ChatView(
                     val preview = channelPreviews[channel]
                     val selected = activeChatId == null && channel == selectedChannel && (chatTwoPane || inThread)
                     val draft = remember(draftsRevision, channel) { draftSnippetFor("CHANNEL_$channel") }
+                    val chatKey = ChatThreadPrefs.channelKey(channel)
+                    val unread = remember(chatPrefsRevision, preview, localNodeId, channel) {
+                        ChatThreadPrefs.isUnreadPreview(appPrefs, chatKey, preview, localNodeId)
+                    }
+                    val muted = remember(chatPrefsRevision, channel) {
+                        ChatThreadPrefs.isMuted(appPrefs, chatKey)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -370,14 +457,26 @@ fun ChatView(
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                channel,
-                                color = TextLight,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    channel,
+                                    color = TextLight,
+                                    fontSize = 15.sp,
+                                    fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (muted) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        Icons.Default.NotificationsOff,
+                                        contentDescription = if (spanish) "Silenciado" else "Muted",
+                                        tint = TextMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
                             Text(
                                 when {
                                     draft != null ->
@@ -388,6 +487,7 @@ fun ChatView(
                                 color = when {
                                     draft != null -> AccentAmber
                                     preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                    unread -> TextLight
                                     else -> TextMuted
                                 },
                                 fontSize = 12.sp,
@@ -397,14 +497,28 @@ fun ChatView(
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             if (preview != null && preview.timestamp > 0L) {
-                                Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                                Text(
+                                    formatInboxTime(preview.timestamp),
+                                    color = if (unread) AccentCyan else TextMuted,
+                                    fontSize = 11.sp
+                                )
                             }
-                            Icon(
-                                Icons.Default.ChevronRight,
-                                contentDescription = null,
-                                tint = TextMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            if (unread) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(AccentCyan)
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -448,6 +562,13 @@ fun ChatView(
                         val preview = dmPreviews[node.nodeId]
                         val selected = activeChatId != null && activeChatId == node.nodeId && (chatTwoPane || inThread)
                         val draft = remember(draftsRevision, node.nodeId) { draftSnippetFor("DM_${node.nodeId}") }
+                        val chatKey = ChatThreadPrefs.dmKey(node.nodeId)
+                        val unread = remember(chatPrefsRevision, preview, localNodeId, node.nodeId) {
+                            ChatThreadPrefs.isUnreadPreview(appPrefs, chatKey, preview, localNodeId)
+                        }
+                        val muted = remember(chatPrefsRevision, node.nodeId) {
+                            ChatThreadPrefs.isMuted(appPrefs, chatKey)
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -476,14 +597,26 @@ fun ChatView(
                             NodeBadge(shortName = shortName, color = getBadgeColor(node.name), muted = stale)
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    node.name,
-                                    color = if (stale) TextMuted else TextLight,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        node.name,
+                                        color = if (stale) TextMuted else TextLight,
+                                        fontSize = 15.sp,
+                                        fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (muted) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.NotificationsOff,
+                                            contentDescription = if (spanish) "Silenciado" else "Muted",
+                                            tint = TextMuted,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
                                 val heardLabel = remember(node.lastActive, relativeTick, appLanguage) {
                                     formatLastHeard(node.lastActive, appLanguage)
                                 }
@@ -501,6 +634,7 @@ fun ChatView(
                                     color = when {
                                         draft != null -> AccentAmber
                                         preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                        unread -> TextLight
                                         else -> TextMuted
                                     },
                                     fontSize = 12.sp,
@@ -510,14 +644,28 @@ fun ChatView(
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 if (preview != null && preview.timestamp > 0L) {
-                                    Text(formatInboxTime(preview.timestamp), color = TextMuted, fontSize = 11.sp)
+                                    Text(
+                                        formatInboxTime(preview.timestamp),
+                                        color = if (unread) AccentMint else TextMuted,
+                                        fontSize = 11.sp
+                                    )
                                 }
-                                Icon(
-                                    Icons.Default.ChevronRight,
-                                    contentDescription = null,
-                                    tint = TextMuted,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                if (unread) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(AccentMint)
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.ChevronRight,
+                                        contentDescription = null,
+                                        tint = TextMuted,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -549,6 +697,113 @@ fun ChatView(
                         },
                         color = TextMuted,
                         fontSize = 12.sp
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        threadSearchOpen = !threadSearchOpen
+                        if (!threadSearchOpen) threadSearchQuery = ""
+                    }
+                ) {
+                    Icon(
+                        if (threadSearchOpen) Icons.Default.Close else Icons.Default.Search,
+                        contentDescription = if (spanish) "Buscar" else "Search",
+                        tint = if (threadSearchOpen) AccentCyan else TextMuted
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        val next = !threadMuted
+                        ChatThreadPrefs.setMuted(appPrefs, activeThreadKey, next)
+                        threadMuted = next
+                        AppUiFeedback.show(
+                            when {
+                                next && spanish -> "Chat silenciado"
+                                next -> "Chat muted"
+                                spanish -> "Notificaciones activadas"
+                                else -> "Notifications on"
+                            }
+                        )
+                    }
+                ) {
+                    Icon(
+                        if (threadMuted) Icons.Default.NotificationsOff else Icons.Default.Notifications,
+                        contentDescription = if (spanish) "Silenciar" else "Mute",
+                        tint = if (threadMuted) AccentAmber else TextMuted
+                    )
+                }
+                Box {
+                    IconButton(onClick = { showExportMenu = true }) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = if (spanish) "Exportar" else "Export",
+                            tint = TextMuted
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showExportMenu,
+                        onDismissRequest = { showExportMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (spanish) "Exportar texto" else "Export as text")
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportThreadMessages(
+                                    context = context,
+                                    messages = messages,
+                                    threadTitle = threadTitle,
+                                    asCsv = false,
+                                    appLanguage = appLanguage,
+                                    nodeNames = nodes.associate { it.nodeId to it.name }
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (spanish) "Exportar CSV" else "Export as CSV")
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportThreadMessages(
+                                    context = context,
+                                    messages = messages,
+                                    threadTitle = threadTitle,
+                                    asCsv = true,
+                                    appLanguage = appLanguage,
+                                    nodeNames = nodes.associate { it.nodeId to it.name }
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            if (threadSearchOpen) {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextField(
+                    value = threadSearchQuery,
+                    onValueChange = { threadSearchQuery = it },
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            if (spanish) "Buscar en este chat…" else "Search this chat…",
+                            color = TextMuted
+                        )
+                    },
+                    colors = aetherFilledFieldColors(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (threadSearchQuery.isNotBlank()) {
+                    Text(
+                        if (spanish)
+                            "${displayedMessages.size} coincidencia(s)"
+                        else
+                            "${displayedMessages.size} match(es)",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp, start = 4.dp)
                     )
                 }
             }
@@ -689,7 +944,7 @@ fun ChatView(
                     modifier = Modifier.fillMaxSize(),
                     reverseLayout = false
                 ) {
-                    if (messages.isEmpty()) {
+                    if (displayedMessages.isEmpty()) {
                         item {
                             Box(
                                 modifier = Modifier
@@ -699,6 +954,10 @@ fun ChatView(
                             ) {
                                 Text(
                                     when {
+                                        threadSearchOpen && threadSearchQuery.isNotBlank() && spanish ->
+                                            "Sin coincidencias."
+                                        threadSearchOpen && threadSearchQuery.isNotBlank() ->
+                                            "No matches."
                                         !canSend && spanish ->
                                             "Aún no hay mensajes. Desbloquea el nodo para enviar."
                                         !canSend ->
@@ -713,7 +972,7 @@ fun ChatView(
                             }
                         }
                     }
-                    items(messages, key = { it.id }) { message ->
+                    items(displayedMessages, key = { it.id }) { message ->
                         val senderNode = nodes.find { it.nodeId == message.senderId }
                         val senderLabel = when {
                             !isChannelThread -> null
@@ -729,7 +988,8 @@ fun ChatView(
                             localNodeId = localNodeId,
                             onRetryMessage = onRetryMessage,
                             senderLabel = senderLabel,
-                            appLanguage = appLanguage
+                            appLanguage = appLanguage,
+                            channelHearerReceipts = channelHearerReceipts
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
@@ -739,8 +999,8 @@ fun ChatView(
                         onClick = {
                             stickToBottom = true
                             chatScope.launch {
-                                if (messages.isNotEmpty()) {
-                                    listState.animateScrollToItem(messages.lastIndex)
+                                if (displayedMessages.isNotEmpty()) {
+                                    listState.animateScrollToItem(displayedMessages.lastIndex)
                                 }
                             }
                         },
@@ -1113,27 +1373,29 @@ fun MessageBubble(
     localNodeId: Long,
     onRetryMessage: (ChatMessage) -> Unit,
     senderLabel: String? = null,
-    appLanguage: String = "English"
+    appLanguage: String = "English",
+    channelHearerReceipts: Boolean = false
 ) {
     val isMe = localNodeId != 0L && message.senderId == localNodeId
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
     val spanish = appLanguage == "Spanish"
     // Direct messages: PENDING → DELIVERED when the recipient *node* ACKs.
-    // Channel: SENT → HEARD as unique hearer ACKs arrive ("heard by N").
+    // Channel: SENT → HEARD only when hearer receipts are enabled (optional bonus).
     val isChannel = message.channel.isNotEmpty() ||
         (message.recipientId and 0xFFFFFFFFL) == 0xFFFFFFFFL
+    val channelWaiting = isChannel && channelHearerReceipts
     val statusIcon = when (message.status) {
         "DELIVERED" -> "✓✓"
         "HEARD" -> "✓✓"
         "PENDING", "QUEUED" -> "…"
         "FAILED", "EXPIRED" -> "!"
         "RETRIED" -> "↻"
-        "SENT" -> if (isChannel) "…" else "✓"
+        "SENT" -> if (channelWaiting) "…" else "✓"
         else -> "✓"
     }
     val statusColor = when (message.status) {
         "DELIVERED", "HEARD" -> AccentMint
-        "SENT" -> if (isChannel) AccentAmber else TextMuted
+        "SENT" -> if (channelWaiting) AccentAmber else TextMuted
         "FAILED", "EXPIRED" -> AccentRed
         "PENDING", "QUEUED" -> AccentAmber
         else -> TextMuted
@@ -1141,7 +1403,8 @@ fun MessageBubble(
     val statusText = when (message.status) {
         "EXPIRED" -> if (spanish) "$statusIcon sin ACK · tocar para reintentar" else "$statusIcon no ACK · tap to retry"
         "FAILED" -> if (spanish) "$statusIcon sin respuesta · tocar para reintentar" else "$statusIcon no reply · tap to retry"
-        "PENDING", "QUEUED" -> if (spanish) "$statusIcon esperando recepción…" else "$statusIcon waiting for receipt…"
+        "PENDING" -> if (spanish) "$statusIcon esperando recepción…" else "$statusIcon waiting for receipt…"
+        "QUEUED" -> if (spanish) "$statusIcon en cola para la malla…" else "$statusIcon queued for mesh…"
         "RETRIED" -> if (spanish) "$statusIcon reenviado" else "$statusIcon resent"
         "DELIVERED" -> if (spanish) "$statusIcon recibido" else "$statusIcon received"
         "HEARD" -> if (spanish) {
@@ -1149,8 +1412,10 @@ fun MessageBubble(
         } else {
             "$statusIcon heard by ${message.heardCount}"
         }
-        "SENT" -> if (isChannel) {
+        "SENT" -> if (channelWaiting) {
             if (spanish) "$statusIcon Esperando ser oído…" else "$statusIcon Waiting to be heard…"
+        } else if (isChannel) {
+            if (spanish) "$statusIcon al aire" else "$statusIcon on air"
         } else {
             if (spanish) "$statusIcon enviado" else "$statusIcon sent"
         }
@@ -1165,24 +1430,33 @@ fun MessageBubble(
             "Sin respuesta del nodo en 45s. Toca para reintentar."
         else
             "No node reply within 45s. Tap to retry."
-        "PENDING", "QUEUED" -> if (spanish)
+        "PENDING" -> if (spanish)
             "Enviado. Esperando que el nodo destino confirme la recepción."
         else
             "Sent. Waiting for the destination node to confirm receipt."
+        "QUEUED" -> if (spanish)
+            "En cola para la malla (radio ocupada o store-and-forward). Aún no está al aire."
+        else
+            "Queued for the mesh (radio busy or store-and-forward). Not on air yet."
         "RETRIED" -> if (spanish) "Reenviado automáticamente." else "Automatically resent."
         "DELIVERED" -> if (spanish)
             "Recibido por el nodo destino (confirmación de malla)."
         else
             "Received by the destination node (mesh acknowledgment)."
         "HEARD" -> if (spanish)
-            "Confirmado por ${message.heardCount} nodo(s) de la malla que oyeron el mensaje de canal."
+            "Bonus: ${message.heardCount} nodo(s) confirmaron haber oído este mensaje de canal (no es un buzón de entrega)."
         else
-            "Confirmed by ${message.heardCount} mesh node(s) that heard this channel message."
-        "SENT" -> if (isChannel) {
+            "Bonus: ${message.heardCount} mesh node(s) confirmed hearing this channel message (not a delivery mailbox)."
+        "SENT" -> if (channelWaiting) {
             if (spanish)
-                "Transmitido al canal. Esperando ser oído por nodos de la malla."
+                "Transmitido al canal. Esperando recibos opcionales de oyentes (bonus, no buzón)."
             else
-                "Broadcast on the channel. Waiting to be heard."
+                "Broadcast on the channel. Waiting for optional hearer receipts (bonus, not a mailbox)."
+        } else if (isChannel) {
+            if (spanish)
+                "Al aire en el canal (cobertura flood)."
+            else
+                "On air on the channel (flood coverage)."
         } else {
             if (spanish) "Enviado." else "Sent."
         }

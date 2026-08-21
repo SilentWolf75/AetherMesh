@@ -83,7 +83,7 @@ import java.util.Date
 import java.util.Locale
 
 private enum class NodesSort {
-    LAST_HEARD, SIGNAL, NAME, DISTANCE
+    LAST_HEARD, SIGNAL, NAME, DISTANCE, STALE
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -158,6 +158,8 @@ fun NodesView(
             compareBy<MeshNode> { distanceKmOf(it) == null }
                 .thenBy { distanceKmOf(it) ?: Double.MAX_VALUE }
         )
+        // Oldest heard first (most stale at top)
+        NodesSort.STALE -> list.sortedBy { it.lastActive }
     }
 
     // relativeTick forces active/stale split + heard labels to refresh
@@ -173,7 +175,8 @@ fun NodesView(
         NodesSort.LAST_HEARD to if (appLanguage == "Spanish") "Última actividad" else "Last heard",
         NodesSort.SIGNAL to if (appLanguage == "Spanish") "Señal" else "Signal",
         NodesSort.NAME to if (appLanguage == "Spanish") "Nombre" else "Name",
-        NodesSort.DISTANCE to if (appLanguage == "Spanish") "Distancia" else "Distance"
+        NodesSort.DISTANCE to if (appLanguage == "Spanish") "Distancia" else "Distance",
+        NodesSort.STALE to if (appLanguage == "Spanish") "Por inactividad" else "By stale"
     )
 
     val listContent: @Composable () -> Unit = {
@@ -296,6 +299,7 @@ fun NodesView(
                             phoneLocation = phoneLocation,
                             appLanguage = appLanguage,
                             useImperialUnits = useImperialUnits,
+                            getTelemetryHistory = getTelemetryHistory,
                             onClick = { onOpenNodeDetails(connectedNode.nodeId) },
                             onRenameClick = { renamingNode = connectedNode },
                             onTraceRoute = { false },
@@ -317,6 +321,7 @@ fun NodesView(
                         phoneLocation = phoneLocation,
                         appLanguage = appLanguage,
                         useImperialUnits = useImperialUnits,
+                        getTelemetryHistory = getTelemetryHistory,
                         onClick = { onOpenNodeDetails(node.nodeId) },
                         onRenameClick = { renamingNode = node },
                         onTraceRoute = { onTraceRoute(node.nodeId) },
@@ -347,6 +352,7 @@ fun NodesView(
                             phoneLocation = phoneLocation,
                             appLanguage = appLanguage,
                             useImperialUnits = useImperialUnits,
+                            getTelemetryHistory = getTelemetryHistory,
                             onClick = { onOpenNodeDetails(node.nodeId) },
                             onRenameClick = { renamingNode = node },
                             onTraceRoute = { onTraceRoute(node.nodeId) },
@@ -438,8 +444,10 @@ fun NodeItem(
     onRangeTest: (() -> Unit)? = null,
     onRemoteConfig: (() -> Unit)? = null,
     isConnectedNode: Boolean = false,
-    selected: Boolean = false
+    selected: Boolean = false,
+    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() }
 ) {
+    val context = LocalContext.current
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
     val badgeColor = getBadgeColor(node.name)
     val stale = isNodeStale(node.lastActive)
@@ -450,6 +458,23 @@ fun NodeItem(
     val hasLiveSignal = route != null && route.lastRssi != 0f
     val sigRssi = if (hasLiveSignal) route!!.lastRssi else node.rssi
     val hops = route?.hops?.takeIf { it > 0 }
+
+    val history = remember(node.nodeId, node.lastActive, node.voltage) {
+        getTelemetryHistory(node.nodeId)
+    }
+    val voltageTrendLabel = remember(history, appLanguage) {
+        formatVoltageTrend(history, appLanguage)
+    }
+    val daysLabel = remember(node.lastActive, appLanguage) {
+        formatDaysSinceHeard(node.lastActive, appLanguage)
+    }
+    val (cachedGpsMode, cachedDutySecs) = remember(node.nodeId) {
+        readCachedGpsMode(context, node.nodeId)
+    }
+    val gpsDutyLabel = remember(cachedGpsMode, cachedDutySecs, appLanguage) {
+        formatGpsDutyStatus(cachedGpsMode, cachedDutySecs, appLanguage)
+    }
+    val lvSafe = isLowVoltageSafeHint(node.voltage, node.isCharging)
 
     val distanceLabel = if (phoneLocation != null && hasValidPosition(node.latitude, node.longitude)) {
         val distanceKm = calculateDistance(
@@ -494,6 +519,10 @@ fun NodeItem(
             Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(formatLastHeard(node.lastActive, appLanguage), color = TextMuted, fontSize = 12.sp)
+                if (daysLabel != null) {
+                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
+                    Text(daysLabel, color = AccentAmber, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
                 if (distanceLabel != null) {
                     Text("  ·  ", color = TextMuted, fontSize = 12.sp)
                     Text(distanceLabel, color = if (stale) TextMuted else AccentMint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -517,6 +546,32 @@ fun NodeItem(
                     )
                 }
             }
+            val fieldBits = buildList {
+                if (voltageTrendLabel != null) add(voltageTrendLabel)
+                else if (node.voltage > 0f) add("%.2f V".format(node.voltage))
+                if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
+                    add(
+                        formatGpsLockAge(
+                            if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
+                            appLanguage
+                        )
+                    )
+                }
+                gpsDutyLabel?.let { add(it) }
+                if (lvSafe) {
+                    add(if (appLanguage == "Spanish") "Modo bajo voltaje" else "Low-V safe")
+                }
+            }
+            if (fieldBits.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    fieldBits.joinToString("  ·  "),
+                    color = if (lvSafe) AccentAmber else TextMuted,
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (isConnectedNode) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -534,6 +589,15 @@ fun NodeItem(
                     SignalBars(rssi = sigRssi)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("${sigRssi.toInt()} dBm", color = TextMuted, fontSize = 11.sp)
+                    val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
+                    if (sigSnr != 0f) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "SNR ${"%.1f".format(sigSnr)}",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
                     if (node.loraSf in 7..12) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(

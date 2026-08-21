@@ -158,6 +158,15 @@ fun ConnectionView(
                     "Connect an AetherMesh radio over Bluetooth to use chats, nodes, and the map.",
                 color = TextMuted,
                 fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            Text(
+                if (spanish)
+                    "Consejo: solo un teléfono debe poseer el enlace BLE a la vez."
+                else
+                    "Tip: only one phone should own the BLE link at a time.",
+                color = TextMuted.copy(alpha = 0.9f),
+                fontSize = 12.sp,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
             when {
@@ -264,6 +273,47 @@ fun ConnectionView(
                 border = BorderStroke(1.dp, BorderDark)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AccentMint.copy(alpha = 0.12f))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Smartphone,
+                            contentDescription = null,
+                            tint = AccentMint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (spanish)
+                                    "Este teléfono controla la radio"
+                                else
+                                    "This phone is controlling the radio",
+                                color = TextLight,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            val nick = remember {
+                                com.example.aethermesh.data.ChatThreadPrefs.bleControllerNickname(
+                                    context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+                                ) ?: com.example.aethermesh.data.ChatThreadPrefs.phoneNickname(context)
+                            }
+                            Text(
+                                if (spanish)
+                                    "$nick · solo un teléfono debe usar BLE a la vez"
+                                else
+                                    "$nick · only one phone should own BLE at a time",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
