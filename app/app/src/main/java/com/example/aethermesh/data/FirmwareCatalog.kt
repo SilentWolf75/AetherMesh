@@ -48,11 +48,18 @@ object FirmwareCatalog {
         /** Absolute download URL when not under [BASE_URL] (Releases). */
         val absoluteUrl: String? = null,
         val channel: Channel = Channel.LATEST,
-        val releaseTag: String? = null
+        val releaseTag: String? = null,
+        /** Semver base from Pages manifest or parsed from a Release tag (e.g. 1.3.0). */
+        val version: String? = null
     ) {
         val downloadUrl: String
             get() = absoluteUrl ?: (BASE_URL + file)
         val isZip: Boolean get() = file.endsWith(".zip", ignoreCase = true)
+        /** Prefer release tag, then explicit version, for OTA UI “Available” lines. */
+        val displayVersion: String?
+            get() = releaseTag?.takeIf { it.isNotBlank() }
+                ?: version?.takeIf { it.isNotBlank() }
+                ?: Regex("""\bv?\d+\.\d+\.\d+\b""").find(name)?.value
     }
 
     data class DownloadResult(
@@ -180,7 +187,10 @@ object FirmwareCatalog {
         }
         val match = pickForModel(list, model)
         val status = when {
-            match != null -> "Found ${match.name} (latest / Pages)"
+            match != null -> {
+                val ver = match.displayVersion?.let { " $it" }.orEmpty()
+                "Found ${match.name} (latest$ver / Pages)"
+            }
             list.isEmpty() -> "No OTA builds published yet."
             boardId == null -> "Connect a known board to auto-pick, or choose a local file."
             else -> "No OTA package matches this node model."
@@ -201,7 +211,7 @@ object FirmwareCatalog {
                 match != null -> CatalogResult(
                     artifact = match,
                     channel = Channel.STABLE,
-                    status = "Found ${match.name} (stable ${match.releaseTag ?: "release"})",
+                    status = "Found ${match.name} (stable ${match.displayVersion ?: match.releaseTag ?: "release"})",
                     candidates = assets
                 )
                 assets.isEmpty() -> {
@@ -281,11 +291,20 @@ object FirmwareCatalog {
         val downloadUrl: String
     )
 
+    /** Parse `v1.3.0` / `1.3.0` tags so Stable prefers the newest semver release. */
+    internal fun parseTagVersionParts(tag: String): List<Int>? {
+        val m = Regex("""v?(\d+)\.(\d+)\.(\d+)""").find(tag.trim()) ?: return null
+        return m.groupValues.drop(1).map { it.toInt() }
+    }
+
     private fun fetchGithubReleases(): List<GhRelease> {
         val connection = (URL(GITHUB_RELEASES_URL).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
             requestMethod = "GET"
+            useCaches = false
+            setRequestProperty("Cache-Control", "no-cache")
+            setRequestProperty("Pragma", "no-cache")
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", USER_AGENT)
             setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
@@ -331,11 +350,19 @@ object FirmwareCatalog {
                 )
             )
         }
-        // Prefer non-prerelease, then newest-first (API already newest-first).
-        return out.sortedBy { if (it.prerelease) 1 else 0 }
+        // Prefer non-prerelease, then highest semver tag (API is usually newest-first,
+        // but equal prerelease flags alone must not leave an older stable preferred).
+        return out.sortedWith(
+            compareBy<GhRelease> { if (it.prerelease) 1 else 0 }
+                .thenByDescending { release ->
+                    val parts = parseTagVersionParts(release.tag) ?: return@thenByDescending 0L
+                    (parts[0].toLong() shl 32) or (parts[1].toLong() shl 16) or parts[2].toLong()
+                }
+        )
     }
 
     private fun GhRelease.toArtifacts(): List<Artifact> {
+        val ver = parseTagVersionParts(tag)?.joinToString(".")
         return assets.map { a ->
             val board = inferBoardFromFileName(a.name).orEmpty()
             Artifact(
@@ -347,7 +374,8 @@ object FirmwareCatalog {
                 board = board,
                 absoluteUrl = a.downloadUrl,
                 channel = Channel.STABLE,
-                releaseTag = tag
+                releaseTag = tag,
+                version = ver
             )
         }
     }
@@ -357,6 +385,9 @@ object FirmwareCatalog {
             connectTimeout = 15_000
             readTimeout = 30_000
             requestMethod = "GET"
+            useCaches = false
+            setRequestProperty("Cache-Control", "no-cache")
+            setRequestProperty("Pragma", "no-cache")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", USER_AGENT)
         }
@@ -377,6 +408,7 @@ object FirmwareCatalog {
         val out = ArrayList<Artifact>(arr.length())
         for (i in 0 until arr.length()) {
             val obj = arr.getJSONObject(i)
+            val ver = obj.optString("version").takeIf { it.isNotBlank() }
             out.add(
                 Artifact(
                     name = obj.optString("name"),
@@ -385,7 +417,8 @@ object FirmwareCatalog {
                     sha256 = obj.optString("sha256"),
                     kind = obj.optString("kind", "ota"),
                     board = obj.optString("board", ""),
-                    channel = Channel.LATEST
+                    channel = Channel.LATEST,
+                    version = ver
                 )
             )
         }

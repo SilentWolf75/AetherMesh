@@ -762,7 +762,8 @@ fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String {
         }
         status.startsWith("Found ") && status.contains("(latest") -> {
             val name = status.substringAfter("Found ").substringBefore(" (latest")
-            "Encontrado $name (último / Pages)"
+            val rest = status.substringAfter("(latest").removeSuffix(")")
+            "Encontrado $name (último$rest)"
         }
         status.startsWith("Found ") -> "Encontrado ${status.removePrefix("Found ")}"
         status == "No OTA builds published yet." -> "Aún no hay builds OTA publicados."

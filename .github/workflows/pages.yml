@@ -63,11 +63,11 @@ jobs:
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aethermesh-release.jks"
             export AETHERMESH_ANDROID_KEYSTORE="$RUNNER_TEMP/aethermesh-release.jks"
-            ./gradlew :app:assembleRelease -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
+            ./gradlew :app:assembleRelease -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.3.0-${GITHUB_SHA::7}
             echo "release" > "$RUNNER_TEMP/android-build-type"
           else
             echo "::warning::Android signing secrets are absent; publishing a debug-signed APK."
-            ./gradlew :app:assembleDebug -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.2.0-${GITHUB_SHA::7}
+            ./gradlew :app:assembleDebug -PversionCode=${GITHUB_RUN_NUMBER} -PversionName=1.3.0-${GITHUB_SHA::7}
             echo "debug" > "$RUNNER_TEMP/android-build-type"
           fi
 
@@ -75,6 +75,9 @@ jobs:
         run: |
           set -e
           HASH=$(git rev-parse --short=7 HEAD)
+          # Keep Pages OTA labels aligned with firmware/src/Version.h base.
+          FW_VERSION=$(sed -n 's/^#define AETHERMESH_FW_BASE "\([^"]*\)".*/\1/p' firmware/src/Version.h | head -n1)
+          FW_VERSION=${FW_VERSION:-1.3.0}
           OUT=web-flasher/firmware
           mkdir -p "$OUT"
           # boot_app0.bin ships with the arduino-esp32 framework package
@@ -157,7 +160,7 @@ jobs:
           cp "$BUILD_RAK_19026/firmware.zip" "$OUT/$NAME_RAK_19026_ZIP"
 
           # Write a manifest that the browser can verify before flashing.
-          python tools/write_firmware_manifest.py --output "$OUT/manifest.json" --hash "$HASH" \
+          python tools/write_firmware_manifest.py --output "$OUT/manifest.json" --hash "$HASH" --version "$FW_VERSION" \
             --artifact "Heltec V4" "$OUT/$NAME_V4" \
             --artifact "Heltec V3" "$OUT/$NAME_V3" \
             --artifact "RAK4631" "$OUT/$NAME_RAK" \
@@ -168,7 +171,7 @@ jobs:
             --artifact "Elecrow CrowPanel 3.5" "$OUT/$NAME_CROWPANEL"
 
           # Separate OTA catalog for the Android companion app.
-          python tools/write_firmware_manifest.py --output "$OUT/ota-manifest.json" --hash "$HASH" --kind ota \
+          python tools/write_firmware_manifest.py --output "$OUT/ota-manifest.json" --hash "$HASH" --version "$FW_VERSION" --kind ota \
             --artifact "Heltec V4" "$OUT/$NAME_V4_OTA" heltec-v4 \
             --artifact "Heltec V3" "$OUT/$NAME_V3_OTA" heltec-v3 \
             --artifact "LILYGO T-Deck" "$OUT/$NAME_T_DECK_OTA" t-deck \
@@ -177,7 +180,7 @@ jobs:
             --artifact "RAK3401 1W" "$OUT/$NAME_RAK_1W_ZIP" rak3401-1w \
             --artifact "RAK19026" "$OUT/$NAME_RAK_19026_ZIP" rak19026
 
-          echo "Bundled USB/UF2 + OTA packages for $HASH"
+          echo "Bundled USB/UF2 + OTA packages for $FW_VERSION-$HASH"
           ls -la "$OUT"
 
       - name: Copy Android APK to web-flasher

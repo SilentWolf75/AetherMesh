@@ -2590,6 +2590,19 @@ fun SettingsView(
                         val artifact = githubArtifact
                         if (artifact != null) {
                             Spacer(modifier = Modifier.height(8.dp))
+                            val availableLabel = artifact.displayVersion?.let { ver ->
+                                if (appLanguage == "Spanish") "Disponible: $ver"
+                                else "Available: $ver"
+                            }
+                            if (availableLabel != null) {
+                                Text(
+                                    availableLabel,
+                                    color = AccentMint,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                            }
                             Text(
                                 artifact.name,
                                 color = TextLight,

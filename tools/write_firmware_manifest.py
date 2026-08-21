@@ -15,17 +15,24 @@ def artifact_record(
     *,
     kind: str = "usb",
     board: str = "",
+    version: str = "",
 ) -> dict:
     if not path.is_file():
         raise FileNotFoundError(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if version:
+        display = f"{label} - {version}-{commit_hash} (latest)"
+    else:
+        display = f"{label} - {commit_hash} (latest)"
     record = {
-        "name": f"{label} - {commit_hash} (latest)",
+        "name": display,
         "file": path.name,
         "size": path.stat().st_size,
         "sha256": digest,
         "kind": kind,
     }
+    if version:
+        record["version"] = version
     if board:
         record["board"] = board
     return record
@@ -35,6 +42,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--hash", required=True)
+    parser.add_argument(
+        "--version",
+        default="",
+        help="Firmware base version (e.g. 1.3.0) included in display names.",
+    )
     parser.add_argument(
         "--kind",
         default="usb",
@@ -62,6 +74,7 @@ def main() -> None:
                 args.hash,
                 kind=args.kind,
                 board=board,
+                version=args.version,
             )
         )
     args.output.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")

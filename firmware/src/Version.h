@@ -8,7 +8,7 @@
 // Reported in Telemetry.firmware_version — keep the composed string within its
 // max_size (20 incl. null); see proto/mesh.options.
 
-#define AETHERMESH_FW_BASE "1.2.0"
+#define AETHERMESH_FW_BASE "1.3.0"
 
 #ifndef FW_GIT_HASH
 #define FW_GIT_HASH "local"
