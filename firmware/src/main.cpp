@@ -1153,6 +1153,7 @@ static uint32_t tdeckLastRenderSig = 0;
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
 void applyNodeNameOnly(const char* name, const char* shortName = nullptr);
 void sendNodeConfigReportToPhone();
+void sendBleTelemetryLoopbackToPhone();
 void fillNodeConfigSnapshot(aethermesh_NodeConfig& cfg);
 void sendConfigResultTo(uint32_t recipientId, uint32_t requestPacketId,
                         aethermesh_ConfigResult_Status status, const char* message);
@@ -3521,6 +3522,88 @@ void sendNodeConfigReportToPhone() {
     }
 }
 
+// Push one telemetry sample to the phone (no LoRa). Called right after BLE auth
+// so Firmware / battery / position refresh without waiting for telemetry_interval
+// (important after OTA/DFU when power-save can stretch that interval).
+void sendBleTelemetryLoopbackToPhone() {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+        return;
+    }
+
+    float lat = 0.0f;
+    float lon = 0.0f;
+    int32_t alt = 0;
+    if (fixedPosition) {
+        lat = fixedLat;
+        lon = fixedLon;
+        alt = fixedAlt;
+    } else if (gps.location.isValid()) {
+        lat = gps.location.lat();
+        lon = gps.location.lng();
+        alt = gps.altitude.isValid() ? (int32_t)gps.altitude.meters() : 0;
+    } else if (hasInheritedLocation && (millis() - lastInheritedTime < 300000)) {
+        lat = inheritedLat;
+        lon = inheritedLon;
+    }
+
+    uint8_t battery = readBatteryLevel();
+
+    aethermesh_MeshPacket localTelemetryPacket = aethermesh_MeshPacket_init_zero;
+    localTelemetryPacket.sender_id = localNodeId;
+    localTelemetryPacket.recipient_id = 0xFFFFFFFF;
+    localTelemetryPacket.packet_id = random(1, 100000);
+    localTelemetryPacket.hop_limit = 4;
+    localTelemetryPacket.want_ack = false;
+    localTelemetryPacket.prev_hop_id = localNodeId;
+    localTelemetryPacket.which_payload = aethermesh_MeshPacket_telemetry_tag;
+
+    localTelemetryPacket.payload.telemetry.battery_level = battery;
+    localTelemetryPacket.payload.telemetry.latitude = lat;
+    localTelemetryPacket.payload.telemetry.longitude = lon;
+    localTelemetryPacket.payload.telemetry.altitude = alt;
+    localTelemetryPacket.payload.telemetry.is_charging = batteryCharging;
+    localTelemetryPacket.payload.telemetry.battery_voltage = batteryVoltage;
+    localTelemetryPacket.payload.telemetry.position_precision = positionPrecisionM;
+    localTelemetryPacket.payload.telemetry.lora_sf = loraSF;
+    localTelemetryPacket.payload.telemetry.region = nodeRegion;
+    localTelemetryPacket.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
+    strncpy(localTelemetryPacket.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
+            sizeof(localTelemetryPacket.payload.telemetry.firmware_version) - 1);
+    strncpy(localTelemetryPacket.payload.telemetry.node_name, nodeCustomName,
+            sizeof(localTelemetryPacket.payload.telemetry.node_name) - 1);
+    localTelemetryPacket.payload.telemetry.node_name[
+        sizeof(localTelemetryPacket.payload.telemetry.node_name) - 1] = '\0';
+
+#if defined(HELTEC_V4)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V4");
+#elif defined(HELTEC_V3)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "Heltec V3");
+#elif defined(LILYGO_T_DECK)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Deck");
+#elif defined(ELECROW_CROWPANEL_35)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "CrowPanel 3.5");
+#elif defined(LILYGO_T_ECHO)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
+#elif defined(RAK19026)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK19026");
+#elif defined(RAK4631)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK4631");
+#elif defined(RAK3401_1W)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK 1W");
+#else
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "Generic Node");
+#endif
+
+    uint8_t bleBuffer[256];
+    pb_ostream_t stream = pb_ostream_from_buffer(bleBuffer, sizeof(bleBuffer));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &localTelemetryPacket)) {
+        bleMgr.sendToPhone(bleBuffer, stream.bytes_written);
+        Serial.printf("Sent post-auth BLE telemetry (fw %s)\n", AETHERMESH_FW_VERSION);
+    } else {
+        Serial.println("Failed to encode post-auth BLE telemetry.");
+    }
+}
+
 void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId) {
     if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
         return;
@@ -3850,6 +3933,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     Serial.println("Initial device password set successfully.");
                     sendAuthResponse(true, "Password set successfully", false);
                     sendNodeConfigReportToPhone();
+                    sendBleTelemetryLoopbackToPhone();
                 } else {
                     // Verify the password
                     if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
@@ -3858,6 +3942,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                         Serial.println("BLE client authenticated successfully.");
                         sendAuthResponse(true, "Authenticated successfully", false);
                         sendNodeConfigReportToPhone();
+                        sendBleTelemetryLoopbackToPhone();
                     } else {
                         failedAuthAttempts++;
                         Serial.printf("BLE client authentication failed (attempt %u).\n", failedAuthAttempts);

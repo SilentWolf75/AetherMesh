@@ -2813,11 +2813,20 @@ fun SettingsView(
                     confirmButton = {
                         TextButton(onClick = {
                             showOtaWarning = false
+                            val expected = githubArtifact?.expectedFirmwareVersionLabel()
+                                ?: otaFileName.takeIf { it.isNotBlank() }?.let { name ->
+                                    // Local pick: best-effort from filename (…-1.3.0-b75ad7c.zip)
+                                    val m = Regex(
+                                        """(\d+\.\d+\.\d+)-([0-9a-f]{7})""",
+                                        RegexOption.IGNORE_CASE
+                                    ).find(name)
+                                    m?.value
+                                }
                             val useRakDfu = isRakNode
                             if (useRakDfu) {
-                                otaFileUri?.let { viewModel.startRakDfuUpdate(it) }
+                                otaFileUri?.let { viewModel.startRakDfuUpdate(it, expected) }
                             } else {
-                                otaFileBytes?.let { viewModel.startFirmwareUpdate(it) }
+                                otaFileBytes?.let { viewModel.startFirmwareUpdate(it, expected) }
                             }
                         }) {
                             Text(

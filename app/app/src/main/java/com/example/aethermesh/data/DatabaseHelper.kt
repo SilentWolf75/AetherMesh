@@ -1235,6 +1235,21 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     }
 
     // Node name update helper
+    /**
+     * Clear or set the cached firmware string for a node. Used after BLE OTA/DFU
+     * so Node Details / Firmware Update do not keep showing the pre-flash version
+     * until the next telemetry packet arrives.
+     */
+    fun setNodeFirmwareVersion(nodeId: Long, firmwareVersion: String) {
+        if (nodeId == 0L) return
+        val db = this.writableDatabase
+        val canonicalId = resolveCanonicalNodeId(db, nodeId)
+        val values = ContentValues().apply {
+            put(COL_NODE_FW_VERSION, firmwareVersion)
+        }
+        db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
+    }
+
     fun updateNodeName(nodeId: Long, name: String) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -1317,7 +1332,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_NODE_SHORT_NAME, canonicalName.shortName)
             put(COL_NODE_NAME_CUSTOM, if (canonicalName.isCustom) 1 else 0)
             put(COL_NODE_UPTIME, uptimeSeconds)
-            put(COL_NODE_FW_VERSION, firmwareVersion)
+            // Keep the last known version when a packet omits firmware_version
+            // (empty proto default). Otherwise a sparse telemetry update would
+            // wipe the UI back to blank after OTA / reconnect.
+            if (firmwareVersion.isNotBlank()) {
+                put(COL_NODE_FW_VERSION, firmwareVersion)
+            }
             put(COL_NODE_IS_CHARGING, if (isCharging) 1 else 0)
             // Only store signal from real over-the-air reception. rssi == 0 means
             // the local/connected node's own loopback, which carries no rx signal;

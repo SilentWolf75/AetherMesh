@@ -60,6 +60,25 @@ object FirmwareCatalog {
             get() = releaseTag?.takeIf { it.isNotBlank() }
                 ?: version?.takeIf { it.isNotBlank() }
                 ?: Regex("""\bv?\d+\.\d+\.\d+\b""").find(name)?.value
+
+        /**
+         * Best-effort label matching Telemetry.firmware_version (e.g. `1.3.0-b75ad7c`).
+         * Used to refresh the Room cache immediately after a successful BLE OTA/DFU.
+         */
+        fun expectedFirmwareVersionLabel(): String? {
+            val hash = Regex("""-([0-9a-f]{7,40})(?:-ota)?\.(?:bin|zip)$""", RegexOption.IGNORE_CASE)
+                .find(file)?.groupValues?.getOrNull(1)
+                ?: Regex("""\b([0-9a-f]{7})\b""", RegexOption.IGNORE_CASE).find(name)?.groupValues?.getOrNull(1)
+            val base = version?.trim()?.removePrefix("v")?.takeIf { it.isNotBlank() }
+                ?: Regex("""\bv?(\d+\.\d+\.\d+)\b""").find(name)?.groupValues?.getOrNull(1)
+                ?: releaseTag?.trim()?.removePrefix("v")?.takeIf { it.matches(Regex("""\d+\.\d+\.\d+.*""")) }
+            return when {
+                !base.isNullOrBlank() && !hash.isNullOrBlank() -> "$base-$hash"
+                !base.isNullOrBlank() -> base
+                !hash.isNullOrBlank() -> hash
+                else -> null
+            }
+        }
     }
 
     data class DownloadResult(

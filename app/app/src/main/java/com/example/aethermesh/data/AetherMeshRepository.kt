@@ -309,6 +309,13 @@ class AetherMeshRepository(private val context: Context) {
     private val _otaState = MutableStateFlow(OtaState())
     val otaState: StateFlow<OtaState> = _otaState.asStateFlow()
 
+    // Remember which node / expected label we flashed so DFU completion can
+    // invalidate the Room-cached "Firmware:" string (telemetry may be minutes away).
+    @Volatile
+    private var otaTargetNodeId: Long = 0L
+    @Volatile
+    private var otaExpectedFirmwareVersion: String = ""
+
     private val diagnosticRing = ArrayDeque<String>(64)
     private val _diagnosticLogs = MutableStateFlow<List<String>>(emptyList())
     val diagnosticLogs: StateFlow<List<String>> = _diagnosticLogs.asStateFlow()
@@ -1822,6 +1829,8 @@ class AetherMeshRepository(private val context: Context) {
             return
         }
         val nodeId = bleManager.connectedNodeId
+        otaTargetNodeId = nodeId
+        // Expected label may have been set by [rememberOtaExpectedFirmware] from catalog.
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
             bleManager.otaExclusive = true
@@ -1914,6 +1923,7 @@ class AetherMeshRepository(private val context: Context) {
                 sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.END, 0, "")
                 awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.SUCCESS, 20_000, "verification")
 
+                markOtaFirmwareCacheUpdated()
                 _otaState.value = OtaState(
                     progress = 100, done = true,
                     status = "Update verified — reconnecting after node reboot…"
@@ -2003,6 +2013,7 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         override fun onDfuCompleted(deviceAddress: String) {
+            markOtaFirmwareCacheUpdated()
             _otaState.value = OtaState(
                 progress = 100, done = true,
                 status = "DFU complete - node rebooting into the new firmware"
@@ -2084,6 +2095,7 @@ class AetherMeshRepository(private val context: Context) {
         }
         val deviceName = bleManager.connectedDeviceName ?: "AetherMesh"
         val nodeId = bleManager.connectedNodeId
+        otaTargetNodeId = nodeId
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
             try {
@@ -2169,6 +2181,28 @@ class AetherMeshRepository(private val context: Context) {
 
     fun resetOtaState() {
         if (!_otaState.value.active) _otaState.value = OtaState()
+    }
+
+    /**
+     * Remember the catalog / package version label before starting BLE OTA or DFU.
+     * On success we write this into the node row so Installed / Node Details do not
+     * keep showing the pre-flash firmware until telemetry arrives.
+     */
+    fun rememberOtaExpectedFirmware(versionLabel: String?) {
+        otaExpectedFirmwareVersion = versionLabel?.trim().orEmpty()
+    }
+
+    private fun markOtaFirmwareCacheUpdated() {
+        val nodeId = otaTargetNodeId.takeIf { it != 0L } ?: bleManager.connectedNodeId
+        if (nodeId == 0L) return
+        val label = otaExpectedFirmwareVersion
+        // Prefer the known package label; otherwise clear so UI shows unknown
+        // instead of a confidently wrong pre-OTA string.
+        dbHelper.setNodeFirmwareVersion(nodeId, label)
+        otaExpectedFirmwareVersion = ""
+        otaTargetNodeId = 0L
+        refreshData()
+        Log.d(TAG, "Post-OTA firmware cache for 0x${nodeId.toString(16)} -> '${label.ifEmpty { "(cleared)" }}'")
     }
 
     private fun sendOtaControl(
