@@ -1,23 +1,19 @@
 /**
- * Golden-vector test for remote-config v3 (AMCFG3 + PBKDF2) and v2 HMAC.
- * Must match ControlAuthTest.kt and tools/test_control_auth_vectors.py.
+ * Golden-vector tests against the shipped PacketAuth.cpp (buildConfigCanonical +
+ * deriveControlKey via setControlPassword/verifyConfig).
  *
- * Uses OpenSSL (libcrypto) so the native env does not need Arduino Crypto.
+ * Native builds inject OpenSSL only as the HMAC primitive (AETHERMESH_NATIVE_CRYPTO);
+ * the PBKDF2 iteration/XOR structure and canonical byte layout are the real firmware code.
  */
 #include <unity.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
 #include <string.h>
 #include <stdint.h>
+#include "PacketAuth.h"
 
 static const char* PASSWORD = "admin-key";
-static const uint8_t SALT[] = {'A', 'M', 'C', 'T', 'R', 'L', '1', 0};
-static const uint32_t ITERATIONS = 120000;
-
 static const char* V2_CANONICAL_HEX =
     "414d4346473201000000020000000807060504030201070000000552656c6179090000000000fa421600000000000000010000003c0000001e0000000064000000000000000000000000000000000000000000000000000000000000000000000000000000";
 static const char* V2_TAG_HEX = "165a8fa5f809a08d3063ea46c78c64e4";
-
 static const char* V3_CANONICAL_HEX =
     "414d4346473301000000020000000807060504030201070000000552656c6179090000000000fa421600000000000000010000003c0000001e0000000064000000000000000000000000000000000000000000000000000000000000000000000000000000";
 static const char* V3_TAG_HEX = "0cd1d291935a725a4ea210f3ac3dddbf";
@@ -50,75 +46,102 @@ static void bytesToHex(const uint8_t* data, size_t len, char* out) {
     out[len * 2] = 0;
 }
 
-/** Single-block PBKDF2-HMAC-SHA256 matching PacketAuth / ControlKeyDerivation. */
-static int deriveControlKey(const char* password, uint8_t out[32]) {
-    size_t pwLen = strlen(password);
-    uint8_t first[sizeof(SALT) + 4];
-    memcpy(first, SALT, sizeof(SALT));
-    first[sizeof(SALT) + 0] = 0;
-    first[sizeof(SALT) + 1] = 0;
-    first[sizeof(SALT) + 2] = 0;
-    first[sizeof(SALT) + 3] = 1;
-
-    unsigned int blockLen = 32;
-    uint8_t block[32];
-    if (!HMAC(EVP_sha256(), password, (int)pwLen, first, sizeof(first), block, &blockLen)) {
-        return 0;
-    }
-    memcpy(out, block, 32);
-    for (uint32_t iter = 1; iter < ITERATIONS; iter++) {
-        if (!HMAC(EVP_sha256(), password, (int)pwLen, block, 32, block, &blockLen)) {
-            return 0;
-        }
-        for (int i = 0; i < 32; i++) out[i] ^= block[i];
-    }
-    return 1;
+/** Same Relay fixture as ControlAuthTest.kt / tools/test_control_auth_vectors.py. */
+static void fillPublishedFixture(aethermesh_MeshPacket* packet) {
+    *packet = aethermesh_MeshPacket_init_zero;
+    packet->sender_id = 1;
+    packet->recipient_id = 2;
+    packet->session_id = 0x0102030405060708ULL;
+    packet->auth_counter = 7;
+    packet->which_payload = aethermesh_MeshPacket_config_tag;
+    aethermesh_NodeConfig* cfg = &packet->payload.config;
+    strncpy(cfg->node_name, "Relay", sizeof(cfg->node_name) - 1);
+    cfg->lora_sf = 9;
+    cfg->lora_bw = 125.0f;
+    cfg->lora_tx_power = 22;
+    cfg->region = 0;
+    cfg->node_role = 1;
+    cfg->telemetry_interval = 60;
+    cfg->screen_timeout_secs = 30;
+    cfg->power_save_mode = false;
+    cfg->position_precision = 100;
+    cfg->gps_mode = 0;
 }
 
-static void hmacSha256Trunc16(const uint8_t* key, size_t keyLen,
-                              const uint8_t* data, size_t dataLen,
-                              uint8_t out16[16]) {
-    uint8_t full[32];
-    unsigned int fullLen = 32;
-    TEST_ASSERT_NOT_NULL(HMAC(EVP_sha256(), key, (int)keyLen, data, dataLen, full, &fullLen));
-    memcpy(out16, full, 16);
-}
-
-void test_v2_tag_matches_published_vector() {
-    uint8_t canon[128];
-    size_t canonLen = hexDecode(V2_CANONICAL_HEX, canon, sizeof(canon));
-    TEST_ASSERT_EQUAL(101, (int)canonLen);
-
+static void setAuthTagFromHex(aethermesh_MeshPacket* packet, const char* tagHex) {
     uint8_t tag[16];
-    hmacSha256Trunc16((const uint8_t*)PASSWORD, strlen(PASSWORD), canon, canonLen, tag);
-    char hex[33];
-    bytesToHex(tag, 16, hex);
-    TEST_ASSERT_EQUAL_STRING(V2_TAG_HEX, hex);
+    TEST_ASSERT_EQUAL(16, (int)hexDecode(tagHex, tag, sizeof(tag)));
+    packet->auth_tag.size = 16;
+    memcpy(packet->auth_tag.bytes, tag, 16);
 }
 
-void test_v3_tag_matches_published_vector() {
-    uint8_t key[32];
-    TEST_ASSERT_TRUE(deriveControlKey(PASSWORD, key));
-
-    uint8_t canon[128];
-    size_t canonLen = hexDecode(V3_CANONICAL_HEX, canon, sizeof(canon));
-    TEST_ASSERT_EQUAL(101, (int)canonLen);
-    TEST_ASSERT_EQUAL_UINT8('A', canon[0]);
-    TEST_ASSERT_EQUAL_UINT8('3', canon[5]);
-
-    uint8_t tag[16];
-    hmacSha256Trunc16(key, 32, canon, canonLen, tag);
-    char hex[33];
-    bytesToHex(tag, 16, hex);
-    TEST_ASSERT_EQUAL_STRING(V3_TAG_HEX, hex);
+void test_buildConfigCanonical_matches_published_v2_vector() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    static const uint8_t domainV2[] = {'A', 'M', 'C', 'F', 'G', '2'};
+    uint8_t canonical[256];
+    size_t length = packetauth::buildConfigCanonical(
+        packet, canonical, sizeof(canonical), domainV2, sizeof(domainV2));
+    TEST_ASSERT_EQUAL(101, (int)length);
+    char hex[203];
+    bytesToHex(canonical, length, hex);
+    TEST_ASSERT_EQUAL_STRING(V2_CANONICAL_HEX, hex);
 }
 
-void setUp(void) {}
+void test_buildConfigCanonical_matches_published_v3_vector() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    static const uint8_t domainV3[] = {'A', 'M', 'C', 'F', 'G', '3'};
+    uint8_t canonical[256];
+    size_t length = packetauth::buildConfigCanonical(
+        packet, canonical, sizeof(canonical), domainV3, sizeof(domainV3));
+    TEST_ASSERT_EQUAL(101, (int)length);
+    char hex[203];
+    bytesToHex(canonical, length, hex);
+    TEST_ASSERT_EQUAL_STRING(V3_CANONICAL_HEX, hex);
+}
+
+void test_verifyConfig_v2_accepts_published_tag() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    packet.protocol_version = 2;
+    setAuthTagFromHex(&packet, V2_TAG_HEX);
+    packetauth::setRefuseLegacyControl(false);
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, PASSWORD));
+}
+
+void test_verifyConfig_v3_accepts_published_tag() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    packet.protocol_version = 3;
+    setAuthTagFromHex(&packet, V3_TAG_HEX);
+    packetauth::setRefuseLegacyControl(false);
+    packetauth::setControlPassword(PASSWORD);
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void test_verifyConfig_v3_rejects_wrong_password() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    packet.protocol_version = 3;
+    setAuthTagFromHex(&packet, V3_TAG_HEX);
+    packetauth::setControlPassword("not-admin-key");
+    TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void setUp(void) {
+    packetauth::setRefuseLegacyControl(false);
+    packetauth::setControlPassword(nullptr);
+}
+
 void tearDown(void) {}
 
 int main(int argc, char** argv) {
     UNITY_BEGIN();
-    RUN_TEST(test_v2_tag_matches_published_vector);
-    RUN_TEST(test_v3_tag_matches_published_vector);
+    RUN_TEST(test_buildConfigCanonical_matches_published_v2_vector);
+    RUN_TEST(test_buildConfigCanonical_matches_published_v3_vector);
+    RUN_TEST(test_verifyConfig_v2_accepts_published_tag);
+    RUN_TEST(test_verifyConfig_v3_accepts_published_tag);
+    RUN_TEST(test_verifyConfig_v3_rejects_wrong_password);
     return UNITY_END();
 }

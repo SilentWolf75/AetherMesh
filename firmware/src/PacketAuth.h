@@ -1,7 +1,8 @@
 #ifndef PACKET_AUTH_H
 #define PACKET_AUTH_H
 
-#include <Arduino.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "mesh.pb.h"
 
 namespace packetauth {

@@ -42,7 +42,10 @@ Pinned tags for password `admin-key` and the published Relay fixture:
 | v3 | `0cd1d291935a725a4ea210f3ac3dddbf` |
 
 Asserted in `ControlAuthTest.kt`, `tools/test_control_auth_vectors.py`, and
-`firmware/test/test_packetauth` so Kotlin / Python / native OpenSSL must agree at build time.
+`firmware/test/test_packetauth` (which links **shipped** `PacketAuth.cpp`:
+`buildConfigCanonical` + `setControlPassword`/`verifyConfig`). Native builds inject
+OpenSSL only as the HMAC primitive (`AETHERMESH_NATIVE_CRYPTO`); the PBKDF2
+iteration/XOR structure and canonical layout are the firmware code.
 
 ## PBKDF2 cost
 

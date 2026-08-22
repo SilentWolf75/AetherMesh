@@ -1,13 +1,54 @@
 #include "PacketAuth.h"
-#include <SHA256.h>
 #include <string.h>
+
+#if defined(AETHERMESH_NATIVE_CRYPTO)
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+
+/** Host-side stand-in for Arduino Crypto SHA256 HMAC, same call shape as device builds. */
+class HmacSha256 {
+public:
+    static constexpr size_t HASH_SIZE = 32;
+
+    HmacSha256() : ctx_(HMAC_CTX_new()) {}
+    ~HmacSha256() {
+        if (ctx_) HMAC_CTX_free(ctx_);
+    }
+
+    HmacSha256(const HmacSha256&) = delete;
+    HmacSha256& operator=(const HmacSha256&) = delete;
+
+    void resetHMAC(const void* key, size_t keyLength) {
+        HMAC_Init_ex(ctx_, key, (int)keyLength, EVP_sha256(), nullptr);
+    }
+
+    void update(const void* data, size_t length) {
+        HMAC_Update(ctx_, static_cast<const unsigned char*>(data), length);
+    }
+
+    void finalizeHMAC(const void* /*key*/, size_t /*keyLength*/, void* hash, size_t hashLength) {
+        unsigned char full[HASH_SIZE];
+        unsigned int outLen = 0;
+        HMAC_Final(ctx_, full, &outLen);
+        if (hashLength > HASH_SIZE) hashLength = HASH_SIZE;
+        memcpy(hash, full, hashLength);
+    }
+
+private:
+    HMAC_CTX* ctx_;
+};
+
+#else
+#include <SHA256.h>
+using HmacSha256 = SHA256;
+#endif
 
 namespace {
 
 constexpr uint32_t CONTROL_PBKDF2_ITERATIONS = 120000;
 static const uint8_t CONTROL_KEY_SALT[] = {'A', 'M', 'C', 'T', 'R', 'L', '1', 0};
 
-uint8_t gControlKey[SHA256::HASH_SIZE] = {};
+uint8_t gControlKey[HmacSha256::HASH_SIZE] = {};
 bool gControlKeyValid = false;
 bool gRefuseLegacyControl = false;
 
@@ -39,7 +80,8 @@ bool appendFloat(uint8_t*& cursor, size_t& remaining, float value) {
 
 void deriveControlKey(const char* password, uint8_t* out32) {
     // Match Android ControlKeyDerivation / ChatKeyDerivation (single PBKDF2 block).
-    SHA256 sha;
+    // Reuses one HmacSha256 across all iterations — resetHMAC must fully reinit state.
+    HmacSha256 sha;
     uint8_t firstInput[sizeof(CONTROL_KEY_SALT) + 4];
     memcpy(firstInput, CONTROL_KEY_SALT, sizeof(CONTROL_KEY_SALT));
     firstInput[sizeof(CONTROL_KEY_SALT) + 0] = 0;
@@ -49,14 +91,14 @@ void deriveControlKey(const char* password, uint8_t* out32) {
     size_t keyLength = strlen(password);
     sha.resetHMAC(password, keyLength);
     sha.update(firstInput, sizeof(firstInput));
-    uint8_t block[SHA256::HASH_SIZE];
+    uint8_t block[HmacSha256::HASH_SIZE];
     sha.finalizeHMAC(password, keyLength, block, sizeof(block));
-    memcpy(out32, block, SHA256::HASH_SIZE);
+    memcpy(out32, block, HmacSha256::HASH_SIZE);
     for (uint32_t iter = 1; iter < CONTROL_PBKDF2_ITERATIONS; iter++) {
         sha.resetHMAC(password, keyLength);
         sha.update(block, sizeof(block));
         sha.finalizeHMAC(password, keyLength, block, sizeof(block));
-        for (uint8_t i = 0; i < SHA256::HASH_SIZE; i++) out32[i] ^= block[i];
+        for (uint8_t i = 0; i < HmacSha256::HASH_SIZE; i++) out32[i] ^= block[i];
     }
     memset(block, 0, sizeof(block));
     memset(firstInput, 0, sizeof(firstInput));
@@ -65,8 +107,8 @@ void deriveControlKey(const char* password, uint8_t* out32) {
 bool verifyTag(const uint8_t* canonical, size_t length, const uint8_t* key, size_t keyLength,
                const uint8_t* tag, size_t tagLength) {
     if (tagLength != 16) return false;
-    uint8_t expected[SHA256::HASH_SIZE];
-    SHA256 sha;
+    uint8_t expected[HmacSha256::HASH_SIZE];
+    HmacSha256 sha;
     sha.resetHMAC(key, keyLength);
     sha.update(canonical, length);
     sha.finalizeHMAC(key, keyLength, expected, sizeof(expected));

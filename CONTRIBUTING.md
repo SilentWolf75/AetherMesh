@@ -13,7 +13,7 @@ Thank you for helping improve offline mesh tooling. This project targets field r
 | Component | Command |
 |-----------|---------|
 | Firmware (Heltec V4) | `cd firmware && pio run -e heltec_v4` |
-| Firmware unit tests | `cd firmware && pio test -e native` |
+| Firmware unit tests | `cd firmware && pio test -e native` (needs host g++ and `libssl-dev` / OpenSSL) |
 | Android app | `cd app && ./gradlew :app:assembleDebug` |
 | Android unit tests | `cd app && ./gradlew :app:testDebugUnitTest` |
 | Release target parity | `python tools/validate_release_targets.py` |
