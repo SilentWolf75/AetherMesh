@@ -476,6 +476,85 @@ void test_soft_stale_route_floods() {
     TEST_ASSERT_FALSE(shouldFloodSoftStaleRoute(999999, 0)); // softAge disabled
 }
 
+// --- SF-keyed channel-ACK timing helpers -------------------------------------
+// These are step functions on spreading factor. The step boundaries are easy to
+// get off by one, and the ordering matters: if a higher SF ever returned a
+// shorter margin than a lower one, slotted ACKs would start before the previous
+// transmission cleared the air and collide.
+
+void test_channel_ack_base_delay_steps_and_ordering() {
+    TEST_ASSERT_EQUAL_UINT32(150, channelAckBaseDelayMs(7));
+    TEST_ASSERT_EQUAL_UINT32(150, channelAckBaseDelayMs(8));
+    TEST_ASSERT_EQUAL_UINT32(250, channelAckBaseDelayMs(9));
+    TEST_ASSERT_EQUAL_UINT32(350, channelAckBaseDelayMs(10));
+    TEST_ASSERT_EQUAL_UINT32(600, channelAckBaseDelayMs(11));
+    TEST_ASSERT_EQUAL_UINT32(1000, channelAckBaseDelayMs(12));
+    // Above the top step stays clamped, never wraps back down.
+    TEST_ASSERT_EQUAL_UINT32(1000, channelAckBaseDelayMs(13));
+    for (uint8_t sf = 8; sf <= 13; sf++) {
+        TEST_ASSERT_TRUE(channelAckBaseDelayMs(sf) >= channelAckBaseDelayMs(sf - 1));
+    }
+}
+
+void test_channel_ack_airtime_margin_steps_and_ordering() {
+    TEST_ASSERT_EQUAL_UINT32(700, channelAckAirtimeMarginMs(9));
+    TEST_ASSERT_EQUAL_UINT32(1200, channelAckAirtimeMarginMs(10));
+    TEST_ASSERT_EQUAL_UINT32(2200, channelAckAirtimeMarginMs(11));
+    TEST_ASSERT_EQUAL_UINT32(3200, channelAckAirtimeMarginMs(12));
+    TEST_ASSERT_EQUAL_UINT32(3200, channelAckAirtimeMarginMs(13));
+    for (uint8_t sf = 8; sf <= 13; sf++) {
+        TEST_ASSERT_TRUE(channelAckAirtimeMarginMs(sf) >= channelAckAirtimeMarginMs(sf - 1));
+    }
+}
+
+void test_channel_ack_jitter_cap_steps_and_ordering() {
+    TEST_ASSERT_EQUAL_UINT32(100, channelAckJitterCapMs(8));
+    TEST_ASSERT_EQUAL_UINT32(120, channelAckJitterCapMs(9));
+    TEST_ASSERT_EQUAL_UINT32(140, channelAckJitterCapMs(10));
+    TEST_ASSERT_EQUAL_UINT32(180, channelAckJitterCapMs(11));
+    TEST_ASSERT_EQUAL_UINT32(200, channelAckJitterCapMs(12));
+    for (uint8_t sf = 8; sf <= 13; sf++) {
+        TEST_ASSERT_TRUE(channelAckJitterCapMs(sf) >= channelAckJitterCapMs(sf - 1));
+    }
+    // Jitter must stay small relative to the base delay it perturbs, or slots
+    // from adjacent nodes overlap.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        TEST_ASSERT_TRUE(channelAckJitterCapMs(sf) <= channelAckBaseDelayMs(sf));
+    }
+}
+
+void test_channel_insurance_jitter_cap_steps_and_ordering() {
+    TEST_ASSERT_EQUAL_UINT32(500, channelInsuranceJitterCapMs(9));
+    TEST_ASSERT_EQUAL_UINT32(600, channelInsuranceJitterCapMs(10));
+    TEST_ASSERT_EQUAL_UINT32(800, channelInsuranceJitterCapMs(11));
+    TEST_ASSERT_EQUAL_UINT32(800, channelInsuranceJitterCapMs(12));
+    for (uint8_t sf = 8; sf <= 13; sf++) {
+        TEST_ASSERT_TRUE(channelInsuranceJitterCapMs(sf) >= channelInsuranceJitterCapMs(sf - 1));
+    }
+}
+
+void test_early_flood_gap_steps_and_ordering() {
+    TEST_ASSERT_EQUAL_UINT32(800, earlyFloodGapMs(9));
+    TEST_ASSERT_EQUAL_UINT32(1200, earlyFloodGapMs(10));
+    TEST_ASSERT_EQUAL_UINT32(1800, earlyFloodGapMs(11));
+    TEST_ASSERT_EQUAL_UINT32(2500, earlyFloodGapMs(12));
+    TEST_ASSERT_EQUAL_UINT32(2500, earlyFloodGapMs(13));
+    for (uint8_t sf = 8; sf <= 13; sf++) {
+        TEST_ASSERT_TRUE(earlyFloodGapMs(sf) >= earlyFloodGapMs(sf - 1));
+    }
+}
+
+void test_clampf_bounds() {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, clampf(-5.0f, 0.0f, 10.0f));
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, clampf(50.0f, 0.0f, 10.0f));
+    TEST_ASSERT_EQUAL_FLOAT(4.5f, clampf(4.5f, 0.0f, 10.0f));
+    // Values exactly on each bound are returned unchanged.
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, clampf(0.0f, 0.0f, 10.0f));
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, clampf(10.0f, 0.0f, 10.0f));
+    // Negative ranges (SNR clamps) behave the same way.
+    TEST_ASSERT_EQUAL_FLOAT(-20.0f, clampf(-100.0f, -20.0f, 10.0f));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_hopcost_strong_link_is_min);
@@ -526,5 +605,11 @@ int main(int, char**) {
     RUN_TEST(test_relay_loss_recovery_policy);
     RUN_TEST(test_text_pending_ack_defer_scales_with_sf);
     RUN_TEST(test_soft_stale_route_floods);
+    RUN_TEST(test_channel_ack_base_delay_steps_and_ordering);
+    RUN_TEST(test_channel_ack_airtime_margin_steps_and_ordering);
+    RUN_TEST(test_channel_ack_jitter_cap_steps_and_ordering);
+    RUN_TEST(test_channel_insurance_jitter_cap_steps_and_ordering);
+    RUN_TEST(test_early_flood_gap_steps_and_ordering);
+    RUN_TEST(test_clampf_bounds);
     return UNITY_END();
 }
