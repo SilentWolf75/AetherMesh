@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.silentwolf75.aethermesh.data.AppPackageMigration
 import com.silentwolf75.aethermesh.data.AetherMeshRepository
 import com.silentwolf75.aethermesh.data.ChatMessage
 import com.silentwolf75.aethermesh.data.ChannelConfig
@@ -522,6 +523,13 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun getDmInboxPreviews(localNodeId: Long) = repository.getDmInboxPreviews(localNodeId)
 
     fun getAllChatMessages() = repository.getAllChatMessages()
+
+    fun exportAppMigrationJson(): String = repository.exportAppMigrationJson()
+
+    fun importAppMigrationJson(json: String): AppPackageMigration.ImportResult =
+        repository.importAppMigration(json)
+
+    fun isLegacyPackageInstalled(): Boolean = repository.isLegacyPackageInstalled()
 
     fun countUnreadChannelMessages(channel: String, afterTs: Long, excludeSenderId: Long) =
         repository.countUnreadChannelMessages(channel, afterTs, excludeSenderId)

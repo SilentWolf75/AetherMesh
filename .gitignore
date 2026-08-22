@@ -7,6 +7,7 @@ firmware/.vscode/
 # ===== Android / Gradle =====
 .gradle/
 **/build/
+*.hprof
 .kotlin/
 *.iml
 local.properties
@@ -37,11 +38,10 @@ ota-images/
 # Editor backups
 *.bak
 
-# ===== Hardware (KiCad / autorouter scratch — keep schematics & release artifacts) =====
-# Campaign scripts, autorouter snapshots, and tool binaries under am1-pcb/
-hardware/**/.history/
-hardware/**/*.pre_*
-hardware/**/*.bestpair
-hardware/**/*.smoke_swd
-hardware/**/freerouting.jar
-hardware/am1/electrical/**/am1-pcb/_*
+# ===== Hardware (KiCad / autorouter scratch) =====
+# Only hardware/README.md is tracked by default. Everything else under
+# hardware/ is local scratch or not-yet-curated CAD — ignore it so
+# `git ls-files -o --exclude-standard hardware/` stays empty.
+# Force-add intentional releases: `git add -f hardware/path/to/file`.
+/hardware/**
+!/hardware/README.md

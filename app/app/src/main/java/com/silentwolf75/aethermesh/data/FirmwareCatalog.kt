@@ -1,5 +1,6 @@
 package com.silentwolf75.aethermesh.data
 
+import com.silentwolf75.aethermesh.BuildConfig
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -35,7 +36,7 @@ object FirmwareCatalog {
     const val GITHUB_RELEASES_URL =
         "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=30"
     const val GITHUB_RELEASES_WEB = "https://github.com/$GITHUB_REPO/releases"
-    const val USER_AGENT = "AetherMesh-Android/1.3.3"
+    val USER_AGENT = "AetherMesh-Android/${BuildConfig.VERSION_NAME}"
 
     /**
      * Honest offline status for airplane mode / no phone data.

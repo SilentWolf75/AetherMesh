@@ -8,7 +8,14 @@
 // Reported in Telemetry.firmware_version — keep the composed string within its
 // max_size (20 incl. null); see proto/mesh.options.
 
-#define AETHERMESH_FW_BASE "1.3.1"
+#define AETHERMESH_FW_BASE "1.3.2"
+
+// Mesh wire protocol capability advertised on outbound packets / diagnostics.
+// Bump when peers must discover a new auth or framing feature (app gates
+// remote-config signing on the peer's advertised version).
+#ifndef AETHERMESH_PROTOCOL_VERSION
+#define AETHERMESH_PROTOCOL_VERSION 3
+#endif
 
 #ifndef FW_GIT_HASH
 #define FW_GIT_HASH "local"

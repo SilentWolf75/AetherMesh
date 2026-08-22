@@ -951,6 +951,94 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         writableDatabase.delete(TABLE_KEYS, "$COL_KEY_CHAT_ID = ?", arrayOf(chatIdentifier))
     }
 
+    fun getAllChatKeys(): Map<String, String> {
+        val db = readableDatabase
+        val out = linkedMapOf<String, String>()
+        db.rawQuery("SELECT $COL_KEY_CHAT_ID, $COL_KEY_VAL FROM $TABLE_KEYS", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                out[cursor.getString(0)] = cursor.getString(1)
+            }
+        }
+        return out
+    }
+
+    /** Returns true when a row was inserted (skips duplicate sender+packet_id). */
+    fun importMessageForMigration(
+        senderId: Long,
+        recipientId: Long,
+        content: String,
+        timestamp: Long,
+        channel: String,
+        packetId: Int,
+        status: String,
+        isEncrypted: Boolean,
+        heardCount: Int
+    ): Boolean {
+        val db = writableDatabase
+        val canonicalSender = resolveCanonicalNodeId(db, senderId)
+        if (packetId != 0 && hasMessage(canonicalSender, packetId)) return false
+        val values = ContentValues().apply {
+            put(COL_MSG_SENDER, canonicalSender)
+            put(COL_MSG_RECIPIENT, resolveCanonicalNodeId(db, recipientId))
+            put(COL_MSG_CONTENT, content)
+            put(COL_MSG_TIMESTAMP, timestamp)
+            put(COL_MSG_CHANNEL, channel)
+            put(COL_MSG_PACKET_ID, packetId)
+            put(COL_MSG_STATUS, status)
+            put(COL_MSG_IS_ENCRYPTED, if (isEncrypted) 1 else 0)
+            put(COL_MSG_HEARD_COUNT, heardCount)
+        }
+        return db.insert(TABLE_MESSAGES, null, values) >= 0
+    }
+
+    fun importNodeForMigration(
+        nodeId: Long,
+        name: String,
+        shortName: String,
+        battery: Int,
+        latitude: Float,
+        longitude: Float,
+        lastActive: Long,
+        model: String,
+        uptimeSeconds: Long,
+        firmwareVersion: String,
+        isCharging: Boolean,
+        rssi: Float,
+        snr: Float,
+        voltage: Float,
+        positionPrecision: Int,
+        protocolVersion: Int,
+        loraSf: Int,
+        region: Int,
+        lastPositionAt: Long
+    ) {
+        if (nodeId == 0L) return
+        val db = writableDatabase
+        val canonicalId = resolveCanonicalNodeId(db, nodeId)
+        val values = ContentValues().apply {
+            put(COL_NODE_ID, canonicalId)
+            put(COL_NODE_NAME, name)
+            put(COL_NODE_SHORT_NAME, shortName)
+            put(COL_NODE_BATTERY, battery)
+            put(COL_NODE_LATITUDE, latitude)
+            put(COL_NODE_LONGITUDE, longitude)
+            put(COL_NODE_LAST_ACTIVE, lastActive)
+            put(COL_NODE_MODEL, model)
+            put(COL_NODE_UPTIME, uptimeSeconds)
+            put(COL_NODE_FW_VERSION, firmwareVersion)
+            put(COL_NODE_IS_CHARGING, if (isCharging) 1 else 0)
+            put(COL_NODE_RSSI, rssi.toDouble())
+            put(COL_NODE_SNR, snr.toDouble())
+            put(COL_NODE_VOLTAGE, voltage.toDouble())
+            put(COL_NODE_POS_PRECISION, positionPrecision)
+            put(COL_NODE_PROTOCOL_VERSION, protocolVersion.coerceAtLeast(1))
+            put(COL_NODE_LORA_SF, loraSf)
+            put(COL_NODE_REGION, region)
+            put(COL_NODE_LAST_POSITION, lastPositionAt)
+        }
+        db.insertWithOnConflict(TABLE_NODES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     // Insert Range Test diagnostics log
     fun insertRangeTestLog(
         targetId: Long,

@@ -7,9 +7,11 @@
     <cloud-backup>
         <exclude domain="sharedpref" path="aethermesh_secure_prefs" />
         <exclude domain="sharedpref" path="aethermesh_secure_prefs_fallback" />
+        <!-- Paths must match SecurePrefsNames.ENCRYPTED / FALLBACK in Kotlin -->
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="aethermesh_secure_prefs" />
         <exclude domain="sharedpref" path="aethermesh_secure_prefs_fallback" />
+        <!-- Paths must match SecurePrefsNames.ENCRYPTED / FALLBACK in Kotlin -->
     </device-transfer>
 </data-extraction-rules>

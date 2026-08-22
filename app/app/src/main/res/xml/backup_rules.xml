@@ -7,4 +7,5 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="aethermesh_secure_prefs" />
     <exclude domain="sharedpref" path="aethermesh_secure_prefs_fallback" />
+    <!-- Paths must match SecurePrefsNames.ENCRYPTED / FALLBACK in Kotlin -->
 </full-backup-content>

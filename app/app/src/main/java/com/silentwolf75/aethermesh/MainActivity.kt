@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.silentwolf75.aethermesh.ble.AetherMeshService
+import com.silentwolf75.aethermesh.data.AppPackageMigration
 import com.silentwolf75.aethermesh.theme.AetherMeshTheme
 import com.silentwolf75.aethermesh.ui.main.AccentCyan
 import com.silentwolf75.aethermesh.ui.main.SurfaceDark
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
         private const val PERMISSION_REQUEST_CODE = 101
         private const val TAG = "MainActivity"
         private const val PREF_PERM_RATIONALE_SHOWN = "perm_rationale_shown"
+        private const val PREF_PACKAGE_MIGRATION_DISMISSED = "package_migration_banner_dismissed"
         const val EXTRA_OPEN_CHANNEL = "extra_open_channel"
         const val EXTRA_OPEN_DM_PEER = "extra_open_dm_peer"
         const val EXTRA_OPEN_NODE_ID = "extra_open_node_id"
@@ -99,6 +101,12 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(
                     pendingPermissions.isNotEmpty() &&
                         !sharedPrefs.getBoolean(PREF_PERM_RATIONALE_SHOWN, false)
+                )
+            }
+            var showPackageMigration by remember {
+                mutableStateOf(
+                    !sharedPrefs.getBoolean(PREF_PACKAGE_MIGRATION_DISMISSED, false) &&
+                        AppPackageMigration.isLegacyPackageInstalled(context)
                 )
             }
 
@@ -193,6 +201,50 @@ class MainActivity : ComponentActivity() {
                                 }) {
                                     Text(
                                         if (spanish) "Continuar" else "Continue",
+                                        color = AccentCyan,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            },
+                            containerColor = SurfaceDark
+                        )
+                    }
+                    if (showPackageMigration) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                sharedPrefs.edit().putBoolean(PREF_PACKAGE_MIGRATION_DISMISSED, true).apply()
+                                showPackageMigration = false
+                            },
+                            title = {
+                                Text(
+                                    if (spanish) "Migración de paquete" else "Package migration",
+                                    color = TextLight,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            },
+                            text = {
+                                Text(
+                                    if (spanish)
+                                        "La app antigua (${AppPackageMigration.LEGACY_APPLICATION_ID}) sigue instalada. " +
+                                            "Este build es una app distinta: no hereda mensajes ni contraseñas. " +
+                                            "En Ajustes → Developer exporta datos desde la app antigua, impórtalos aquí, " +
+                                            "luego desinstala la antigua. Ver docs/PACKAGE-MIGRATION.md."
+                                    else
+                                        "The old app (${AppPackageMigration.LEGACY_APPLICATION_ID}) is still installed. " +
+                                            "This build is a separate app — it does not inherit messages or passwords. " +
+                                            "In Settings → Developer, export from the old app, import here, then uninstall the old app. " +
+                                            "See docs/PACKAGE-MIGRATION.md.",
+                                    color = TextMuted,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    sharedPrefs.edit().putBoolean(PREF_PACKAGE_MIGRATION_DISMISSED, true).apply()
+                                    showPackageMigration = false
+                                }) {
+                                    Text(
+                                        if (spanish) "Entendido" else "Got it",
                                         color = AccentCyan,
                                         fontWeight = FontWeight.Bold
                                     )

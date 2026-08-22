@@ -826,6 +826,10 @@ void updateChargingState(float voltage) {
 char nodeCustomName[17] = ""; // Max 16 chars + null terminator
 char nodeShortName[5] = "";   // Max 4 chars + null terminator (badge)
 char nodePassword[33] = "";   // Max 32 chars + null terminator
+// When true: reject remote config with protocol_version < 3 (no v2 HMAC, no
+// plaintext password on the mesh). Default false during the deprecation window;
+// set via NVS/InternalFS key "refuse_legacy". See docs/CONTROL-AUTH.md.
+bool refuseLegacyRemoteControl = false;
 bool isBleClientAuthenticated = false;
 
 // Brute-force protection: 5 wrong passwords -> 30s lockout
@@ -1331,6 +1335,7 @@ void loadSettings() {
     String pass = preferences.getString("node_pass", "");
     strncpy(nodePassword, pass.c_str(), sizeof(nodePassword) - 1);
     nodePassword[sizeof(nodePassword) - 1] = '\0';
+    refuseLegacyRemoteControl = preferences.getBool("refuse_legacy", false);
     
     uint32_t storedVersion = preferences.getUInt("settings_ver", 0);
 
@@ -1416,6 +1421,7 @@ void loadSettings() {
     if (gpsMode == 2) Serial.printf(" (every %us)", (unsigned)gpsDutyIntervalSecs);
     Serial.println();
     Serial.printf("  Fixed Position: %s (Lat=%.6f, Lon=%.6f, Alt=%d)\n", fixedPosition ? "YES" : "NO", fixedLat, fixedLon, fixedAlt);
+    Serial.printf("  Refuse legacy remote control (<v3): %s\n", refuseLegacyRemoteControl ? "YES" : "no");
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     InternalFS.begin();
     NodeSettings settings = {};
@@ -1594,6 +1600,16 @@ void loadSettings() {
     if (needsRewrite) {
         saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
     }
+
+    refuseLegacyRemoteControl = false;
+    {
+        File policy(InternalFS);
+        if (policy.open("/refuse_legacy.bin", FILE_O_READ)) {
+            uint8_t flag = 0;
+            if (policy.read(&flag, 1) == 1) refuseLegacyRemoteControl = (flag != 0);
+            policy.close();
+        }
+    }
     
     Serial.println("Loaded settings from InternalFS:");
     Serial.print("  Name: "); Serial.println(nodeCustomName);
@@ -1644,6 +1660,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putInt("lora_tx_power", txPower);
     preferences.putUInt("region", region);
     preferences.putString("node_pass", password);
+    preferences.putBool("refuse_legacy", refuseLegacyRemoteControl);
     preferences.putUInt("node_role", role);
     preferences.putUInt("mesh_hops", meshHopLimit);
     preferences.putUInt("txdelay_x100", rebroadcastTxdelayX100);
@@ -1725,7 +1742,17 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         return;
     }
     Serial.println("Saved settings to InternalFS (atomic).");
+    {
+        File policy(InternalFS);
+        if (policy.open("/refuse_legacy.bin", FILE_O_WRITE)) {
+            uint8_t flag = refuseLegacyRemoteControl ? 1 : 0;
+            policy.write(&flag, 1);
+            policy.close();
+        }
+    }
 #endif
+    packetauth::setControlPassword(password);
+    packetauth::setRefuseLegacyControl(refuseLegacyRemoteControl);
 }
 
 void applyNodeNameOnly(const char* name, const char* shortName) {
@@ -3534,7 +3561,7 @@ void sendConfigResultTo(uint32_t recipientId, uint32_t requestPacketId,
     packet.hop_limit = 4;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
-    packet.protocol_version = 2;
+    packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     packet.which_payload = aethermesh_MeshPacket_config_result_tag;
     packet.payload.config_result.status = status;
     packet.payload.config_result.request_packet_id = requestPacketId;
@@ -3555,7 +3582,7 @@ void sendNodeConfigReportTo(uint32_t recipientId) {
     packet.hop_limit = 4;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
-    packet.protocol_version = 2;
+    packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     packet.which_payload = aethermesh_MeshPacket_config_tag;
     fillNodeConfigSnapshot(packet.payload.config);
     router.sendRawPacket(&packet, true);
@@ -3576,7 +3603,7 @@ void sendNodeConfigReportToPhone() {
     packet.hop_limit = 0;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
-    packet.protocol_version = 2;
+    packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     packet.which_payload = aethermesh_MeshPacket_config_tag;
     fillNodeConfigSnapshot(packet.payload.config);
 
@@ -3713,7 +3740,7 @@ void sendMeshDiagnosticsToPhone() {
     packet.packet_id = random(1, 0x7FFFFFFF);
     packet.hop_limit = 1;
     packet.prev_hop_id = localNodeId;
-    packet.protocol_version = 2;
+    packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     packet.which_payload = aethermesh_MeshPacket_diagnostics_tag;
     router.getDiagnostics(packet.payload.diagnostics);
 
@@ -4176,45 +4203,159 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
     }
 }
 
-bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t counter) {
-    if (senderId == 0 || sessionId == 0 || counter == 0) return false;
+// Replay protection for remote config (protocol v2/v3): bounded slots track
+// (sender_id, session_id, auth_counter). Replayed packets are rejected once
+// the counter is consumed. Failed HMAC attempts are rate-limited with a
+// global counter (fail-closed) plus per-sender LRU buckets — sender_id is
+// attacker-controlled, so per-sender alone is not enough. See SECURITY.md.
+namespace {
+struct AuthFailBucket {
+    uint32_t senderId;
+    uint32_t windowStartMs;
+    uint32_t lastFailMs;
+    uint8_t failures;
+};
+static AuthFailBucket authFailBuckets[8] = {};
+static constexpr uint8_t AUTH_FAIL_LIMIT = 8;
+static constexpr uint8_t AUTH_FAIL_GLOBAL_LIMIT = 24;
+static constexpr uint32_t AUTH_FAIL_WINDOW_MS = 60000;
+static uint32_t authFailGlobalWindowStartMs = 0;
+static uint8_t authFailGlobalFailures = 0;
+
+static constexpr int REMOTE_REPLAY_SLOTS = 16;
+static constexpr uint32_t REMOTE_REPLAY_PERSIST_MS = 60000;
+
+struct RemoteReplaySlot {
+    uint32_t senderId;
+    uint64_t sessionId;
+    uint32_t counter;
+};
+
 #ifdef ESP32
+static RemoteReplaySlot gRemoteReplaySlots[REMOTE_REPLAY_SLOTS] = {};
+static uint32_t gRemoteReplayNextSlot = 0;
+static bool gRemoteReplayLoaded = false;
+static bool gRemoteReplayDirty = false;
+static uint32_t gRemoteReplayLastPersistMs = 0;
+
+static void loadRemoteReplayCache() {
+    if (gRemoteReplayLoaded) return;
     preferences.begin("aethermesh", false);
-    int emptySlot = -1;
-    for (int i = 0; i < 8; i++) {
-        char senderKey[5], highKey[5], lowKey[5], counterKey[5];
+    for (int i = 0; i < REMOTE_REPLAY_SLOTS; i++) {
+        char senderKey[6], highKey[6], lowKey[6], counterKey[6];
         snprintf(senderKey, sizeof(senderKey), "as%d", i);
         snprintf(highKey, sizeof(highKey), "ah%d", i);
         snprintf(lowKey, sizeof(lowKey), "al%d", i);
         snprintf(counterKey, sizeof(counterKey), "ac%d", i);
-        uint32_t savedSender = preferences.getUInt(senderKey, 0);
-        if (savedSender == 0 && emptySlot < 0) emptySlot = i;
-        uint64_t savedSession = ((uint64_t)preferences.getUInt(highKey, 0) << 32) |
-                                preferences.getUInt(lowKey, 0);
-        if (savedSender == senderId && savedSession == sessionId) {
-            uint32_t savedCounter = preferences.getUInt(counterKey, 0);
-            if (counter <= savedCounter) {
-                preferences.end();
-                return false;
-            }
-            preferences.putUInt(counterKey, counter);
-            preferences.end();
-            return true;
+        gRemoteReplaySlots[i].senderId = preferences.getUInt(senderKey, 0);
+        gRemoteReplaySlots[i].sessionId =
+            ((uint64_t)preferences.getUInt(highKey, 0) << 32) | preferences.getUInt(lowKey, 0);
+        gRemoteReplaySlots[i].counter = preferences.getUInt(counterKey, 0);
+    }
+    gRemoteReplayNextSlot = preferences.getUInt("authnext", 0) % REMOTE_REPLAY_SLOTS;
+    preferences.end();
+    gRemoteReplayLoaded = true;
+}
+
+static void persistRemoteReplayCache(bool force) {
+    if (!gRemoteReplayLoaded) return;
+    if (!force && !gRemoteReplayDirty) return;
+    if (!force && (millis() - gRemoteReplayLastPersistMs) < REMOTE_REPLAY_PERSIST_MS) return;
+    preferences.begin("aethermesh", false);
+    for (int i = 0; i < REMOTE_REPLAY_SLOTS; i++) {
+        char senderKey[6], highKey[6], lowKey[6], counterKey[6];
+        snprintf(senderKey, sizeof(senderKey), "as%d", i);
+        snprintf(highKey, sizeof(highKey), "ah%d", i);
+        snprintf(lowKey, sizeof(lowKey), "al%d", i);
+        snprintf(counterKey, sizeof(counterKey), "ac%d", i);
+        preferences.putUInt(senderKey, gRemoteReplaySlots[i].senderId);
+        preferences.putUInt(highKey, (uint32_t)(gRemoteReplaySlots[i].sessionId >> 32));
+        preferences.putUInt(lowKey, (uint32_t)gRemoteReplaySlots[i].sessionId);
+        preferences.putUInt(counterKey, gRemoteReplaySlots[i].counter);
+    }
+    preferences.putUInt("authnext", gRemoteReplayNextSlot);
+    preferences.end();
+    gRemoteReplayDirty = false;
+    gRemoteReplayLastPersistMs = millis();
+}
+#endif
+} // namespace
+
+bool isRemoteConfigAuthRateLimited(uint32_t senderId) {
+    const uint32_t now = millis();
+    if (authFailGlobalWindowStartMs == 0 ||
+        now - authFailGlobalWindowStartMs > AUTH_FAIL_WINDOW_MS) {
+        authFailGlobalWindowStartMs = now;
+        authFailGlobalFailures = 0;
+    }
+    if (authFailGlobalFailures >= AUTH_FAIL_GLOBAL_LIMIT) return true;
+
+    for (auto& bucket : authFailBuckets) {
+        if (bucket.senderId != senderId) continue;
+        if (now - bucket.windowStartMs > AUTH_FAIL_WINDOW_MS) {
+            bucket.windowStartMs = now;
+            bucket.failures = 0;
+        }
+        return bucket.failures >= AUTH_FAIL_LIMIT;
+    }
+    return false;
+}
+
+void recordRemoteConfigAuthFailure(uint32_t senderId) {
+    const uint32_t now = millis();
+    if (authFailGlobalWindowStartMs == 0 ||
+        now - authFailGlobalWindowStartMs > AUTH_FAIL_WINDOW_MS) {
+        authFailGlobalWindowStartMs = now;
+        authFailGlobalFailures = 1;
+    } else {
+        if (authFailGlobalFailures < 255) authFailGlobalFailures++;
+    }
+
+    // Prefer existing sender bucket, then empty (senderId==0), else LRU by lastFailMs.
+    AuthFailBucket* target = nullptr;
+    AuthFailBucket* empty = nullptr;
+    AuthFailBucket* oldest = &authFailBuckets[0];
+    for (auto& bucket : authFailBuckets) {
+        if (bucket.senderId == senderId) {
+            target = &bucket;
+            break;
+        }
+        if (bucket.senderId == 0 && empty == nullptr) empty = &bucket;
+        if (bucket.lastFailMs < oldest->lastFailMs) oldest = &bucket;
+    }
+    if (target == nullptr) target = empty != nullptr ? empty : oldest;
+
+    if (target->senderId != senderId || now - target->windowStartMs > AUTH_FAIL_WINDOW_MS) {
+        target->senderId = senderId == 0 ? 1 : senderId; // never leave as reclaimable 0 after use
+        target->windowStartMs = now;
+        target->failures = 1;
+    } else {
+        if (target->failures < 255) target->failures++;
+    }
+    target->lastFailMs = now;
+}
+
+bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t counter) {
+    if (senderId == 0 || sessionId == 0 || counter == 0) return false;
+#ifdef ESP32
+    loadRemoteReplayCache();
+    int emptySlot = -1;
+    int slot = -1;
+    for (int i = 0; i < REMOTE_REPLAY_SLOTS; i++) {
+        if (gRemoteReplaySlots[i].senderId == 0 && emptySlot < 0) emptySlot = i;
+        if (gRemoteReplaySlots[i].senderId == senderId &&
+            gRemoteReplaySlots[i].sessionId == sessionId) {
+            if (counter <= gRemoteReplaySlots[i].counter) return false;
+            slot = i;
+            break;
         }
     }
-    uint32_t nextSlot = preferences.getUInt("authnext", 0) % 8;
-    int slot = emptySlot >= 0 ? emptySlot : (int)nextSlot;
-    char senderKey[5], highKey[5], lowKey[5], counterKey[5];
-    snprintf(senderKey, sizeof(senderKey), "as%d", slot);
-    snprintf(highKey, sizeof(highKey), "ah%d", slot);
-    snprintf(lowKey, sizeof(lowKey), "al%d", slot);
-    snprintf(counterKey, sizeof(counterKey), "ac%d", slot);
-    preferences.putUInt(senderKey, senderId);
-    preferences.putUInt(highKey, (uint32_t)(sessionId >> 32));
-    preferences.putUInt(lowKey, (uint32_t)sessionId);
-    preferences.putUInt(counterKey, counter);
-    preferences.putUInt("authnext", (slot + 1) % 8);
-    preferences.end();
+    const bool knownSession = slot >= 0;
+    if (slot < 0) slot = emptySlot >= 0 ? emptySlot : (int)(gRemoteReplayNextSlot % REMOTE_REPLAY_SLOTS);
+    gRemoteReplaySlots[slot] = {senderId, sessionId, counter};
+    gRemoteReplayNextSlot = (uint32_t)(slot + 1) % REMOTE_REPLAY_SLOTS;
+    gRemoteReplayDirty = true;
+    persistRemoteReplayCache(knownSession);
     return true;
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
     struct ReplayEntry {
@@ -4225,23 +4366,30 @@ bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t 
     struct ReplayStore {
         uint32_t magic;
         uint32_t nextSlot;
-        ReplayEntry entries[8];
+        ReplayEntry entries[REMOTE_REPLAY_SLOTS];
     };
     static constexpr uint32_t REPLAY_STORE_MAGIC = 0x41555448; // "AUTH"
 
-    ReplayStore store = {};
-    InternalFS.begin();
-    File file(InternalFS);
-    if (file.open("/auth.bin", FILE_O_READ)) {
-        const bool complete = file.read((uint8_t*)&store, sizeof(store)) == sizeof(store);
-        file.close();
-        if (!complete || store.magic != REPLAY_STORE_MAGIC) store = {};
+    static ReplayStore store = {};
+    static bool storeLoaded = false;
+    static bool storeDirty = false;
+    static uint32_t storeLastPersistMs = 0;
+
+    if (!storeLoaded) {
+        InternalFS.begin();
+        File file(InternalFS);
+        if (file.open("/auth.bin", FILE_O_READ)) {
+            const bool complete = file.read((uint8_t*)&store, sizeof(store)) == sizeof(store);
+            file.close();
+            if (!complete || store.magic != REPLAY_STORE_MAGIC) store = {};
+        }
+        store.magic = REPLAY_STORE_MAGIC;
+        storeLoaded = true;
     }
-    store.magic = REPLAY_STORE_MAGIC;
 
     int emptySlot = -1;
     int slot = -1;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < REMOTE_REPLAY_SLOTS; i++) {
         if (store.entries[i].senderId == 0 && emptySlot < 0) emptySlot = i;
         if (store.entries[i].senderId == senderId && store.entries[i].sessionId == sessionId) {
             if (counter <= store.entries[i].counter) return false;
@@ -4249,15 +4397,26 @@ bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t 
             break;
         }
     }
-    if (slot < 0) slot = emptySlot >= 0 ? emptySlot : (int)(store.nextSlot % 8);
+    const bool knownSession = slot >= 0;
+    if (slot < 0) slot = emptySlot >= 0 ? emptySlot : (int)(store.nextSlot % REMOTE_REPLAY_SLOTS);
     store.entries[slot] = {senderId, sessionId, counter};
-    store.nextSlot = (uint32_t)(slot + 1) % 8;
+    store.nextSlot = (uint32_t)(slot + 1) % REMOTE_REPLAY_SLOTS;
+    storeDirty = true;
 
-    InternalFS.remove("/auth.bin");
-    if (!file.open("/auth.bin", FILE_O_WRITE)) return false;
-    const bool written = file.write((const uint8_t*)&store, sizeof(store)) == sizeof(store);
-    file.close();
-    return written;
+    const bool forcePersist = knownSession;
+    if (forcePersist || storeDirty) {
+        if (forcePersist || (millis() - storeLastPersistMs) >= REMOTE_REPLAY_PERSIST_MS) {
+            InternalFS.remove("/auth.bin");
+            File file(InternalFS);
+            if (!file.open("/auth.bin", FILE_O_WRITE)) return false;
+            const bool written = file.write((const uint8_t*)&store, sizeof(store)) == sizeof(store);
+            file.close();
+            if (!written) return false;
+            storeDirty = false;
+            storeLastPersistMs = millis();
+        }
+    }
+    return true;
 #else
     return false;
 #endif
@@ -4274,17 +4433,45 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
         return;
     }
 
+    if (isRemoteConfigAuthRateLimited(senderId)) {
+        Serial.println("Remote config rejected: auth rate limit.");
+        sendConfigResultTo(senderId, packet.packet_id,
+                           aethermesh_ConfigResult_Status_AUTH_FAILED, "Rate limited");
+        return;
+    }
+
     bool authenticated = false;
     if (packet.protocol_version >= 2) {
-        authenticated = packetauth::verifyConfig(packet, nodePassword) &&
-                        acceptRemoteControlCounter(senderId, packet.session_id, packet.auth_counter);
+        if (!packetauth::verifyConfig(packet, nodePassword)) {
+            recordRemoteConfigAuthFailure(senderId);
+            Serial.println("Remote config rejected: invalid authentication.");
+            sendConfigResultTo(senderId, packet.packet_id,
+                               aethermesh_ConfigResult_Status_AUTH_FAILED, "Auth failed");
+            return;
+        }
+        if (!acceptRemoteControlCounter(senderId, packet.session_id, packet.auth_counter)) {
+            Serial.println("Remote config rejected: replayed counter.");
+            sendConfigResultTo(senderId, packet.packet_id,
+                               aethermesh_ConfigResult_Status_AUTH_FAILED, "Replay rejected");
+            return;
+        }
+        authenticated = true;
+    } else if (packetauth::refuseLegacyControl() || refuseLegacyRemoteControl) {
+        recordRemoteConfigAuthFailure(senderId);
+        Serial.println("Remote config rejected: legacy plaintext disabled.");
+        sendConfigResultTo(senderId, packet.packet_id,
+                           aethermesh_ConfigResult_Status_AUTH_FAILED, "Legacy control refused");
+        return;
     } else {
         authenticated = nodePassword[0] != '\0' && config.config_password[0] != '\0' &&
                         strcmp(config.config_password, nodePassword) == 0;
+        if (!authenticated) {
+            recordRemoteConfigAuthFailure(senderId);
+        }
     }
 
     if (!authenticated) {
-        Serial.println("Remote config rejected: invalid authentication or replayed counter.");
+        Serial.println("Remote config rejected: invalid authentication.");
         sendConfigResultTo(senderId, packet.packet_id,
                            aethermesh_ConfigResult_Status_AUTH_FAILED, "Auth failed");
         return;
@@ -4541,6 +4728,14 @@ void setup() {
 
     // Load Settings from NVS
     loadSettings();
+    packetauth::setControlPassword(nodePassword);
+    packetauth::setRefuseLegacyControl(refuseLegacyRemoteControl);
+    Serial.printf("Control auth: refuse_legacy=%s key_cached=%s\n",
+                  refuseLegacyRemoteControl ? "yes" : "no",
+                  (nodePassword[0] != '\0') ? "yes" : "no");
+#ifdef ESP32
+    loadRemoteReplayCache();
+#endif
     
     // Initialize LEDs for RAK targets
 #if defined(RAK4631) || defined(RAK3401_1W)
@@ -5366,4 +5561,8 @@ void loop() {
         hasNewMsgPopup = false;
         updateDisplay();
     }
+
+#ifdef ESP32
+    persistRemoteReplayCache(false);
+#endif
 }

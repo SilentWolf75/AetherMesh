@@ -135,14 +135,14 @@ class AetherMeshRepository(private val context: Context) {
             .build()
         androidx.security.crypto.EncryptedSharedPreferences.create(
             context,
-            "aethermesh_secure_prefs",
+            SecurePrefsNames.ENCRYPTED,
             masterKey,
             androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
         Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plain storage: ${e.message}")
-        context.getSharedPreferences("aethermesh_secure_prefs_fallback", Context.MODE_PRIVATE)
+        context.getSharedPreferences(SecurePrefsNames.FALLBACK, Context.MODE_PRIVATE)
     }
 
     // One-time migration of secrets that older builds stored in plain prefs
@@ -1566,6 +1566,11 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    private fun remoteControlAuthProtocol(nodeId: Long): Int {
+        val peerVersion = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion ?: 1
+        return RemoteControlAuthPolicy.authProtocolForPeer(peerVersion)
+    }
+
     /**
      * Writes only name/short-name onto a node (no radio reboot). Local BLE when
      * [nodeId] is the connected node; otherwise authenticated remote config.
@@ -1585,12 +1590,12 @@ class AetherMeshRepository(private val context: Context) {
         val isLocal = sameMeshNodeId(nodeId, localNodeId)
         if (!isLocal && adminPassword.isBlank()) return false
 
-        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val authProtocol = remoteControlAuthProtocol(nodeId)
         val configBuilder = com.silentwolf75.aethermesh.proto.NodeConfig.newBuilder()
             .setNodeName(clipped)
             .setNodeShortName(clippedShort)
             .setApplyNameOnly(true)
-        if (!isLocal && !supportsV2) {
+        if (!isLocal && authProtocol == 0) {
             configBuilder.setConfigPassword(adminPassword)
         }
         val config = configBuilder.build()
@@ -1605,11 +1610,14 @@ class AetherMeshRepository(private val context: Context) {
             .setPrevHopId(localNodeId.toInt())
             .setConfig(config)
 
-        if (!isLocal && supportsV2) {
+        if (!isLocal && authProtocol >= 2) {
             val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, adminPassword)
+            val tag = ControlAuth.sign(
+                localNodeId, nodeId, identity, config, adminPassword,
+                authProtocol = authProtocol
+            )
             packetBuilder
-                .setProtocolVersion(2)
+                .setProtocolVersion(authProtocol)
                 .setSessionId(identity.sessionId)
                 .setAuthCounter(identity.counter)
                 .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
@@ -1718,10 +1726,10 @@ class AetherMeshRepository(private val context: Context) {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return null
         if (password.isBlank()) return null
         val localNodeId = bleManager.connectedNodeId
-        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val authProtocol = remoteControlAuthProtocol(nodeId)
         val config = NodeConfig.newBuilder()
             .setRequestReport(true)
-            .setConfigPassword(if (supportsV2) "" else password)
+            .setConfigPassword(if (authProtocol >= 2) "" else password)
             .setApplyMask(0)
             .build()
         val packetId = PacketIdGenerator.next()
@@ -1733,11 +1741,14 @@ class AetherMeshRepository(private val context: Context) {
             .setWantAck(true)
             .setPrevHopId(localNodeId.toInt())
             .setConfig(config)
-        if (supportsV2) {
+        if (authProtocol >= 2) {
             val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, password)
+            val tag = ControlAuth.sign(
+                localNodeId, nodeId, identity, config, password,
+                authProtocol = authProtocol
+            )
             packetBuilder
-                .setProtocolVersion(2)
+                .setProtocolVersion(authProtocol)
                 .setSessionId(identity.sessionId)
                 .setAuthCounter(identity.counter)
                 .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
@@ -1777,7 +1788,7 @@ class AetherMeshRepository(private val context: Context) {
 
         val localNodeId = bleManager.connectedNodeId
 
-        val supportsV2 = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion?.let { it >= 2 } == true
+        val authProtocol = remoteControlAuthProtocol(nodeId)
         val hops = when {
             meshHopLimit <= 0 -> 0
             else -> meshHopLimit.coerceIn(1, 8)
@@ -1792,7 +1803,7 @@ class AetherMeshRepository(private val context: Context) {
         }
         val config = NodeConfig.newBuilder()
             .setNodeName(name)
-            .setConfigPassword(if (supportsV2) "" else password)
+            .setConfigPassword(if (authProtocol >= 2) "" else password)
             .setLoraSf(sf)
             .setLoraBw(bw)
             .setLoraTxPower(txPower)
@@ -1824,11 +1835,14 @@ class AetherMeshRepository(private val context: Context) {
             .setPrevHopId(localNodeId.toInt())
             .setConfig(config)
 
-        if (supportsV2) {
+        if (authProtocol >= 2) {
             val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(localNodeId, nodeId, identity, config, password)
+            val tag = ControlAuth.sign(
+                localNodeId, nodeId, identity, config, password,
+                authProtocol = authProtocol
+            )
             packetBuilder
-                .setProtocolVersion(2)
+                .setProtocolVersion(authProtocol)
                 .setSessionId(identity.sessionId)
                 .setAuthCounter(identity.counter)
                 .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
@@ -3439,4 +3453,39 @@ class AetherMeshRepository(private val context: Context) {
         if (sent) lastPhoneLocationShareMs = android.os.SystemClock.elapsedRealtime()
         return sent
     }
+
+    fun exportChatKeysForMigration(): Map<String, String> = dbHelper.getAllChatKeys()
+
+    fun exportSecureSecretsForMigration(): Map<String, String> =
+        securePrefs.all.mapNotNull { (key, value) ->
+            if (value is String) key to value else null
+        }.toMap()
+
+    fun exportAppPrefsForMigration(): Map<String, Any?> =
+        prefs.all.filterKeys { key ->
+            !key.startsWith("node_pwd_") && key != "ecdh_private_key"
+        }
+
+    fun exportNodeSettingsForMigration(): Map<String, Map<String, Any?>> {
+        val out = linkedMapOf<String, Map<String, Any?>>()
+        context.applicationInfo.dataDir?.let { dataDir ->
+            java.io.File(dataDir, "shared_prefs").listFiles()?.forEach { file ->
+                val name = file.name.removeSuffix(".xml")
+                if (name.startsWith("node_settings_")) {
+                    out[name] = context.getSharedPreferences(name, Context.MODE_PRIVATE).all
+                }
+            }
+        }
+        return out
+    }
+
+    fun securePrefsForMigration(): android.content.SharedPreferences = securePrefs
+
+    fun importAppMigration(json: String): AppPackageMigration.ImportResult =
+        AppPackageMigration.importJson(this, context, json)
+
+    fun exportAppMigrationJson(): String = AppPackageMigration.exportJson(this, context)
+
+    fun isLegacyPackageInstalled(): Boolean =
+        AppPackageMigration.isLegacyPackageInstalled(context)
 }

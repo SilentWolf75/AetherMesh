@@ -20,25 +20,35 @@ object ControlAuthSession {
 }
 
 object ControlAuth {
-    private val domain = "AMCFG2".toByteArray(Charsets.US_ASCII)
+    private val domainV2 = "AMCFG2".toByteArray(Charsets.US_ASCII)
+    private val domainV3 = "AMCFG3".toByteArray(Charsets.US_ASCII)
 
+    /** @param authProtocol 2 = raw password HMAC (legacy), 3 = PBKDF2-derived key (preferred). */
     fun sign(
         senderId: Long,
         recipientId: Long,
         identity: ControlAuthIdentity,
         config: NodeConfig,
-        password: String
+        password: String,
+        authProtocol: Int = 3
     ): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(password.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        return mac.doFinal(canonical(senderId, recipientId, identity, config)).copyOf(16)
+        val keyMaterial = if (authProtocol >= 3) {
+            ControlKeyDerivation.deriveKeyBytes(password)
+        } else {
+            password.toByteArray(Charsets.UTF_8)
+        }
+        mac.init(SecretKeySpec(keyMaterial, "HmacSHA256"))
+        val domain = if (authProtocol >= 3) domainV3 else domainV2
+        return mac.doFinal(canonical(senderId, recipientId, identity, config, domain)).copyOf(16)
     }
 
     fun canonical(
         senderId: Long,
         recipientId: Long,
         identity: ControlAuthIdentity,
-        config: NodeConfig
+        config: NodeConfig,
+        domain: ByteArray = domainV2
     ): ByteArray {
         val output = ByteArrayOutputStream(96)
         output.write(domain)

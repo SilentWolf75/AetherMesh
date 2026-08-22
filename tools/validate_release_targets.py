@@ -1,11 +1,10 @@
-"""Fail when firmware targets drift between PlatformIO, CI, Pages, and flasher UI."""
+"""Fail when firmware targets or release versions drift across the repo."""
 
 from __future__ import annotations
 
 import configparser
 import re
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_TARGETS = {
@@ -18,6 +17,20 @@ UI_TARGETS = {
     "lilygo_t_deck": "lilygo-t-deck",
     "elecrow_crowpanel_35": "elecrow-crowpanel-35",
 }
+
+
+def read_version_file() -> dict[str, str]:
+    values: dict[str, str] = {}
+    path = ROOT / "VERSION"
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
 
 def main() -> None:
@@ -51,9 +64,37 @@ def main() -> None:
         if target not in pages:
             errors.append(f"Pages manifest does not mention {target}")
 
+    versions = read_version_file()
+    if versions:
+        gradle_props = (ROOT / "app" / "gradle.properties").read_text(encoding="utf-8")
+        gradle_kts = (ROOT / "app" / "app" / "build.gradle.kts").read_text(encoding="utf-8")
+        version_h = (ROOT / "firmware" / "src" / "Version.h").read_text(encoding="utf-8")
+        fw_match = re.search(r'#define AETHERMESH_FW_BASE "([^"]+)"', version_h)
+        fw_base = fw_match.group(1) if fw_match else ""
+
+        app_version = versions.get("app_version", "")
+        app_code = versions.get("app_version_code", "")
+        fw_version = versions.get("firmware_version", "")
+
+        if app_version and f'versionName={app_version}' not in gradle_props:
+            errors.append(f"gradle.properties versionName should be {app_version}")
+        if app_code and f'versionCode={app_code}' not in gradle_props:
+            errors.append(f"gradle.properties versionCode should be {app_code}")
+        if app_version and app_version not in gradle_kts:
+            errors.append(f"build.gradle.kts should default versionName to {app_version}")
+        if app_code and app_code not in gradle_kts:
+            errors.append(f"build.gradle.kts should default versionCode to {app_code}")
+        if fw_version and fw_base != fw_version:
+            errors.append(f"Version.h AETHERMESH_FW_BASE is {fw_base!r}, VERSION expects {fw_version!r}")
+
     if errors:
         raise SystemExit("\n".join(errors))
     print(f"Release target parity verified for {len(firmware)} boards: {', '.join(sorted(firmware))}")
+    if versions:
+        print(
+            f"Versions OK: app {versions.get('app_version')} ({versions.get('app_version_code')}), "
+            f"firmware {versions.get('firmware_version')}"
+        )
 
 
 if __name__ == "__main__":

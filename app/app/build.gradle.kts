@@ -24,8 +24,8 @@ android {
         applicationId = "com.silentwolf75.aethermesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 13
-        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.4"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 14
+        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.5"
     }
 
     signingConfigs {
@@ -41,7 +41,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = false
             if (releaseSigningReady) signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -133,6 +134,8 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
   // AetherMesh Dependencies
+  // Keystore-encrypted storage for node passwords and ECDH private key.
+  // 1.1.0-alpha06 is required for MasterKey.Builder (1.0.0 only has deprecated MasterKeys).
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(libs.protobuf.javalite)
   implementation(libs.protobuf.kotlin.lite)

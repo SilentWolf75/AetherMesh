@@ -1,23 +1,27 @@
 # AetherMesh hardware
 
-This tree holds KiCad projects, mechanical notes, and AM-1 cradle work. Most day-to-day
-autorouter campaign output is **local scratch** and is excluded via the repo root
-`.gitignore` (see patterns under `hardware/am1/electrical/**/am1-pcb/_*`, `.history/`,
-`*.pre_*`, `freerouting.jar`, etc.).
+This tree holds KiCad projects, mechanical notes, and AM-1 cradle work.
 
-## Worth versioning (when ready)
+**Default policy:** everything under `hardware/` except this `README.md` is
+**gitignored**. That keeps `git ls-files -o --exclude-standard hardware/` at **0**
+and prevents a mistaken `git add -A` from committing multi‑GB autorouter scratch.
+
+## Force-add when ready to version
+
+```bash
+git add -f hardware/am1/path/to/schematic.kicad_sch
+```
+
+Worth versioning (when curated):
 
 - Schematics and symbol/footprint libraries
-- `gen_am1.py` and other durable generators (not `_*.py` campaign scripts)
+- Durable generators (e.g. `gen_am1.py`)
 - Review docs and checklists
 - Release Gerbers / pick-and-place for fab
 
-## Safe to delete locally (regenerated / scratch)
+## Safe to delete locally
 
-- Autorouter snapshot `.kicad_pcb.pre_*`, `.bestpair`, `.smoke_swd`
+- Autorouter snapshots (`.pre*`, `.smoke*`, `.bestpair`, `.GOOD_*`)
 - `.history/` directories
-- Duplicate `freerouting.jar` copies
-- Underscore-prefixed campaign scripts (`_raceA_*.py`, `_clr_*.py`, …)
-
-Before `git add hardware/`, run `git status` and confirm you are not staging gigabytes
-of scratch under `am1-pcb/`.
+- `freerouting*.jar`
+- Underscore-prefixed campaign scripts

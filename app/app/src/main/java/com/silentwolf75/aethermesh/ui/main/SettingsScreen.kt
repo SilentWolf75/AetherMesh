@@ -282,6 +282,61 @@ fun SettingsView(
         }
     }
 
+    val exportMigrationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val json = viewModel.exportAppMigrationJson()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+                AppUiFeedback.show(
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Datos exportados. Guárdalos antes de desinstalar la app antigua."
+                    else
+                        "App data exported. Save the file before uninstalling the old app.",
+                    duration = SnackbarDuration.Long
+                )
+            } catch (e: Exception) {
+                AppUiFeedback.show(
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Error al exportar: ${e.message}"
+                    else
+                        "Export failed: ${e.message}",
+                    duration = SnackbarDuration.Long
+                )
+            }
+        }
+    }
+
+    val importMigrationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val json = context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.bufferedReader().readText()
+                } ?: return@rememberLauncherForActivityResult
+                val result = viewModel.importAppMigrationJson(json)
+                AppUiFeedback.show(
+                    if (result.success) result.summary
+                    else if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Importación fallida: ${result.summary}"
+                    else
+                        "Import failed: ${result.summary}",
+                    duration = SnackbarDuration.Long
+                )
+            } catch (e: Exception) {
+                AppUiFeedback.show(
+                    if (sharedPrefs.getString("app_language", "English") == "Spanish")
+                        "Error al importar: ${e.message}"
+                    else
+                        "Import failed: ${e.message}",
+                    duration = SnackbarDuration.Long
+                )
+            }
+        }
+    }
+
     var channelsList by remember { mutableStateOf<List<ChannelConfig>>(emptyList()) }
     var showAddChannelDialog by remember { mutableStateOf(false) }
     var showImportChannelDialog by remember { mutableStateOf(false) }
@@ -3330,10 +3385,11 @@ fun SettingsView(
                     }
                 }
                 HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
-                
-                // Restore Settings button
+
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable { restoreSettingsLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream", "*/*")) }.padding(vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        restoreSettingsLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream", "*/*"))
+                    }.padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, tint = AccentMint, modifier = Modifier.size(20.dp))
@@ -3341,6 +3397,48 @@ fun SettingsView(
                     Column {
                         Text(t("Restore Device Settings", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(t("Import configuration from JSON file", appLanguage), color = TextMuted, fontSize = 11.sp)
+                    }
+                }
+                HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        exportMigrationLauncher.launch("aethermesh_migration_${System.currentTimeMillis()}.json")
+                    }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Upload, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            t("Export App Data (package migration)", appLanguage),
+                            color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            t("Messages, nodes, passwords — before uninstalling old app", appLanguage),
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                    }
+                }
+                HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        importMigrationLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                    }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, tint = AccentMint, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            t("Import App Data (package migration)", appLanguage),
+                            color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            t("Restore from JSON after installing com.silentwolf75.aethermesh", appLanguage),
+                            color = TextMuted, fontSize = 11.sp
+                        )
                     }
                 }
             }

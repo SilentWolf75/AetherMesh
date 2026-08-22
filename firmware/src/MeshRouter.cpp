@@ -2024,7 +2024,7 @@ void MeshRouter::sendTraceResponse(const aethermesh_TraceRoute& request) {
 
 bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet, bool urgent) {
     if (packet->sender_id == localNodeId && packet->protocol_version == 0) {
-        packet->protocol_version = 2;
+        packet->protocol_version = AETHERMESH_PROTOCOL_VERSION;
         packet->session_id = sessionId;
     }
     // Stamp directed next hop for unicasts when a fresh route is known.
@@ -2754,7 +2754,7 @@ void MeshRouter::getDiagnostics(aethermesh_MeshDiagnostics& diagnostics) const {
     diagnostics.route_changes = routeChanges;
     diagnostics.airtime_ms = radio->getAirtimeMs();
     diagnostics.uptime_seconds = millis() / 1000;
-    diagnostics.protocol_version = 2;
+    diagnostics.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
         if (routingTable[i].active) diagnostics.active_routes++;
     }
