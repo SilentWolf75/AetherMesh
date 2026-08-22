@@ -57,7 +57,6 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
     nodeRole = 0;
     defaultHopLimit = DEFAULT_HOP_LIMIT;
     rebroadcastTxdelayX100 = 100;
-    seenPacketsIndex = 0;
     textCallback = nullptr;
     telemetryCallback = nullptr;
     configCallback = nullptr;
@@ -86,12 +85,7 @@ MeshRouter::MeshRouter(RadioManager* radioMgr) {
         routingTable[i].active = false;
         routingTable[i].hasBackup = false;
     }
-    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        seenPackets[i].senderId = 0;
-        seenPackets[i].packetId = 0;
-        seenPackets[i].retryCount = 0;
-        seenPackets[i].timestamp = 0;
-    }
+    seenCache.reset();
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         pendingRebroadcasts[i].active = false;
     }
@@ -1233,56 +1227,37 @@ void MeshRouter::addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric)
     RouteEntry* existing = getRoute(targetId);
     
     if (existing) {
-        if (existing->nextHopId == nextHopId) {
-            existing->metric = meshmath::smoothedRouteMetric(existing->metric, metric);
-            existing->timestamp = now;
-            // Recipient / next hop still alive — wake any STORED want_ack.
-            wakeStoredPendingForTarget(targetId);
-            return;
-        }
-        if (existing->hasBackup && existing->backupNextHopId == nextHopId) {
-            existing->backupMetric = meshmath::smoothedRouteMetric(existing->backupMetric, metric);
-            existing->backupTimestamp = now;
-        }
-        // Refresh the active next hop, accept a genuinely better / fresher path
-        // (aged metric), or replace when old enough to be suspect. Soft-age
-        // decay prefers fresher SNR without waiting for hard timeout.
-        if (meshmath::shouldReplaceRoute(existing->nextHopId, existing->metric,
-                                         now - existing->timestamp, nextHopId,
-                                         metric, ROUTE_TIMEOUT_MS, ROUTE_SOFT_AGE_MS)) {
-            const bool hopChanged = existing->nextHopId != nextHopId;
-            if (hopChanged) routeChanges++;
-            existing->backupNextHopId = existing->nextHopId;
-            existing->backupMetric = existing->metric;
-            existing->backupTimestamp = existing->timestamp;
-            existing->hasBackup = true;
-            existing->nextHopId = nextHopId;
-            existing->metric = metric;
-            existing->timestamp = now;
-            
-            Serial.print("Route updated: Target 0x");
-            Serial.print(targetId, HEX);
-            Serial.print(" via NextHop 0x");
-            Serial.print(nextHopId, HEX);
-            Serial.print(" Hops: ");
-            Serial.println(metric);
-            if (hopChanged) {
+        // Table bookkeeping lives in MeshTables.h so it can be tested natively;
+        // logging, pending retargeting and counters stay here.
+        const meshtables::RouteUpdate outcome = meshtables::applyRouteObservation(
+            *existing, nextHopId, metric, now, ROUTE_TIMEOUT_MS, ROUTE_SOFT_AGE_MS);
+
+        switch (outcome) {
+            case meshtables::ROUTE_REFRESHED_PRIMARY:
+                // Recipient / next hop still alive: wake any STORED want_ack.
+                wakeStoredPendingForTarget(targetId);
+                break;
+            case meshtables::ROUTE_PROMOTED:
+                // Reaching promotion means the next hop differs; an identical
+                // hop is handled by the refresh path inside applyRouteObservation.
+                routeChanges++;
+                Serial.print("Route updated: Target 0x");
+                Serial.print(targetId, HEX);
+                Serial.print(" via NextHop 0x");
+                Serial.print(nextHopId, HEX);
+                Serial.print(" Hops: ");
+                Serial.println(metric);
                 refreshPendingDirectedNextHop(targetId, nextHopId);
-            }
-            wakeStoredPendingForTarget(targetId);
-        } else if (!existing->hasBackup ||
-                   !meshmath::backupRouteIsUsable(now, existing->backupTimestamp, ROUTE_TIMEOUT_MS) ||
-                   metric + 2u < meshmath::agedRouteMetric(
-                       existing->backupMetric, now - existing->backupTimestamp,
-                       ROUTE_SOFT_AGE_MS)) {
-            existing->backupNextHopId = nextHopId;
-            existing->backupMetric = metric;
-            existing->backupTimestamp = now;
-            existing->hasBackup = true;
-            Serial.printf("Backup route: Target 0x%08X via 0x%08X metric %u\n",
-                          targetId, nextHopId, metric);
-            // Neighbor activity near the dest — still a wake signal.
-            wakeStoredPendingForTarget(targetId);
+                wakeStoredPendingForTarget(targetId);
+                break;
+            case meshtables::ROUTE_BACKUP_INSTALLED:
+                Serial.printf("Backup route: Target 0x%08X via 0x%08X metric %u\n",
+                              targetId, nextHopId, metric);
+                // Neighbor activity near the dest is still a wake signal.
+                wakeStoredPendingForTarget(targetId);
+                break;
+            case meshtables::ROUTE_NO_CHANGE:
+                break;
         }
         return;
     }
@@ -1309,14 +1284,10 @@ void MeshRouter::addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric)
     }
     
     // Evict oldest if full
-    int oldestIdx = 0;
-    uint32_t oldestTime = routingTable[0].timestamp;
-    for (int i = 1; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
-        if (routingTable[i].timestamp < oldestTime) {
-            oldestTime = routingTable[i].timestamp;
-            oldestIdx = i;
-        }
-    }
+    // Chosen by elapsed age, not raw timestamp order, so a millis() rollover
+    // cannot make the newest row look like the oldest one.
+    const int oldestIdx =
+        meshtables::oldestRouteIndex(routingTable, MAX_ROUTE_TABLE_ENTRIES, now);
     
     routingTable[oldestIdx].targetId = targetId;
     routingTable[oldestIdx].nextHopId = nextHopId;
@@ -1388,42 +1359,16 @@ void MeshRouter::invalidateRoute(uint32_t targetId) {
 }
 
 bool MeshRouter::hasSeenPacketId(uint32_t senderId, uint32_t packetId) {
-    uint32_t now = millis();
-    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId &&
-            meshmath::seenEntryIsFresh(now, seenPackets[i].timestamp, SEEN_PACKET_TIMEOUT_MS)) {
-            return true;
-        }
-    }
-    return false;
+    return seenCache.hasSeen(millis(), senderId, packetId, SEEN_PACKET_TIMEOUT_MS);
 }
 
 bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
-    uint32_t now = millis();
-    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId &&
-            meshmath::seenEntryIsFresh(now, seenPackets[i].timestamp, SEEN_PACKET_TIMEOUT_MS)) {
-            return retryCount <= seenPackets[i].retryCount;
-        }
-    }
-    return false;
+    return seenCache.isDuplicate(millis(), senderId, packetId, retryCount,
+                                 SEEN_PACKET_TIMEOUT_MS);
 }
 
 void MeshRouter::markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
-    for (int i = 0; i < MAX_SEEN_PACKETS_CACHE; i++) {
-        if (seenPackets[i].senderId == senderId && seenPackets[i].packetId == packetId) {
-            seenPackets[i].retryCount = retryCount;
-            seenPackets[i].timestamp = millis();
-            return;
-        }
-    }
-
-    seenPackets[seenPacketsIndex].senderId = senderId;
-    seenPackets[seenPacketsIndex].packetId = packetId;
-    seenPackets[seenPacketsIndex].retryCount = retryCount;
-    seenPackets[seenPacketsIndex].timestamp = millis();
-    
-    seenPacketsIndex = (seenPacketsIndex + 1) % MAX_SEEN_PACKETS_CACHE;
+    seenCache.markSeen(millis(), senderId, packetId, retryCount);
 }
 
 void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr) {

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "mesh.pb.h"
 #include "RadioManager.h"
+#include "MeshTables.h"
 
 // Define constants
 #define MAX_ROUTE_TABLE_ENTRIES 30
@@ -68,24 +69,10 @@
 // Hard cap so a forgotten range-test START cannot soft-stall a leave-behind node.
 #define QUIET_MODE_MAX_MS (5UL * 60UL * 1000UL)
 
-struct RouteEntry {
-    uint32_t targetId;
-    uint32_t nextHopId;
-    uint8_t metric;
-    uint32_t timestamp;
-    uint32_t backupNextHopId;
-    uint8_t backupMetric;
-    uint32_t backupTimestamp;
-    bool hasBackup;
-    bool active;
-};
+// Defined in MeshTables.h so the native test env can exercise the table rules.
+using RouteEntry = meshtables::RouteEntry;
 
-struct SeenPacket {
-    uint32_t senderId;
-    uint32_t packetId;
-    uint32_t retryCount;
-    uint32_t timestamp;
-};
+using SeenPacket = meshtables::SeenPacket;
 
 struct PendingRebroadcast {
     aethermesh_MeshPacket packet;
@@ -254,8 +241,7 @@ private:
     
     // Data structures
     RouteEntry routingTable[MAX_ROUTE_TABLE_ENTRIES];
-    SeenPacket seenPackets[MAX_SEEN_PACKETS_CACHE];
-    uint8_t seenPacketsIndex;
+    meshtables::SeenCache<MAX_SEEN_PACKETS_CACHE> seenCache;
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
     ChannelReceiptTrack channelReceipts[MAX_CHANNEL_RECEIPTS];
