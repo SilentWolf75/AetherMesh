@@ -22,6 +22,10 @@
 -keep class org.osmdroid.** { *; }
 -dontwarn org.osmdroid.**
 
-# Tink / crypto transitive annotations (compile-only; not on device)
--dontwarn com.google.errorprone.annotations.Immutable
--dontwarn javax.annotation.concurrent.GuardedBy
+
+# Tink (via androidx.security:security-crypto) references compile-only
+# annotations that are absent at runtime. R8 fails the build on these unless
+# they are explicitly ignored; none of them affect behaviour.
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn com.google.j2objc.annotations.**
