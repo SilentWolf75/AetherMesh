@@ -532,6 +532,8 @@ class AetherMeshRepository(private val context: Context) {
             editor.putString(passwordPrefKeyForNodeId(nodeId), password)
         }
         editor.apply()
+        // The v3 control key is derived from this password; drop the memoized one.
+        ControlKeyDerivation.clearCache()
     }
 
     private fun clearSavedPassword(macAddress: String?, nodeId: Long = 0L) {
@@ -546,6 +548,7 @@ class AetherMeshRepository(private val context: Context) {
             editor.remove(passwordPrefKeyForNodeId(nodeId))
         }
         editor.apply()
+        ControlKeyDerivation.clearCache()
     }
 
     private fun autoAuthenticate(macAddress: String, session: Int = authSessionGeneration) {

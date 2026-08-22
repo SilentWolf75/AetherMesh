@@ -75,5 +75,41 @@ class ControlAuthTest {
         assertEquals(3, RemoteControlAuthPolicy.authProtocolForPeer(4))
     }
 
+    @Test
+    fun repeatedDerivationsForSamePasswordRunPbkdf2Once() {
+        ControlKeyDerivation.clearCache()
+        val before = ControlKeyDerivation.derivationCount()
+        val first = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        val second = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        assertTrue(first.contentEquals(second))
+        // Equal bytes alone would pass with no cache at all; the count is the proof.
+        assertEquals(1L, ControlKeyDerivation.derivationCount() - before)
+    }
+
+    @Test
+    fun clearCacheAndPasswordChangeForceRederivation() {
+        ControlKeyDerivation.clearCache()
+        val first = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        val afterFirst = ControlKeyDerivation.derivationCount()
+
+        ControlKeyDerivation.clearCache()
+        val afterClear = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        assertTrue(first.contentEquals(afterClear))
+        assertEquals(1L, ControlKeyDerivation.derivationCount() - afterFirst)
+
+        val other = ControlKeyDerivation.deriveKeyBytes("other-admin-key")
+        assertFalse(first.contentEquals(other))
+        assertEquals(2L, ControlKeyDerivation.derivationCount() - afterFirst)
+    }
+
+    @Test
+    fun cachedKeyIsNotAliasedToCallers() {
+        ControlKeyDerivation.clearCache()
+        val first = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        first.fill(0)
+        val second = ControlKeyDerivation.deriveKeyBytes("admin-key")
+        assertFalse(second.all { it == 0.toByte() })
+    }
+
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 }
