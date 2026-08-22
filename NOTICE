@@ -1,0 +1,38 @@
+AetherMesh
+Copyright (c) 2024-2026 Silent Wolf
+
+This product includes software developed by third parties:
+
+RadioLib
+  Copyright (c) Jan Gromeš
+  License: MIT
+  https://github.com/jgromes/RadioLib
+
+U8g2
+  Copyright (c) Oliver Kraus
+  License: BSD-2-Clause (see lib/clib/u8g2/LICENSE in the U8g2 repository)
+  https://github.com/olikraus/u8g2
+
+Nanopb
+  Copyright (c) Petteri Aimonen
+  License: Zlib
+  https://github.com/nanopb/nanopb
+
+TinyGPSPlus
+  Copyright (c) Mikal Hart
+  License: see TinyGPSPlus repository (commonly used as open source for Arduino)
+  https://github.com/mikalhart/TinyGPSPlus
+
+Protocol Buffers / nanopb-generated mesh.proto bindings
+  Google Protocol Buffers — BSD-3-Clause (protoc runtime)
+  https://github.com/protocolbuffers/protobuf
+
+Android / Jetpack libraries used by the companion app are subject to their
+respective Apache 2.0 or other licenses as declared in the app build.
+
+Nordic Semiconductor Android DFU Library (no.nordicsemi.android:dfu)
+  https://github.com/NordicSemiconductor/Android-DFU-Library
+
+OpenStreetMap data displayed in the app map tab is © OpenStreetMap contributors
+(ODbL). Map tiles are fetched only when the user opens the map and the phone
+has network access.

@@ -16,16 +16,16 @@ plugins {
 }
 
 android {
-    namespace = "com.example.aethermesh"
+    namespace = "com.silentwolf75.aethermesh"
     compileSdk = 36
     defaultConfig {
         // This tree is the main AetherMesh build (the ".c" comparison suffix
         // was retired when the original project was abandoned).
-        applicationId = "com.example.aethermesh"
+        applicationId = "com.silentwolf75.aethermesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 12
-        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.3"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 13
+        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.4"
     }
 
     signingConfigs {

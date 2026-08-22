@@ -5,7 +5,7 @@
     <fields>;
 }
 
--keep class com.example.aethermesh.proto.** { *; }
+-keep class com.silentwolf75.aethermesh.proto.** { *; }
 
 # Nordic DFU / BLE
 -keep class no.nordicsemi.android.** { *; }

@@ -1,0 +1,1937 @@
+package com.silentwolf75.aethermesh.ui.main
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.ColorMatrix
+import android.graphics.drawable.BitmapDrawable
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.silentwolf75.aethermesh.data.ChatMessage
+import com.silentwolf75.aethermesh.data.ChannelConfig
+import com.silentwolf75.aethermesh.data.ChatThreadPrefs
+import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.TraceRouteState
+import com.silentwolf75.aethermesh.data.takeUtf8Bytes
+import com.silentwolf75.aethermesh.ui.AppUiFeedback
+import com.silentwolf75.aethermesh.ui.components.*
+import com.silentwolf75.aethermesh.theme.AccentCyanDim
+import com.silentwolf75.aethermesh.theme.AccentSteel
+import com.silentwolf75.aethermesh.theme.AccentSteelDim
+import com.silentwolf75.aethermesh.theme.appBackgroundBrush
+import com.silentwolf75.aethermesh.theme.headerBarBrush
+import com.silentwolf75.aethermesh.theme.primaryButtonBrush
+import kotlinx.coroutines.launch
+import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.XYTileSource
+import org.osmdroid.util.BoundingBox
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polygon
+import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.ScaleBarOverlay
+import org.osmdroid.views.overlay.compass.CompassOverlay
+import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+@Composable
+fun ChatView(
+    messages: List<ChatMessage>,
+    channels: List<String>,
+    selectedChannel: String,
+    localNodeId: Long,
+    activeChatId: Long?,
+    nodes: List<MeshNode>,
+    appLanguage: String = "English",
+    isConnected: Boolean = true,
+    isAuthenticated: Boolean = true,
+    isReconnecting: Boolean = false,
+    onSelectChannel: (String) -> Unit,
+    onSelectDirectMessage: (Long) -> Unit,
+    onCreateChannel: (String) -> Unit,
+    onSendMessage: (String) -> com.silentwolf75.aethermesh.data.SendMessageResult,
+    onRetryMessage: (ChatMessage) -> Unit,
+    getChatKey: (String) -> String?,
+    saveChatKey: (String, String) -> Unit,
+    channelPreviews: Map<String, com.silentwolf75.aethermesh.data.ChatInboxPreview> = emptyMap(),
+    dmPreviews: Map<Long, com.silentwolf75.aethermesh.data.ChatInboxPreview> = emptyMap(),
+    onGoToConnection: () -> Unit = {},
+    deepLinkEpoch: Int = 0,
+    chatKeysRevision: Int = 0
+) {
+    var textState by remember { mutableStateOf("") }
+    var sendError by remember { mutableStateOf<String?>(null) }
+    var showNewChannelDialog by remember { mutableStateOf(false) }
+    var inThread by remember { mutableStateOf(false) }
+    var stickToBottom by remember { mutableStateOf(true) }
+    var inboxFilter by remember { mutableStateOf("") }
+    var threadSearchOpen by remember { mutableStateOf(false) }
+    var threadSearchQuery by remember { mutableStateOf("") }
+    var showExportMenu by remember { mutableStateOf(false) }
+    var showDeliveryLegend by remember { mutableStateOf(false) }
+    val deliveryLegendSeenKey = "delivery_legend_seen_v133"
+    val chatTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
+    BackHandler(enabled = inThread && !chatTwoPane) { inThread = false }
+    val listState = rememberLazyListState()
+    val chatScope = rememberCoroutineScope()
+    val canSend = isConnected && isAuthenticated
+    val spanish = appLanguage == "Spanish"
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val draftPrefs = remember {
+        context.getSharedPreferences("chat_drafts", Context.MODE_PRIVATE)
+    }
+    val appPrefs = remember {
+        context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+    }
+    LaunchedEffect(Unit) {
+        if (!appPrefs.getBoolean(deliveryLegendSeenKey, false)) {
+            showDeliveryLegend = true
+        }
+    }
+    var channelHearerReceipts by remember {
+        mutableStateOf(appPrefs.getBoolean("channel_hearer_receipts", false))
+    }
+    var chatPrefsRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(appPrefs) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == "channel_hearer_receipts") {
+                channelHearerReceipts = appPrefs.getBoolean("channel_hearer_receipts", false)
+            }
+            if (ChatThreadPrefs.isChatPrefsKey(key)) {
+                chatPrefsRevision++
+            }
+        }
+        appPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { appPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    // Bump when drafts change so inbox rows refresh "Draft:" snippets.
+    var draftsRevision by remember { mutableIntStateOf(0) }
+    val activeThreadKey = if (activeChatId == null) {
+        ChatThreadPrefs.channelKey(selectedChannel)
+    } else {
+        ChatThreadPrefs.dmKey(activeChatId)
+    }
+    var threadMuted by remember(activeThreadKey, chatPrefsRevision) {
+        mutableStateOf(ChatThreadPrefs.isMuted(appPrefs, activeThreadKey))
+    }
+    val displayedMessages = remember(messages, threadSearchQuery, threadSearchOpen) {
+        val q = threadSearchQuery.trim()
+        if (!threadSearchOpen || q.isEmpty()) messages
+        else messages.filter { it.content.contains(q, ignoreCase = true) }
+    }
+    val showJumpToBottom by remember {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            displayedMessages.isNotEmpty() && lastVisible < displayedMessages.lastIndex - 1
+        }
+    }
+
+    fun chatDraftKey(): String =
+        if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
+
+    fun formatInboxTime(ts: Long): String {
+        if (ts <= 0L) return ""
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = ts }
+        val nowCal = java.util.Calendar.getInstance()
+        val sameDay = msgCal.get(java.util.Calendar.YEAR) == nowCal.get(java.util.Calendar.YEAR) &&
+            msgCal.get(java.util.Calendar.DAY_OF_YEAR) == nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+        return if (sameDay) {
+            SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(ts))
+        } else {
+            SimpleDateFormat("M/d h:mm a", Locale.getDefault()).format(Date(ts))
+        }
+    }
+
+    fun previewSnippet(raw: String): String {
+        val trimmed = raw.trim().replace('\n', ' ')
+        return if (trimmed.length <= 48) trimmed else trimmed.take(45) + "…"
+    }
+
+    fun inboxPreviewLine(preview: com.silentwolf75.aethermesh.data.ChatInboxPreview): String {
+        val body = previewSnippet(preview.snippet)
+        val failed = preview.status in setOf("FAILED", "EXPIRED")
+        val fromMe = localNodeId != 0L && preview.senderId == localNodeId
+        val prefix = when {
+            failed && spanish -> "Falló · "
+            failed -> "Failed · "
+            fromMe && spanish -> "Tú: "
+            fromMe -> "You: "
+            else -> ""
+        }
+        return prefix + body
+    }
+
+    fun draftSnippetFor(key: String): String? {
+        val draft = draftPrefs.getString(key, null)?.trim().orEmpty()
+        return draft.takeIf { it.isNotEmpty() }?.let { previewSnippet(it) }
+    }
+
+    LaunchedEffect(activeChatId) {
+        if (activeChatId != null && activeChatId != 0L) inThread = true
+    }
+    LaunchedEffect(deepLinkEpoch) {
+        if (deepLinkEpoch > 0) inThread = true
+    }
+
+    // Load draft when switching threads (MeshCore-style).
+    LaunchedEffect(activeChatId, selectedChannel) {
+        textState = draftPrefs.getString(chatDraftKey(), "") ?: ""
+        sendError = null
+    }
+    // Persist draft while typing (debounced).
+    LaunchedEffect(textState, activeChatId, selectedChannel) {
+        kotlinx.coroutines.delay(350)
+        val key = chatDraftKey()
+        val trimmed = textState
+        if (trimmed.isBlank()) {
+            if (draftPrefs.contains(key)) {
+                draftPrefs.edit().remove(key).apply()
+                draftsRevision++
+            }
+        } else if (draftPrefs.getString(key, null) != trimmed) {
+            draftPrefs.edit().putString(key, trimmed).apply()
+            draftsRevision++
+        }
+    }
+
+    if (showNewChannelDialog) {
+        NewChannelDialog(
+            appLanguage = appLanguage,
+            onCreate = {
+                onCreateChannel(it)
+                showNewChannelDialog = false
+                onSelectChannel(it)
+                inThread = true
+            },
+            onDismiss = { showNewChannelDialog = false }
+        )
+    }
+
+    if (showDeliveryLegend) {
+        DeliveryStatusLegendDialog(
+            appLanguage = appLanguage,
+            onDismiss = {
+                showDeliveryLegend = false
+                appPrefs.edit().putBoolean(deliveryLegendSeenKey, true).apply()
+            }
+        )
+    }
+
+    val selectedNode = nodes.find { it.nodeId == activeChatId }
+    val threadTitle = if (activeChatId == null) {
+        "#$selectedChannel"
+    } else {
+        selectedNode?.name ?: "Node 0x${activeChatId.toString(16).uppercase()}"
+    }
+    val isChannelThread = activeChatId == null
+
+    LaunchedEffect(activeChatId, selectedChannel, inThread) {
+        stickToBottom = true
+        threadSearchOpen = false
+        threadSearchQuery = ""
+        if (inThread && displayedMessages.isNotEmpty()) {
+            listState.scrollToItem(displayedMessages.lastIndex)
+        }
+    }
+    LaunchedEffect(inThread, activeThreadKey, messages.lastOrNull()?.id, messages.lastOrNull()?.timestamp) {
+        if (inThread) {
+            val latest = messages.maxOfOrNull { it.timestamp } ?: System.currentTimeMillis()
+            ChatThreadPrefs.markRead(appPrefs, activeThreadKey, latest)
+        }
+    }
+    LaunchedEffect(displayedMessages.size, threadSearchQuery) {
+        if (inThread && displayedMessages.isNotEmpty() && stickToBottom && !threadSearchOpen) {
+            listState.animateScrollToItem(displayedMessages.lastIndex)
+        }
+    }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            stickToBottom = displayedMessages.isEmpty() || lastVisible >= displayedMessages.lastIndex - 1
+        }
+    }
+
+    @Composable
+    fun ChatInboxPane() {
+        val relativeTick = rememberRelativeTimeTick()
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            val dmNodes = nodes.filter { it.nodeId != localNodeId }
+            val sortedChannels = remember(channels, channelPreviews, inboxFilter) {
+                val base = channels.sortedByDescending { channelPreviews[it]?.timestamp ?: 0L }
+                val q = inboxFilter.trim()
+                if (q.isEmpty()) base else base.filter { it.contains(q, ignoreCase = true) }
+            }
+            val sortedDmNodes = remember(dmNodes, dmPreviews, relativeTick, inboxFilter) {
+                val base = dmNodes.sortedByDescending { node ->
+                    dmPreviews[node.nodeId]?.timestamp?.takeIf { it > 0L } ?: node.lastActive
+                }
+                val q = inboxFilter.trim()
+                if (q.isEmpty()) base
+                else base.filter {
+                    it.name.contains(q, ignoreCase = true) ||
+                        it.shortName.contains(q, ignoreCase = true)
+                }
+            }
+            if (!canSend) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(AccentAmber.copy(alpha = 0.15f))
+                        .clickable { onGoToConnection() }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.BluetoothSearching, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        when {
+                            !isConnected && isReconnecting -> if (spanish)
+                                "Reconectando… toca para abrir Conexión."
+                            else
+                                "Reconnecting… tap to open Connection."
+                            !isConnected -> if (spanish)
+                                "Conecta una radio para enviar y recibir mensajes."
+                            else
+                                "Link a radio to send and receive messages."
+                            else -> if (spanish)
+                                "Autentica el nodo para chatear."
+                            else
+                                "Unlock the node to chat."
+                        },
+                        color = TextLight,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(18.dp))
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextField(
+                            value = inboxFilter,
+                            onValueChange = { inboxFilter = it },
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    if (spanish) "Filtrar chats…" else "Filter chats…",
+                                    color = TextMuted
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (inboxFilter.isNotEmpty()) {
+                                    IconButton(onClick = { inboxFilter = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = if (spanish) "Borrar" else "Clear", tint = TextMuted)
+                                    }
+                                }
+                            },
+                            colors = aetherFilledFieldColors(),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { showDeliveryLegend = true }) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = if (spanish) "Leyenda de entrega" else "Delivery legend",
+                                tint = AccentCyan
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    DeliveryStatusLegendCompact(
+                        appLanguage = appLanguage,
+                        onOpenFull = { showDeliveryLegend = true }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AetherSectionHeader(
+                            title = t("Channels", appLanguage),
+                            trailing = "${channels.size}",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = { showNewChannelDialog = true },
+                            enabled = canSend
+                        ) {
+                            Text(
+                                if (spanish) "+ Canal" else "+ Channel",
+                                color = if (canSend) AccentCyan else TextMuted,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+                if (sortedChannels.isEmpty()) {
+                    item {
+                        Text(
+                            if (spanish)
+                                "Aún no hay canales. Crea uno o espera a que tu nodo sincronice."
+                            else
+                                "No channels yet. Create one or wait for your node to sync.",
+                            color = TextMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+                items(sortedChannels) { channel ->
+                    val preview = channelPreviews[channel]
+                    val selected = activeChatId == null && channel == selectedChannel && (chatTwoPane || inThread)
+                    val draft = remember(draftsRevision, channel) { draftSnippetFor("CHANNEL_$channel") }
+                    val chatKey = ChatThreadPrefs.channelKey(channel)
+                    val unread = remember(chatPrefsRevision, preview, localNodeId, channel) {
+                        ChatThreadPrefs.isUnreadPreview(appPrefs, chatKey, preview, localNodeId)
+                    }
+                    val muted = remember(chatPrefsRevision, channel) {
+                        ChatThreadPrefs.isMuted(appPrefs, chatKey)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (selected) AccentCyan.copy(alpha = 0.16f) else SurfaceDark
+                            )
+                            .border(
+                                BorderStroke(
+                                    1.dp,
+                                    if (selected) AccentCyan.copy(alpha = 0.45f) else BorderDark
+                                ),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .clickable {
+                                onSelectChannel(channel)
+                                inThread = true
+                            }
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(AccentCyanDim),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("#", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    channel,
+                                    color = TextLight,
+                                    fontSize = 15.sp,
+                                    fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (muted) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        Icons.Default.NotificationsOff,
+                                        contentDescription = if (spanish) "Silenciado" else "Muted",
+                                        tint = TextMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                when {
+                                    draft != null ->
+                                        (if (spanish) "Borrador: " else "Draft: ") + draft
+                                    preview != null -> inboxPreviewLine(preview)
+                                    else -> if (spanish) "Chat de canal" else "Channel chat"
+                                },
+                                color = when {
+                                    draft != null -> AccentAmber
+                                    preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                    unread -> TextLight
+                                    else -> TextMuted
+                                },
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (preview != null && preview.timestamp > 0L) {
+                                Text(
+                                    formatInboxTime(preview.timestamp),
+                                    color = if (unread) AccentCyan else TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            if (unread) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(AccentCyan)
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.ChevronRight,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    AetherSectionHeader(
+                        title = if (spanish) "Mensajes directos" else "Direct Messages",
+                        trailing = "${sortedDmNodes.size}",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                if (sortedDmNodes.isEmpty()) {
+                    item {
+                        Column(modifier = Modifier.padding(vertical = 12.dp)) {
+                            Text(
+                                if (spanish)
+                                    "Sin contactos aún. Los nodos aparecen aquí cuando se oyen en la malla."
+                                else
+                                    "No contacts yet. Nodes appear here when heard on the mesh.",
+                                color = TextMuted,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                if (spanish)
+                                    "También puedes abrir Nodos → mensaje en un contacto."
+                                else
+                                    "Or open Nodes → message on a contact.",
+                                color = TextMuted.copy(alpha = 0.85f),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                } else {
+                    items(sortedDmNodes) { node ->
+                        val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
+                        val stale = isNodeStale(node.lastActive)
+                        val preview = dmPreviews[node.nodeId]
+                        val selected = activeChatId != null && activeChatId == node.nodeId && (chatTwoPane || inThread)
+                        val draft = remember(draftsRevision, node.nodeId) { draftSnippetFor("DM_${node.nodeId}") }
+                        val chatKey = ChatThreadPrefs.dmKey(node.nodeId)
+                        val unread = remember(chatPrefsRevision, preview, localNodeId, node.nodeId) {
+                            ChatThreadPrefs.isUnreadPreview(appPrefs, chatKey, preview, localNodeId)
+                        }
+                        val muted = remember(chatPrefsRevision, node.nodeId) {
+                            ChatThreadPrefs.isMuted(appPrefs, chatKey)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    when {
+                                        selected -> AccentMint.copy(alpha = 0.16f)
+                                        stale -> SurfaceDark.copy(alpha = 0.55f)
+                                        else -> SurfaceDark
+                                    }
+                                )
+                                .border(
+                                    BorderStroke(
+                                        1.dp,
+                                        if (selected) AccentMint.copy(alpha = 0.45f) else BorderDark
+                                    ),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    onSelectDirectMessage(node.nodeId)
+                                    inThread = true
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            NodeBadge(shortName = shortName, color = getBadgeColor(node.name), muted = stale)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        node.name,
+                                        color = if (stale) TextMuted else TextLight,
+                                        fontSize = 15.sp,
+                                        fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (muted) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.NotificationsOff,
+                                            contentDescription = if (spanish) "Silenciado" else "Muted",
+                                            tint = TextMuted,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                                val heardLabel = remember(node.lastActive, relativeTick, appLanguage) {
+                                    formatLastHeard(node.lastActive, appLanguage)
+                                }
+                                Text(
+                                    when {
+                                        draft != null ->
+                                            (if (spanish) "Borrador: " else "Draft: ") + draft
+                                        preview != null -> inboxPreviewLine(preview)
+                                        stale -> if (spanish)
+                                            "Último aviso $heardLabel"
+                                        else
+                                            "Last heard $heardLabel"
+                                        else -> if (spanish) "Mensaje directo" else "Direct message"
+                                    },
+                                    color = when {
+                                        draft != null -> AccentAmber
+                                        preview?.status in setOf("FAILED", "EXPIRED") -> AccentRed
+                                        unread -> TextLight
+                                        else -> TextMuted
+                                    },
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                if (preview != null && preview.timestamp > 0L) {
+                                    Text(
+                                        formatInboxTime(preview.timestamp),
+                                        color = if (unread) AccentMint else TextMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                if (unread) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(AccentMint)
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.ChevronRight,
+                                        contentDescription = null,
+                                        tint = TextMuted,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun ChatThreadPane() {
+        Column(modifier = Modifier.fillMaxSize().imePadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                if (!chatTwoPane) {
+                    IconButton(onClick = { inThread = false }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = if (spanish) "Atrás" else "Back",
+                            tint = TextLight
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(threadTitle, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (isChannelThread) {
+                            if (spanish) "Canal" else "Channel"
+                        } else {
+                            if (spanish) "Mensaje directo" else "Direct message"
+                        },
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        threadSearchOpen = !threadSearchOpen
+                        if (!threadSearchOpen) threadSearchQuery = ""
+                    }
+                ) {
+                    Icon(
+                        if (threadSearchOpen) Icons.Default.Close else Icons.Default.Search,
+                        contentDescription = if (spanish) "Buscar" else "Search",
+                        tint = if (threadSearchOpen) AccentCyan else TextMuted
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        val next = !threadMuted
+                        ChatThreadPrefs.setMuted(appPrefs, activeThreadKey, next)
+                        threadMuted = next
+                        AppUiFeedback.show(
+                            when {
+                                next && spanish -> "Chat silenciado"
+                                next -> "Chat muted"
+                                spanish -> "Notificaciones activadas"
+                                else -> "Notifications on"
+                            }
+                        )
+                    }
+                ) {
+                    Icon(
+                        if (threadMuted) Icons.Default.NotificationsOff else Icons.Default.Notifications,
+                        contentDescription = if (spanish) "Silenciar" else "Mute",
+                        tint = if (threadMuted) AccentAmber else TextMuted
+                    )
+                }
+                IconButton(
+                    onClick = { showDeliveryLegend = true }
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = if (spanish) "Leyenda de entrega" else "Delivery legend",
+                        tint = TextMuted
+                    )
+                }
+                Box {
+                    IconButton(onClick = { showExportMenu = true }) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = if (spanish) "Exportar" else "Export",
+                            tint = TextMuted
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showExportMenu,
+                        onDismissRequest = { showExportMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (spanish) "Exportar texto" else "Export as text")
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportThreadMessages(
+                                    context = context,
+                                    messages = messages,
+                                    threadTitle = threadTitle,
+                                    asCsv = false,
+                                    appLanguage = appLanguage,
+                                    nodeNames = nodes.associate { it.nodeId to it.name }
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (spanish) "Exportar CSV" else "Export as CSV")
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportThreadMessages(
+                                    context = context,
+                                    messages = messages,
+                                    threadTitle = threadTitle,
+                                    asCsv = true,
+                                    appLanguage = appLanguage,
+                                    nodeNames = nodes.associate { it.nodeId to it.name }
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (spanish) "Post-evento (chat + nodos)"
+                                    else "After-action (chat + nodes)"
+                                )
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportAfterActionReport(
+                                    context = context,
+                                    messages = messages,
+                                    nodes = nodes,
+                                    appLanguage = appLanguage
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            if (threadSearchOpen) {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextField(
+                    value = threadSearchQuery,
+                    onValueChange = { threadSearchQuery = it },
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            if (spanish) "Buscar en este chat…" else "Search this chat…",
+                            color = TextMuted
+                        )
+                    },
+                    colors = aetherFilledFieldColors(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (threadSearchQuery.isNotBlank()) {
+                    Text(
+                        if (spanish)
+                            "${displayedMessages.size} coincidencia(s)"
+                        else
+                            "${displayedMessages.size} match(es)",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+                    )
+                }
+            }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (!canSend) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AccentAmber.copy(alpha = 0.15f))
+                    .clickable { onGoToConnection() }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = AccentAmber, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        !isConnected && isReconnecting -> if (spanish)
+                            "Reconectando BLE… toca para Conexión."
+                        else
+                            "Reconnecting BLE… tap for Connection."
+                        !isConnected -> if (spanish)
+                            "Sin conexión BLE. Toca para ir a Conexión."
+                        else
+                            "Not connected. Tap to open Connection."
+                        else -> if (spanish)
+                            "Dispositivo bloqueado. Autentica en Conexión."
+                        else
+                            "Device locked. Authenticate on Connection."
+                    },
+                    color = TextLight,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        if (activeChatId == null || activeChatId != 0L) {
+            val chatIdentifier = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
+            var passcode by remember(chatIdentifier) { mutableStateOf(getChatKey(chatIdentifier)) }
+            var showPasscodeDialog by remember { mutableStateOf(false) }
+            LaunchedEffect(chatIdentifier, chatKeysRevision) {
+                passcode = getChatKey(chatIdentifier)
+            }
+
+            if (showPasscodeDialog) {
+                PasscodeEntryDialog(
+                    title = if (activeChatId == null) {
+                        if (spanish) "Clave del canal (#$selectedChannel)" else "Channel Key (#$selectedChannel)"
+                    } else {
+                        if (spanish)
+                            "Clave directa (Nodo 0x${activeChatId.toString(16).uppercase()})"
+                        else
+                            "Direct Key (Node 0x${activeChatId.toString(16).uppercase()})"
+                    },
+                    initialPasscode = passcode ?: "",
+                    appLanguage = appLanguage,
+                    onSave = { newKey ->
+                        saveChatKey(chatIdentifier, newKey)
+                        passcode = newKey.takeIf { it.isNotEmpty() }
+                        showPasscodeDialog = false
+                        AppUiFeedback.show(
+                            when {
+                                newKey.isEmpty() && spanish -> "Clave borrada"
+                                newKey.isEmpty() -> "Key cleared"
+                                spanish -> "Clave guardada"
+                                else -> "Key saved"
+                            }
+                        )
+                    },
+                    onDismiss = { showPasscodeDialog = false }
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(SurfaceDark)
+                    .border(1.dp, BorderDark, RoundedCornerShape(20.dp))
+                    .clickable { showPasscodeDialog = true }
+                    .semantics {
+                        contentDescription = if (!passcode.isNullOrEmpty()) {
+                            if (spanish) "Cifrado — tocar para editar clave" else "Encrypted — tap to edit key"
+                        } else {
+                            if (spanish) "Texto claro — tocar para clave" else "Cleartext — tap to set key"
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = if (!passcode.isNullOrEmpty()) AccentMint else TextMuted,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (!passcode.isNullOrEmpty()) {
+                            if (spanish) "Cifrado" else "Encrypted"
+                        } else {
+                            if (spanish) "Texto claro — toca para clave" else "Cleartext — tap to set key"
+                        },
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+                if (!passcode.isNullOrEmpty()) {
+                    SecureChip()
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (activeChatId != null && activeChatId == 0L) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (spanish)
+                        "No hay nodos para chat privado.\nEspera a que otros nodos emitan telemetría."
+                    else
+                        "No nodes available for private chat.\nWait for other nodes to broadcast telemetries.",
+                    color = TextMuted,
+                    textAlign = TextAlign.Center,
+                    fontSize = 14.sp
+                )
+            }
+        } else {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    reverseLayout = false
+                ) {
+                    if (displayedMessages.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    when {
+                                        threadSearchOpen && threadSearchQuery.isNotBlank() && spanish ->
+                                            "Sin coincidencias."
+                                        threadSearchOpen && threadSearchQuery.isNotBlank() ->
+                                            "No matches."
+                                        !canSend && spanish ->
+                                            "Aún no hay mensajes. Desbloquea el nodo para enviar."
+                                        !canSend ->
+                                            "No messages yet. Unlock the node to send."
+                                        spanish -> "Aún no hay mensajes. Escribe el primero."
+                                        else -> "No messages yet. Say hello."
+                                    },
+                                    color = TextMuted,
+                                    fontSize = 14.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                    items(displayedMessages, key = { it.id }) { message ->
+                        val senderNode = nodes.find { it.nodeId == message.senderId }
+                        val senderLabel = when {
+                            !isChannelThread -> null
+                            localNodeId != 0L && message.senderId == localNodeId -> null
+                            senderNode != null -> senderNode.shortName.ifEmpty {
+                                getShortName(senderNode.name, senderNode.nodeId)
+                            }
+                            message.senderId != 0L -> getShortName("", message.senderId)
+                            else -> null
+                        }
+                        MessageBubble(
+                            message = message,
+                            localNodeId = localNodeId,
+                            onRetryMessage = onRetryMessage,
+                            senderLabel = senderLabel,
+                            appLanguage = appLanguage,
+                            channelHearerReceipts = channelHearerReceipts
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+                if (showJumpToBottom) {
+                    SmallFloatingActionButton(
+                        onClick = {
+                            stickToBottom = true
+                            chatScope.launch {
+                                if (displayedMessages.isNotEmpty()) {
+                                    listState.animateScrollToItem(displayedMessages.lastIndex)
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(12.dp),
+                        containerColor = SurfaceRaised,
+                        contentColor = AccentCyan
+                    ) {
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (spanish) "Ir al final" else "Jump to latest"
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (activeChatId == null || activeChatId != 0L) {
+            val placeholderText = when {
+                !isConnected && isReconnecting && spanish -> "Reconectando…"
+                !isConnected && isReconnecting -> "Reconnecting…"
+                !isConnected && spanish -> "Conecta una radio para escribir…"
+                !isConnected -> "Connect a radio to type…"
+                !isAuthenticated && spanish -> "Desbloquea el nodo para enviar…"
+                !isAuthenticated -> "Unlock the node to send…"
+                activeChatId == null && spanish -> "Mensaje #$selectedChannel…"
+                activeChatId == null -> "Message #$selectedChannel..."
+                spanish -> "Mensaje a ${selectedNode?.name ?: "nodo"}…"
+                else -> "Message ${selectedNode?.name ?: "node"}..."
+            }
+            val chatIdForLimit = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
+            val encryptedChat = !getChatKey(chatIdForLimit).isNullOrEmpty()
+            val maxUtf8 = if (encryptedChat) CHAT_MAX_ENCRYPTED_UTF8_BYTES else CHAT_MAX_PLAIN_UTF8_BYTES
+            LaunchedEffect(maxUtf8) {
+                val clipped = textState.takeUtf8Bytes(maxUtf8)
+                if (clipped != textState) textState = clipped
+            }
+            val usedUtf8 = remember(textState) { textState.toByteArray(Charsets.UTF_8).size }
+            val hasText = textState.trim().isNotEmpty()
+            val canTapSend = canSend && hasText
+            fun trySend() {
+                if (!canSend) {
+                    val msg = if (!isConnected) {
+                        if (spanish) "Conecta y autentica el nodo primero."
+                        else "Connect and authenticate the node first."
+                    } else {
+                        if (spanish) "Autentica el dispositivo para enviar."
+                        else "Authenticate the device to send."
+                    }
+                    sendError = msg
+                    return
+                }
+                if (!hasText) return
+                when (onSendMessage(textState)) {
+                    com.silentwolf75.aethermesh.data.SendMessageResult.Sent -> {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        val key = chatDraftKey()
+                        textState = ""
+                        sendError = null
+                        stickToBottom = true
+                        keyboardController?.hide()
+                        if (draftPrefs.contains(key)) {
+                            draftPrefs.edit().remove(key).apply()
+                            draftsRevision++
+                        }
+                    }
+                    com.silentwolf75.aethermesh.data.SendMessageResult.EncryptFailed -> {
+                        val msg = if (spanish)
+                            "No se pudo cifrar el mensaje. Revisa la clave del chat."
+                        else
+                            "Could not encrypt the message. Check the chat passcode."
+                        sendError = msg
+                    }
+                    com.silentwolf75.aethermesh.data.SendMessageResult.NotReady -> {
+                        val msg = if (spanish)
+                            "No se envió. Revisa conexión BLE y autenticación."
+                        else
+                            "Message not sent. Check BLE connection and authentication."
+                        sendError = msg
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextField(
+                    value = textState,
+                    onValueChange = {
+                        textState = it.takeUtf8Bytes(maxUtf8)
+                        if (sendError != null) sendError = null
+                    },
+                    enabled = canSend,
+                    placeholder = { Text(placeholderText, color = TextMuted) },
+                    colors = aetherFilledFieldColors(),
+                    shape = RoundedCornerShape(24.dp),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { trySend() }),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = { trySend() },
+                    enabled = canTapSend,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(if (canTapSend) AccentCyan else TextMuted.copy(alpha = 0.35f))
+                        .semantics {
+                            contentDescription = when {
+                                !canSend && spanish -> "Enviar desactivado — desbloquea el nodo"
+                                !canSend -> "Send disabled — unlock the node"
+                                !hasText && spanish -> "Enviar desactivado — escribe un mensaje"
+                                !hasText -> "Send disabled — type a message"
+                                spanish -> "Enviar"
+                                else -> "Send"
+                            }
+                        }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = DarkBackground
+                    )
+                }
+            }
+            if (canSend && (usedUtf8 >= (maxUtf8 * 3 / 4) || encryptedChat)) {
+                Text(
+                    text = when {
+                        spanish && encryptedChat ->
+                            "$usedUtf8 / $maxUtf8 bytes (cifrado)"
+                        spanish ->
+                            "$usedUtf8 / $maxUtf8 bytes"
+                        encryptedChat ->
+                            "$usedUtf8 / $maxUtf8 bytes (encrypted)"
+                        else ->
+                            "$usedUtf8 / $maxUtf8 bytes"
+                    },
+                    color = if (usedUtf8 >= maxUtf8) AccentAmber else TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 4.dp, start = 8.dp)
+                )
+            }
+            sendError?.let {
+                Text(
+                    text = it,
+                    color = AccentRed,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 5.dp, start = 4.dp)
+                )
+            }
+        }
+        }
+    }
+
+    if (chatTwoPane) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .weight(0.38f)
+                    .fillMaxHeight()
+            ) {
+                ChatInboxPane()
+            }
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(BorderDark.copy(alpha = 0.7f))
+            )
+            Box(
+                modifier = Modifier
+                    .weight(0.62f)
+                    .fillMaxHeight()
+            ) {
+                if (inThread) {
+                    ChatThreadPane()
+                } else {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (spanish) "Selecciona un canal o mensaje directo"
+                            else "Select a channel or direct message",
+                            color = TextMuted,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    }
+                }
+            }
+        }
+    } else if (!inThread) {
+        ChatInboxPane()
+    } else {
+        ChatThreadPane()
+    }
+}
+
+@Composable
+fun NewChannelDialog(
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit,
+    appLanguage: String = "English"
+) {
+    var name by remember { mutableStateOf("") }
+    val spanish = appLanguage == "Spanish"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = { if (name.trim().isNotEmpty()) onCreate(name.trim()) },
+                enabled = name.trim().isNotEmpty()
+            ) {
+                Text(
+                    if (spanish) "Crear" else "Create",
+                    color = if (name.trim().isNotEmpty()) AccentMint else TextMuted
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Cancelar" else "Cancel", color = TextMuted)
+            }
+        },
+        title = {
+            Text(
+                if (spanish) "Nuevo canal" else "New Channel",
+                color = TextLight,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    if (spanish)
+                        "Los mensajes se emiten en este nombre de canal. Solo los nodos sintonizados al mismo canal los verán."
+                    else
+                        "Messages you send here are broadcast on this channel name. Only nodes tuned to the same channel will display them.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                TextField(
+                    value = name,
+                    onValueChange = { if (it.length <= 16) name = it.filterNot { c -> c.isWhitespace() } },
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            if (spanish) "p. ej. Equipo-Sendero" else "e.g. Trail-Crew",
+                            color = TextMuted
+                        )
+                    },
+                    colors = aetherTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp)
+                )
+            }
+        },
+        containerColor = SurfaceDark
+    )
+}
+
+@Composable
+fun PasscodeEntryDialog(
+    title: String,
+    initialPasscode: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+    appLanguage: String = "English"
+) {
+    val spanish = appLanguage == "Spanish"
+    var keyState by remember { mutableStateOf(initialPasscode) }
+    val hadKey = initialPasscode.isNotEmpty()
+    val willEncrypt = keyState.trim().isNotEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Row {
+                if (hadKey || willEncrypt) {
+                    TextButton(onClick = { onSave("") }) {
+                        Text(
+                            if (spanish) "Borrar clave" else "Clear key",
+                            color = Color(0xFFFCA5A5),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = { onSave(keyState.trim()) },
+                    enabled = willEncrypt || hadKey
+                ) {
+                    Text(
+                        when {
+                            willEncrypt && spanish -> "Guardar clave"
+                            willEncrypt -> "Save key"
+                            spanish -> "Guardar"
+                            else -> "Save"
+                        },
+                        color = if (willEncrypt || hadKey) AccentMint else TextMuted
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Cancelar" else "Cancel", color = TextMuted)
+            }
+        },
+        title = { Text(title, color = TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        text = {
+            Column {
+                Text(
+                    when {
+                        willEncrypt && spanish -> "Estado: cifrado AES-256 activo al guardar"
+                        willEncrypt -> "Status: AES-256 encryption on after save"
+                        hadKey && spanish -> "Estado: hay una clave — borrar o reemplazar abajo"
+                        hadKey -> "Status: key set — clear or replace below"
+                        spanish -> "Estado: texto claro (sin clave)"
+                        else -> "Status: cleartext (no key)"
+                    },
+                    color = if (willEncrypt || hadKey) AccentMint else AccentAmber,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (spanish)
+                        "Todos los mensajes de este chat se cifran y descifran con AES-256 usando la clave de abajo. Manténla en secreto y compártela fuera de banda con los demás."
+                    else
+                        "All messages in this chat will be encrypted and decrypted using AES-256 with the key below. Keep this key secret and share it off-grid with other participants.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                TextField(
+                    value = keyState,
+                    onValueChange = { keyState = it },
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            if (spanish) "Introduce la clave (p. ej. secreto123)" else "Enter passcode (e.g. secret123)",
+                            color = TextMuted
+                        )
+                    },
+                    colors = aetherTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (spanish)
+                        "Usa «Borrar clave» o deja el campo vacío y guarda para volver a texto claro."
+                    else
+                        "Use Clear key, or leave blank and save, to return to cleartext.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+            }
+        },
+        containerColor = SurfaceDark
+    )
+}
+
+@Composable
+fun MessageBubble(
+    message: ChatMessage,
+    localNodeId: Long,
+    onRetryMessage: (ChatMessage) -> Unit,
+    senderLabel: String? = null,
+    appLanguage: String = "English",
+    channelHearerReceipts: Boolean = false
+) {
+    val isMe = localNodeId != 0L && message.senderId == localNodeId
+    val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
+    val spanish = appLanguage == "Spanish"
+    // Direct messages: PENDING → DELIVERED when the recipient *node* ACKs.
+    // Channel: SENT = phone→radio / on-air (not end-to-end delivered).
+    // HEARD = optional hearer receipt. QUEUED = waiting on router / store-forward.
+    val isChannel = message.channel.isNotEmpty() ||
+        (message.recipientId and 0xFFFFFFFFL) == 0xFFFFFFFFL
+    val channelWaiting = isChannel && channelHearerReceipts
+    val statusIcon = when (message.status) {
+        "DELIVERED" -> "✓✓"
+        "HEARD" -> "◎"
+        "PENDING" -> "…"
+        "QUEUED" -> "▥"
+        "FAILED", "EXPIRED" -> "!"
+        "RETRIED" -> "↻"
+        "SENT" -> if (channelWaiting) "…" else "⇢"
+        else -> "⇢"
+    }
+    val statusColor = when (message.status) {
+        "DELIVERED" -> AccentMint
+        "HEARD" -> AccentCyan
+        "SENT" -> if (channelWaiting) AccentAmber else TextMuted
+        "FAILED", "EXPIRED" -> AccentRed
+        "PENDING", "QUEUED" -> AccentAmber
+        else -> TextMuted
+    }
+    val statusText = when (message.status) {
+        "EXPIRED" -> if (spanish) "$statusIcon sin ACK · tocar para reintentar" else "$statusIcon no ACK · tap to retry"
+        "FAILED" -> if (spanish) "$statusIcon sin respuesta · tocar para reintentar" else "$statusIcon no reply · tap to retry"
+        "PENDING" -> if (spanish) "$statusIcon esperando recepción…" else "$statusIcon waiting for receipt…"
+        "QUEUED" -> if (spanish) "$statusIcon en cola (router / al aire)…" else "$statusIcon queued (router / on-air)…"
+        "RETRIED" -> if (spanish) "$statusIcon reenviado" else "$statusIcon resent"
+        "DELIVERED" -> if (spanish) "$statusIcon entregado al nodo" else "$statusIcon delivered to node"
+        "HEARD" -> if (spanish) {
+            "$statusIcon oído por ${message.heardCount}"
+        } else {
+            "$statusIcon heard by ${message.heardCount}"
+        }
+        "SENT" -> if (channelWaiting) {
+            if (spanish) "$statusIcon SENT · esperando HEARD…" else "$statusIcon SENT · waiting for HEARD…"
+        } else if (isChannel) {
+            if (spanish) "$statusIcon SENT · al radio (no entregado)" else "$statusIcon SENT · to radio (not delivered)"
+        } else {
+            if (spanish) "$statusIcon SENT · al radio" else "$statusIcon SENT · to radio"
+        }
+        else -> statusIcon
+    }
+    val statusDescription = when (message.status) {
+        "EXPIRED" -> if (spanish)
+            "Sin confirmación del nodo. Toca el mensaje para reintentar; también se reintenta automáticamente."
+        else
+            "No node acknowledgment. Tap message to retry; auto-retry also runs in the background."
+        "FAILED" -> if (spanish)
+            "Sin respuesta del nodo en 45s. Toca para reintentar."
+        else
+            "No node reply within 45s. Tap to retry."
+        "PENDING" -> if (spanish)
+            "Enviado al radio. Esperando que el nodo destino confirme la recepción (no es solo SENT)."
+        else
+            "Sent to the radio. Waiting for the destination node to confirm receipt (not the same as SENT)."
+        "QUEUED" -> if (spanish)
+            "En cola en el router o store-and-forward — aún no está al aire / no entregado."
+        else
+            "Queued on the router or store-and-forward — not on air / not delivered yet."
+        "RETRIED" -> if (spanish) "Reenviado automáticamente." else "Automatically resent."
+        "DELIVERED" -> if (spanish)
+            "Entregado: el nodo destino confirmó la recepción (ACK de malla)."
+        else
+            "Delivered: the destination node confirmed receipt (mesh ACK)."
+        "HEARD" -> if (spanish)
+            "HEARD (bonus): ${message.heardCount} nodo(s) confirmaron haber oído este mensaje de canal. No es un buzón de entrega."
+        else
+            "HEARD (bonus): ${message.heardCount} mesh node(s) confirmed hearing this channel message. Not a delivery mailbox."
+        "SENT" -> if (channelWaiting) {
+            if (spanish)
+                "SENT = teléfono→radio / al aire. Esperando recibos opcionales HEARD (bonus, no buzón)."
+            else
+                "SENT = phone→radio / on air. Waiting for optional HEARD receipts (bonus, not a mailbox)."
+        } else if (isChannel) {
+            if (spanish)
+                "SENT = llegó al radio y salió al canal (cobertura flood). No significa que alguien lo leyó."
+            else
+                "SENT = reached the radio and went on the channel (flood coverage). Does not mean anyone read it."
+        } else {
+            if (spanish)
+                "SENT = el teléfono lo entregó al radio. Aún no hay confirmación del destino."
+            else
+                "SENT = the phone handed it to the radio. No destination confirmation yet."
+        }
+        else -> if (spanish) "Enviado al radio." else "Sent to radio."
+    }
+    val time = run {
+        val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = message.timestamp }
+        val nowCal = java.util.Calendar.getInstance()
+        val sameDay = msgCal.get(java.util.Calendar.YEAR) == nowCal.get(java.util.Calendar.YEAR) &&
+            msgCal.get(java.util.Calendar.DAY_OF_YEAR) == nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+        val pattern = if (sameDay) "h:mm a" else "M/d h:mm a"
+        SimpleDateFormat(pattern, Locale.getDefault()).format(Date(message.timestamp))
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+    ) {
+        if (!senderLabel.isNullOrBlank() && !isMe) {
+            Text(
+                senderLabel,
+                color = AccentCyan,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 4.dp, bottom = 3.dp)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = if (isMe) 16.dp else 4.dp,
+                        bottomEnd = if (isMe) 4.dp else 16.dp
+                    )
+                )
+                .then(
+                    if (isMe) Modifier.background(primaryButtonBrush())
+                    else Modifier.background(SurfaceDark)
+                )
+                .clickable(enabled = canRetry) { onRetryMessage(message) }
+                .semantics {
+                    if (isMe) {
+                        contentDescription = statusDescription
+                        if (canRetry) {
+                            onClick(label = if (spanish) "Reintentar envío" else "Retry send") {
+                                onRetryMessage(message)
+                                true
+                            }
+                        }
+                    }
+                }
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text(
+                text = localizeChatPlaceholder(message.content, appLanguage),
+                color = if (isMe) Color(0xFF061018) else TextLight,
+                fontSize = 15.sp
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 3.dp, start = 4.dp, end = 4.dp)
+        ) {
+            Text(time, color = TextMuted, fontSize = 10.sp)
+            if (isMe) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = statusText,
+                    color = statusColor,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.semantics { contentDescription = statusDescription }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TraceRouteResultDialog(
+    state: TraceRouteState,
+    nodes: List<MeshNode>,
+    connectedNodeId: Long,
+    onOk: () -> Unit,
+    onCancel: () -> Unit = onOk,
+    onViewOnMap: () -> Unit,
+    appLanguage: String = "English"
+) {
+    val spanish = appLanguage == "Spanish"
+    val snrOrange = Color(0xFFFF9800)
+    val haptic = LocalHapticFeedback.current
+
+    fun displayName(id: Long): String {
+        val node = nodes.find { it.nodeId == id }
+            ?: nodes.find { (it.nodeId and 0xFFFFFFFFL) == (id and 0xFFFFFFFFL) }
+        val longName = node?.name?.takeIf { it.isNotBlank() }
+            ?: "0x${id.toString(16).uppercase()}"
+        val short = node?.shortName?.takeIf { it.isNotBlank() }
+            ?: getShortName(longName, id)
+        return "$longName ($short)"
+    }
+
+    @Composable
+    fun HopSnr(snr: Float, rssi: Int) {
+        val unknown = snr == 0f && rssi == 0
+        Text(
+            text = if (unknown) "? dB" else "%.2f dB".format(snr),
+            color = if (unknown) TextMuted else snrOrange,
+            fontSize = 13.sp,
+            fontWeight = if (unknown) FontWeight.Normal else FontWeight.SemiBold
+        )
+    }
+
+    @Composable
+    fun RoutePath(
+        title: String,
+        startId: Long,
+        endLabel: String?,
+        hops: List<com.silentwolf75.aethermesh.data.TraceHop>,
+        truncated: Boolean
+    ) {
+        Text(title, color = TextMuted, fontSize = 13.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("■", color = TextLight, fontSize = 11.sp)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(displayName(startId), color = TextLight, fontSize = 14.sp)
+        }
+        if (hops.isEmpty()) {
+            Text(
+                if (spanish) "↳ Directo (sin repetidores)" else "↳ Direct (no relays)",
+                color = AccentMint,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 18.dp, top = 6.dp, bottom = 4.dp)
+            )
+            endLabel?.let {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("■", color = TextLight, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(it, color = TextLight, fontSize = 14.sp)
+                }
+            }
+        } else {
+            hops.forEach { hop ->
+                Row(
+                    modifier = Modifier.padding(start = 2.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("⇊", color = TextMuted, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    HopSnr(hop.snr, hop.rssi)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("■", color = TextLight, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(displayName(hop.nodeId), color = TextLight, fontSize = 14.sp)
+                }
+            }
+        }
+        if (truncated) {
+            Text(
+                if (spanish) "La ruta superó el límite de 8 saltos" else "Path exceeded the 8-hop capture limit",
+                color = snrOrange,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (state.active) onCancel() else onOk()
+        },
+        containerColor = SurfaceDark,
+        title = {
+            Text(
+                if (spanish) "Trazado de ruta" else "Traceroute",
+                color = TextLight,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                if (state.targetId != 0L) {
+                    Text(
+                        if (spanish) "Destino: ${displayName(state.targetId)}"
+                        else "Target: ${displayName(state.targetId)}",
+                        color = TextLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+                when {
+                    state.active -> {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = AccentMint,
+                            trackColor = BorderDark
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            if (spanish)
+                                "Trazando ruta… puedes cancelar si tarda demasiado."
+                            else
+                                "Tracing route… you can cancel if this takes too long.",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+                    state.error != null -> {
+                        Text(
+                            localizeTraceRouteError(state.error, appLanguage),
+                            color = if (state.error == "Cancelled" || state.error == "Disconnected")
+                                AccentAmber
+                            else
+                                Color(0xFFF87171),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    else -> {
+                        val outHops = state.forward.size
+                        val backHops = state.returning.size
+                        Text(
+                            if (spanish)
+                                "Resumen: $outHops salto(s) de ida · $backHops de vuelta"
+                            else
+                                "Summary: $outHops hop(s) out · $backHops back",
+                            color = AccentCyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        RoutePath(
+                            title = if (spanish) "Ruta hacia el destino:" else "Route traced toward destination:",
+                            startId = connectedNodeId,
+                            endLabel = displayName(state.targetId),
+                            hops = state.forward,
+                            truncated = state.forwardTruncated
+                        )
+                        Spacer(modifier = Modifier.height(18.dp))
+                        RoutePath(
+                            title = if (spanish) "Ruta de vuelta:" else "Route traced back to us:",
+                            startId = state.targetId,
+                            endLabel = displayName(connectedNodeId),
+                            hops = state.returning,
+                            truncated = state.returnTruncated
+                        )
+                        state.durationSeconds?.let { secs ->
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                if (spanish) "Duración: ${"%.1f".format(secs)} s" else "Duration: ${"%.1f".format(secs)} s",
+                                color = TextLight,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (state.active) {
+                TextButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCancel()
+                    }
+                ) {
+                    Text(
+                        if (spanish) "Cancelar" else "Cancel",
+                        color = Color(0xFFFCA5A5),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
+                Row {
+                    TextButton(onClick = onOk) {
+                        Text(if (spanish) "Aceptar" else "OK", color = TextLight, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (state.error == null && state.targetId != 0L) {
+                        TextButton(onClick = onViewOnMap) {
+                            Text(
+                                if (spanish) "Ver en mapa" else "View on map",
+                                color = TextLight,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun DeliveryStatusLegendCompact(
+    appLanguage: String,
+    onOpenFull: () -> Unit
+) {
+    val spanish = appLanguage == "Spanish"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceDark)
+            .border(1.dp, BorderDark, RoundedCornerShape(10.dp))
+            .clickable(onClick = onOpenFull)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (spanish)
+                "⇢ SENT ≠ entregado · ◎ HEARD = bonus · ▥ cola"
+            else
+                "⇢ SENT ≠ delivered · ◎ HEARD = bonus · ▥ queued",
+            color = TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            if (spanish) "Leyenda" else "Legend",
+            color = AccentCyan,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+fun DeliveryStatusLegendDialog(
+    appLanguage: String,
+    onDismiss: () -> Unit
+) {
+    val spanish = appLanguage == "Spanish"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (spanish) "Leyenda de entrega" else "Delivery legend",
+                color = TextLight,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (spanish)
+                        "En malla de emergencia, SENT no significa que alguien lo leyó."
+                    else
+                        "On an emergency mesh, SENT does not mean someone read it.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                LegendLine(
+                    icon = "⇢",
+                    title = "SENT",
+                    body = if (spanish)
+                        "Llegó al radio / salió al aire (cobertura flood). No es entrega de extremo a extremo."
+                    else
+                        "Reached the radio / went on air (flood coverage). Not end-to-end delivery."
+                )
+                LegendLine(
+                    icon = "◎",
+                    title = "HEARD",
+                    body = if (spanish)
+                        "Recibo opcional de oyentes (bonus). No es un buzón ni confirmación de lectura."
+                    else
+                        "Optional hearer receipt (bonus). Not a mailbox or read receipt."
+                )
+                LegendLine(
+                    icon = "▥",
+                    title = if (spanish) "En cola" else "Queued",
+                    body = if (spanish)
+                        "Esperando en router / store-and-forward. Aún no está al aire ni entregado."
+                    else
+                        "Waiting on router / store-and-forward. Not on air or delivered yet."
+                )
+                LegendLine(
+                    icon = "✓✓",
+                    title = "DELIVERED",
+                    body = if (spanish)
+                        "Solo DMs: el nodo destino confirmó con ACK de malla."
+                    else
+                        "DMs only: destination node confirmed with a mesh ACK."
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Entendido" else "Got it", color = AccentCyan, fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = SurfaceDark
+    )
+}
+
+@Composable
+private fun LegendLine(icon: String, title: String, body: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(icon, color = AccentCyan, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(28.dp))
+        Column {
+            Text(title, color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(body, color = TextMuted, fontSize = 11.sp)
+        }
+    }
+}
+

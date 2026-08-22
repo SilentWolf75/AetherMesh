@@ -36,3 +36,12 @@ ota-images/
 
 # Editor backups
 *.bak
+
+# ===== Hardware (KiCad / autorouter scratch — keep schematics & release artifacts) =====
+# Campaign scripts, autorouter snapshots, and tool binaries under am1-pcb/
+hardware/**/.history/
+hardware/**/*.pre_*
+hardware/**/*.bestpair
+hardware/**/*.smoke_swd
+hardware/**/freerouting.jar
+hardware/am1/electrical/**/am1-pcb/_*
