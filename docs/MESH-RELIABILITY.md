@@ -246,8 +246,9 @@ only; skip to Phase H for software until electrical redraw is ready:
 Stable Releases channel UX. Cryptographic firmware image signing is deferred
 until release-signing infra lands in-repo.
 
-**Product roadmap Phase I (interop):** Later (MQTT / APRS / foreign-mesh
-bridges). Recommend flash/install after Phase H validation before starting I.
+**Product roadmap Phase I (interop):** Withdrawn from the companion app in
+1.3.2 (offline-first). Do not reintroduce MQTT / APRS / foreign-mesh bridges
+in Settings without an explicit product decision.
 
 Channel/broadcast semantics remain flood-first; hearer ACK stays optional.
 Catch-up unicasts never set `want_ack` (no receipt storms).

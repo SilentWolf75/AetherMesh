@@ -41,10 +41,14 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val authFailureTick: StateFlow<Int> = repository.authFailureTick
     val needsRegionSetup: StateFlow<Boolean> = repository.needsRegionSetup
     val deviceConfigSyncEpoch: StateFlow<Int> = repository.deviceConfigSyncEpoch
+    val firmwareFreshness = repository.firmwareFreshness
 
     fun getMeshDiagnosticsHistory() = repository.getMeshDiagnosticsHistory()
 
     fun countQueuedStoreForwardMessages() = repository.countQueuedStoreForwardMessages()
+
+    fun countQueuedMessagesForRecipient(recipientId: Long) =
+        repository.countQueuedMessagesForRecipient(recipientId)
 
     fun startMeshSelfTest(pingCount: Int = 5) = repository.startMeshSelfTest(pingCount)
 
@@ -431,9 +435,16 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
         _firmwareChannel.value = channel
     }
 
-    fun refreshGithubFirmware(nodeModel: String?) {
+    fun refreshGithubFirmware(nodeModel: String?, networkAvailable: Boolean = true) {
         viewModelScope.launch {
             _githubFirmwareBusy.value = true
+            _githubFirmware.value = null
+            if (!networkAvailable) {
+                _githubFirmwareStatus.value =
+                    com.example.aethermesh.data.FirmwareCatalog.OFFLINE_CATALOG_STATUS
+                _githubFirmwareBusy.value = false
+                return@launch
+            }
             val channel = _firmwareChannel.value
             _githubFirmwareStatus.value = when (channel) {
                 com.example.aethermesh.data.FirmwareCatalog.Channel.STABLE ->
@@ -441,7 +452,6 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 com.example.aethermesh.data.FirmwareCatalog.Channel.LATEST ->
                     "Checking GitHub Pages (latest)…"
             }
-            _githubFirmware.value = null
             try {
                 val result = com.example.aethermesh.data.FirmwareCatalog.fetchForModel(
                     nodeModel,
@@ -453,6 +463,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                 Log.e(TAG, "GitHub firmware catalog failed: ${e.message}")
                 val detail = e.message.orEmpty()
                 _githubFirmwareStatus.value = when {
+                    com.example.aethermesh.data.FirmwareCatalog.isOfflineNetworkError(e) ->
+                        com.example.aethermesh.data.FirmwareCatalog.OFFLINE_CATALOG_STATUS
                     detail.contains("404") || detail.contains("not published", ignoreCase = true) ->
                         if (detail.contains("OTA catalog not published")) detail
                         else "OTA catalog not on GitHub Pages yet. Use a local .bin for now, or retry after the site redeploys."
@@ -490,7 +502,11 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
             result
         } catch (e: Exception) {
             Log.e(TAG, "GitHub firmware download failed: ${e.message}")
-            _githubFirmwareStatus.value = "Download failed: ${e.message}"
+            _githubFirmwareStatus.value =
+                if (com.example.aethermesh.data.FirmwareCatalog.isOfflineNetworkError(e))
+                    com.example.aethermesh.data.FirmwareCatalog.OFFLINE_CATALOG_STATUS
+                else
+                    "Download failed: ${e.message}"
             null
         } finally {
             _githubFirmwareBusy.value = false
@@ -504,6 +520,8 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     fun getChannelInboxPreviews() = repository.getChannelInboxPreviews()
 
     fun getDmInboxPreviews(localNodeId: Long) = repository.getDmInboxPreviews(localNodeId)
+
+    fun getAllChatMessages() = repository.getAllChatMessages()
 
     fun countUnreadChannelMessages(channel: String, afterTs: Long, excludeSenderId: Long) =
         repository.countUnreadChannelMessages(channel, afterTs, excludeSenderId)

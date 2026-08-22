@@ -860,12 +860,24 @@ static uint8_t gpsDutyState = 0; // 0 = sleeping, 1 = acquiring
 static uint32_t gpsDutyWakeAtMs = 0;
 static uint32_t gpsDutyOnSinceMs = 0;
 
-// Leave-behind low-voltage safe mode (phone UI matches 3.50 V enter).
+// Leave-behind low-voltage modes (phone UI matches 3.50 V enter for safe).
+// Soft safe: cap TX / stretch telem+GPS. Critical cutoff: refuse LoRa TX so a
+// cold leave-behind does not brick itself; RX + BLE + button wake stay alive.
 static constexpr float LV_SAFE_ENTER_V = 3.50f;
 static constexpr float LV_SAFE_EXIT_V = 3.65f;
+static constexpr float LV_CUTOFF_ENTER_V = 3.30f;
+static constexpr float LV_CUTOFF_EXIT_V = 3.45f;
 static constexpr int8_t LV_SAFE_TX_CAP_DBM = 14;
 bool lowVoltageSafeMode = false;
+bool lowVoltageCutoff = false;
 static int8_t lvAppliedTxDbm = -128;
+
+// Battery Saver / DEPLOY_LB: after button (or disconnect) wake, advertise for
+// this window then stop. Phones cannot scan-discover a "ghost" node once
+// advertising is off — press the user button to reopen the window. LoRa mesh
+// keeps running the whole time.
+static constexpr uint32_t BLE_POWER_SAVE_ADV_WINDOW_MS = 300000UL; // 5 minutes
+static uint32_t bleAdvertiseDeadlineMs = 0;
 
 float inheritedLat = 0.0f;
 float inheritedLon = 0.0f;
@@ -1084,8 +1096,38 @@ static void persistLowVoltageSafeFlag(bool on) {
 #endif
 }
 
+static void applyLowVoltageTxGate() {
+    // Cutoff blocks all LoRa TX; soft safe only caps power.
+    radioMgr.setTxBlocked(lowVoltageCutoff);
+    if (!lowVoltageCutoff) {
+        applyEffectiveTxPower();
+    }
+}
+
 static void serviceLowVoltageSafeMode() {
+    // Ignore bogus readings (divider not ready / unpowered sense rail).
     if (batteryVoltage < 2.5f) return;
+
+    // --- Critical cutoff (refuse TX) ---
+    if (!lowVoltageCutoff) {
+        if (!batteryCharging && batteryVoltage < LV_CUTOFF_ENTER_V) {
+            lowVoltageCutoff = true;
+            if (!lowVoltageSafeMode) {
+                lowVoltageSafeMode = true;
+                persistLowVoltageSafeFlag(true);
+            }
+            applyLowVoltageTxGate();
+            Serial.printf("LV_CUTOFF ON (%.3f V) — LoRa TX refused; RX/BLE alive until pack recovers\n",
+                          batteryVoltage);
+        }
+    } else if (batteryCharging || batteryVoltage >= LV_CUTOFF_EXIT_V) {
+        lowVoltageCutoff = false;
+        applyLowVoltageTxGate();
+        Serial.printf("LV_CUTOFF OFF (%.3f V)%s — TX allowed again\n",
+                      batteryVoltage, batteryCharging ? " charging" : "");
+    }
+
+    // --- Soft safe (TX cap + stretch) ---
     if (!lowVoltageSafeMode) {
         if (!batteryCharging && batteryVoltage < LV_SAFE_ENTER_V) {
             lowVoltageSafeMode = true;
@@ -1097,7 +1139,8 @@ static void serviceLowVoltageSafeMode() {
             }
             applyEffectiveTxPower();
         }
-    } else if (batteryCharging || batteryVoltage >= LV_SAFE_EXIT_V) {
+    } else if (!lowVoltageCutoff &&
+               (batteryCharging || batteryVoltage >= LV_SAFE_EXIT_V)) {
         lowVoltageSafeMode = false;
         persistLowVoltageSafeFlag(false);
         Serial.printf("LV_SAFE OFF (%.3f V)%s\n",
@@ -1106,6 +1149,28 @@ static void serviceLowVoltageSafeMode() {
             setOnboardGpsPowered(true);
         }
         applyEffectiveTxPower();
+    }
+}
+
+// Button / disconnect: reopen BLE discoverability for BLE_POWER_SAVE_ADV_WINDOW_MS.
+// Extends an already-running window so repeated presses are predictable.
+static void wakeBleAdvertisingWindow(const char* reason) {
+    if (nodeRole == 2) return;
+    bleAdvertiseDeadlineMs = millis() + BLE_POWER_SAVE_ADV_WINDOW_MS;
+    if (bleMgr.isDeviceConnected()) {
+        Serial.printf("BLE wake (%s): connected — DeliveryStatus path live; window armed for after disconnect.\n",
+                      reason ? reason : "event");
+        return;
+    }
+    if (!bleMgr.isAdvertising) {
+        Serial.printf("BLE wake (%s): starting advertising for %lu s (leave-behind / Battery Saver).\n",
+                      reason ? reason : "event",
+                      (unsigned long)(BLE_POWER_SAVE_ADV_WINDOW_MS / 1000UL));
+        bleMgr.startAdvertising();
+    } else {
+        Serial.printf("BLE wake (%s): advertising already on — window refreshed to %lu s.\n",
+                      reason ? reason : "event",
+                      (unsigned long)(BLE_POWER_SAVE_ADV_WINDOW_MS / 1000UL));
     }
 }
 
@@ -1286,6 +1351,9 @@ void loadSettings() {
         telemetryIntervalSec = preferences.getUInt("tel_interval", 60);
         screenTimeoutSecs = preferences.getUInt("scr_timeout", 30);
         powerSaveMode = preferences.getBool("power_save", false);
+        // Soft LV hint from last boot (ESP). Re-evaluated from voltage once
+        // battery sense is live; avoids a silent TX-cap miss after reboot.
+        lowVoltageSafeMode = preferences.getBool("lv_safe", false);
         positionPrecisionM = preferences.getUInt("pos_prec", 0);
         gpsMode = preferences.getUInt("gps_mode", 0);
         gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(preferences.getUInt("gps_duty", 900));
@@ -4607,6 +4675,9 @@ void setup() {
     radioMgr.reinit(freq, loraBW, (uint8_t)loraSF, (int8_t)loraTxPower);
     lvAppliedTxDbm = -128;
     applyEffectiveTxPower();
+    if (lowVoltageSafeMode) {
+        Serial.println("Restored LV_SAFE hint from NVS — will re-evaluate from pack voltage.");
+    }
     radioMgr.onReceive(onLoRaPacketReceived);
     radioMgr.onTransmitDone(onLoRaPacketTransmitted);
     
@@ -4715,7 +4786,11 @@ void loop() {
 #endif
     }
 
-    static uint32_t lastBleActiveTime = millis();
+    // Arm initial Battery Saver window from boot so DEPLOY_LB nodes are
+    // discoverable after flash/reboot without requiring an immediate button press.
+    if (bleAdvertiseDeadlineMs == 0) {
+        bleAdvertiseDeadlineMs = millis() + BLE_POWER_SAVE_ADV_WINDOW_MS;
+    }
 #if defined(LILYGO_T_DECK)
     pollTDeckKeyboard();
 #endif
@@ -4739,10 +4814,7 @@ void loop() {
         touchGestureHandled = false;
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
-            lastBleActiveTime = millis();
-            if (!bleMgr.isAdvertising && !bleMgr.isDeviceConnected()) {
-                bleMgr.startAdvertising();
-            }
+            wakeBleAdvertisingWindow("touch");
         }
         updateDisplay();
     } else if (currentTouchState) {
@@ -4802,15 +4874,8 @@ void loop() {
 #endif
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
-            lastBleActiveTime = millis();
-            if (bleMgr.isDeviceConnected()) {
-                Serial.println("Button: BLE already connected (DeliveryStatus path live).");
-            } else if (!bleMgr.isAdvertising) {
-                Serial.println("Button: starting BLE advertising for phone scan/connect.");
-                bleMgr.startAdvertising();
-            } else {
-                Serial.println("Button: BLE already advertising.");
-            }
+            // Predictable leave-behind wake: press → advertise ~5 min (or extend).
+            wakeBleAdvertisingWindow("button");
         } else {
             Serial.println("Button: Role 2 (low-power repeater) keeps BLE off.");
         }
@@ -4971,7 +5036,6 @@ void loop() {
         bool currentBleConnected = bleMgr.isDeviceConnected();
         if (currentBleConnected != lastBleConnected) {
             lastBleConnected = currentBleConnected;
-            lastBleActiveTime = millis(); // Reset inactive timer on disconnect/connect
             if (currentBleConnected) {
                 isBleClientAuthenticated = false;
                 pendingAuthChallengeAtMs = millis() + 400;
@@ -4986,12 +5050,9 @@ void loop() {
                     router.setQuietMode(false);
                     Serial.println("Cleared range-test quiet mode (BLE disconnect).");
                 }
-                if (powerSaveMode) {
-                    // Instantly ensure we are advertising, sleep timer starts now
-                    if (!bleMgr.isAdvertising) {
-                        bleMgr.startAdvertising();
-                    }
-                }
+                // Re-open the advertise window after disconnect (Battery Saver /
+                // leave-behind). Without this the node becomes unscannable.
+                wakeBleAdvertisingWindow("disconnect");
             }
         }
         if (pendingAuthChallengeAtMs != 0 &&
@@ -5002,11 +5063,19 @@ void loop() {
             }
         }
 
-        // BLE power save sleep timeout check
+        // BLE power save sleep timeout: after the armed window, stop advertising
+        // so leave-behinds stop burning BLE idle current. Mesh keeps running;
+        // phone scan will not see the node until button wake (ghost-node UX).
         if (!currentBleConnected && powerSaveMode) {
-            if (bleMgr.isAdvertising && (millis() - lastBleActiveTime > 300000)) {
+            if (bleMgr.isAdvertising &&
+                (int32_t)(millis() - bleAdvertiseDeadlineMs) >= 0) {
+                Serial.println("Battery Saver: BLE advertise window elapsed — stopping (press button to wake).");
                 bleMgr.stopAdvertising();
             }
+        } else if (!currentBleConnected && !powerSaveMode) {
+            // Non-power-save: keep advertising forever; refresh deadline so a
+            // later toggle into power-save still gets a full window.
+            bleAdvertiseDeadlineMs = millis() + BLE_POWER_SAVE_ADV_WINDOW_MS;
         }
     }
 
@@ -5153,7 +5222,19 @@ void loop() {
             if (effectiveTelemetrySec < 600) effectiveTelemetrySec = 600;
             else effectiveTelemetrySec *= 2;
         }
+        // Critical cutoff: keep a slow heartbeat so phones still see voltage
+        // trend / LV state, but never faster than soft-safe stretch.
+        if (lowVoltageCutoff && effectiveTelemetrySec < 900) {
+            effectiveTelemetrySec = 900;
+        }
         serviceLowVoltageSafeMode();
+        if (lowVoltageSafeMode || lowVoltageCutoff) {
+            Serial.printf("Power state: LV_SAFE=%d LV_CUTOFF=%d V=%.3f TX_blocked=%d\n",
+                          lowVoltageSafeMode ? 1 : 0,
+                          lowVoltageCutoff ? 1 : 0,
+                          batteryVoltage,
+                          radioMgr.isTxBlocked() ? 1 : 0);
+        }
         if (millis() - lastTelemetry > (effectiveTelemetrySec * 1000L)) {
             lastTelemetry = millis();
             
@@ -5199,9 +5280,13 @@ void loop() {
             meshmath::blurPosition(lat, lon, positionPrecisionM, txLat, txLon);
             // Quiet mode (phone range test): keep BLE loopback so the app still
             // sees local GPS, but skip LoRa telemetry broadcasts that contend
-            // with direct PING/PONG airtime.
-            if (!router.isQuietMode()) {
+            // with direct PING/PONG airtime. LV cutoff also skips LoRa telem
+            // (RadioManager refuses TX); BLE loopback below still refreshes the
+            // phone so Low-V safe is visible from battery_voltage.
+            if (!router.isQuietMode() && !lowVoltageCutoff) {
                 router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM, loraSF, nodeRegion);
+            } else if (lowVoltageCutoff) {
+                Serial.println("LV_CUTOFF: skipping LoRa telemetry TX (BLE loopback may still update phone).");
             } else {
                 Serial.println("Quiet mode: skipping LoRa telemetry broadcast.");
             }

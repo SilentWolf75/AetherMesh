@@ -123,6 +123,8 @@ fun ChatView(
     var threadSearchOpen by remember { mutableStateOf(false) }
     var threadSearchQuery by remember { mutableStateOf("") }
     var showExportMenu by remember { mutableStateOf(false) }
+    var showDeliveryLegend by remember { mutableStateOf(false) }
+    val deliveryLegendSeenKey = "delivery_legend_seen_v133"
     val chatTwoPane = rememberAdaptiveLayoutInfo().useTwoPane
     BackHandler(enabled = inThread && !chatTwoPane) { inThread = false }
     val listState = rememberLazyListState()
@@ -137,6 +139,11 @@ fun ChatView(
     }
     val appPrefs = remember {
         context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+    }
+    LaunchedEffect(Unit) {
+        if (!appPrefs.getBoolean(deliveryLegendSeenKey, false)) {
+            showDeliveryLegend = true
+        }
     }
     var channelHearerReceipts by remember {
         mutableStateOf(appPrefs.getBoolean("channel_hearer_receipts", false))
@@ -257,6 +264,16 @@ fun ChatView(
         )
     }
 
+    if (showDeliveryLegend) {
+        DeliveryStatusLegendDialog(
+            appLanguage = appLanguage,
+            onDismiss = {
+                showDeliveryLegend = false
+                appPrefs.edit().putBoolean(deliveryLegendSeenKey, true).apply()
+            }
+        )
+    }
+
     val selectedNode = nodes.find { it.nodeId == activeChatId }
     val threadTitle = if (activeChatId == null) {
         "#$selectedChannel"
@@ -350,29 +367,46 @@ fun ChatView(
             }
             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
-                    TextField(
-                        value = inboxFilter,
-                        onValueChange = { inboxFilter = it },
-                        singleLine = true,
-                        placeholder = {
-                            Text(
-                                if (spanish) "Filtrar chats…" else "Filter chats…",
-                                color = TextMuted
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
-                        },
-                        trailingIcon = {
-                            if (inboxFilter.isNotEmpty()) {
-                                IconButton(onClick = { inboxFilter = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = if (spanish) "Borrar" else "Clear", tint = TextMuted)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextField(
+                            value = inboxFilter,
+                            onValueChange = { inboxFilter = it },
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    if (spanish) "Filtrar chats…" else "Filter chats…",
+                                    color = TextMuted
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (inboxFilter.isNotEmpty()) {
+                                    IconButton(onClick = { inboxFilter = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = if (spanish) "Borrar" else "Clear", tint = TextMuted)
+                                    }
                                 }
-                            }
-                        },
-                        colors = aetherFilledFieldColors(),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                            },
+                            colors = aetherFilledFieldColors(),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { showDeliveryLegend = true }) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = if (spanish) "Leyenda de entrega" else "Delivery legend",
+                                tint = AccentCyan
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    DeliveryStatusLegendCompact(
+                        appLanguage = appLanguage,
+                        onOpenFull = { showDeliveryLegend = true }
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -732,6 +766,15 @@ fun ChatView(
                         tint = if (threadMuted) AccentAmber else TextMuted
                     )
                 }
+                IconButton(
+                    onClick = { showDeliveryLegend = true }
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = if (spanish) "Leyenda de entrega" else "Delivery legend",
+                        tint = TextMuted
+                    )
+                }
                 Box {
                     IconButton(onClick = { showExportMenu = true }) {
                         Icon(
@@ -773,6 +816,23 @@ fun ChatView(
                                     asCsv = true,
                                     appLanguage = appLanguage,
                                     nodeNames = nodes.associate { it.nodeId to it.name }
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (spanish) "Post-evento (chat + nodos)"
+                                    else "After-action (chat + nodes)"
+                                )
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                exportAfterActionReport(
+                                    context = context,
+                                    messages = messages,
+                                    nodes = nodes,
+                                    appLanguage = appLanguage
                                 )
                             }
                         )
@@ -1380,21 +1440,24 @@ fun MessageBubble(
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
     val spanish = appLanguage == "Spanish"
     // Direct messages: PENDING → DELIVERED when the recipient *node* ACKs.
-    // Channel: SENT → HEARD only when hearer receipts are enabled (optional bonus).
+    // Channel: SENT = phone→radio / on-air (not end-to-end delivered).
+    // HEARD = optional hearer receipt. QUEUED = waiting on router / store-forward.
     val isChannel = message.channel.isNotEmpty() ||
         (message.recipientId and 0xFFFFFFFFL) == 0xFFFFFFFFL
     val channelWaiting = isChannel && channelHearerReceipts
     val statusIcon = when (message.status) {
         "DELIVERED" -> "✓✓"
-        "HEARD" -> "✓✓"
-        "PENDING", "QUEUED" -> "…"
+        "HEARD" -> "◎"
+        "PENDING" -> "…"
+        "QUEUED" -> "▥"
         "FAILED", "EXPIRED" -> "!"
         "RETRIED" -> "↻"
-        "SENT" -> if (channelWaiting) "…" else "✓"
-        else -> "✓"
+        "SENT" -> if (channelWaiting) "…" else "⇢"
+        else -> "⇢"
     }
     val statusColor = when (message.status) {
-        "DELIVERED", "HEARD" -> AccentMint
+        "DELIVERED" -> AccentMint
+        "HEARD" -> AccentCyan
         "SENT" -> if (channelWaiting) AccentAmber else TextMuted
         "FAILED", "EXPIRED" -> AccentRed
         "PENDING", "QUEUED" -> AccentAmber
@@ -1404,20 +1467,20 @@ fun MessageBubble(
         "EXPIRED" -> if (spanish) "$statusIcon sin ACK · tocar para reintentar" else "$statusIcon no ACK · tap to retry"
         "FAILED" -> if (spanish) "$statusIcon sin respuesta · tocar para reintentar" else "$statusIcon no reply · tap to retry"
         "PENDING" -> if (spanish) "$statusIcon esperando recepción…" else "$statusIcon waiting for receipt…"
-        "QUEUED" -> if (spanish) "$statusIcon en cola para la malla…" else "$statusIcon queued for mesh…"
+        "QUEUED" -> if (spanish) "$statusIcon en cola (router / al aire)…" else "$statusIcon queued (router / on-air)…"
         "RETRIED" -> if (spanish) "$statusIcon reenviado" else "$statusIcon resent"
-        "DELIVERED" -> if (spanish) "$statusIcon recibido" else "$statusIcon received"
+        "DELIVERED" -> if (spanish) "$statusIcon entregado al nodo" else "$statusIcon delivered to node"
         "HEARD" -> if (spanish) {
             "$statusIcon oído por ${message.heardCount}"
         } else {
             "$statusIcon heard by ${message.heardCount}"
         }
         "SENT" -> if (channelWaiting) {
-            if (spanish) "$statusIcon Esperando ser oído…" else "$statusIcon Waiting to be heard…"
+            if (spanish) "$statusIcon SENT · esperando HEARD…" else "$statusIcon SENT · waiting for HEARD…"
         } else if (isChannel) {
-            if (spanish) "$statusIcon al aire" else "$statusIcon on air"
+            if (spanish) "$statusIcon SENT · al radio (no entregado)" else "$statusIcon SENT · to radio (not delivered)"
         } else {
-            if (spanish) "$statusIcon enviado" else "$statusIcon sent"
+            if (spanish) "$statusIcon SENT · al radio" else "$statusIcon SENT · to radio"
         }
         else -> statusIcon
     }
@@ -1431,36 +1494,39 @@ fun MessageBubble(
         else
             "No node reply within 45s. Tap to retry."
         "PENDING" -> if (spanish)
-            "Enviado. Esperando que el nodo destino confirme la recepción."
+            "Enviado al radio. Esperando que el nodo destino confirme la recepción (no es solo SENT)."
         else
-            "Sent. Waiting for the destination node to confirm receipt."
+            "Sent to the radio. Waiting for the destination node to confirm receipt (not the same as SENT)."
         "QUEUED" -> if (spanish)
-            "En cola para la malla (radio ocupada o store-and-forward). Aún no está al aire."
+            "En cola en el router o store-and-forward — aún no está al aire / no entregado."
         else
-            "Queued for the mesh (radio busy or store-and-forward). Not on air yet."
+            "Queued on the router or store-and-forward — not on air / not delivered yet."
         "RETRIED" -> if (spanish) "Reenviado automáticamente." else "Automatically resent."
         "DELIVERED" -> if (spanish)
-            "Recibido por el nodo destino (confirmación de malla)."
+            "Entregado: el nodo destino confirmó la recepción (ACK de malla)."
         else
-            "Received by the destination node (mesh acknowledgment)."
+            "Delivered: the destination node confirmed receipt (mesh ACK)."
         "HEARD" -> if (spanish)
-            "Bonus: ${message.heardCount} nodo(s) confirmaron haber oído este mensaje de canal (no es un buzón de entrega)."
+            "HEARD (bonus): ${message.heardCount} nodo(s) confirmaron haber oído este mensaje de canal. No es un buzón de entrega."
         else
-            "Bonus: ${message.heardCount} mesh node(s) confirmed hearing this channel message (not a delivery mailbox)."
+            "HEARD (bonus): ${message.heardCount} mesh node(s) confirmed hearing this channel message. Not a delivery mailbox."
         "SENT" -> if (channelWaiting) {
             if (spanish)
-                "Transmitido al canal. Esperando recibos opcionales de oyentes (bonus, no buzón)."
+                "SENT = teléfono→radio / al aire. Esperando recibos opcionales HEARD (bonus, no buzón)."
             else
-                "Broadcast on the channel. Waiting for optional hearer receipts (bonus, not a mailbox)."
+                "SENT = phone→radio / on air. Waiting for optional HEARD receipts (bonus, not a mailbox)."
         } else if (isChannel) {
             if (spanish)
-                "Al aire en el canal (cobertura flood)."
+                "SENT = llegó al radio y salió al canal (cobertura flood). No significa que alguien lo leyó."
             else
-                "On air on the channel (flood coverage)."
+                "SENT = reached the radio and went on the channel (flood coverage). Does not mean anyone read it."
         } else {
-            if (spanish) "Enviado." else "Sent."
+            if (spanish)
+                "SENT = el teléfono lo entregó al radio. Aún no hay confirmación del destino."
+            else
+                "SENT = the phone handed it to the radio. No destination confirmation yet."
         }
-        else -> if (spanish) "Enviado." else "Sent."
+        else -> if (spanish) "Enviado al radio." else "Sent to radio."
     }
     val time = run {
         val msgCal = java.util.Calendar.getInstance().apply { timeInMillis = message.timestamp }
@@ -1756,4 +1822,116 @@ fun TraceRouteResultDialog(
     )
 }
 
+@Composable
+fun DeliveryStatusLegendCompact(
+    appLanguage: String,
+    onOpenFull: () -> Unit
+) {
+    val spanish = appLanguage == "Spanish"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceDark)
+            .border(1.dp, BorderDark, RoundedCornerShape(10.dp))
+            .clickable(onClick = onOpenFull)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (spanish)
+                "⇢ SENT ≠ entregado · ◎ HEARD = bonus · ▥ cola"
+            else
+                "⇢ SENT ≠ delivered · ◎ HEARD = bonus · ▥ queued",
+            color = TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            if (spanish) "Leyenda" else "Legend",
+            color = AccentCyan,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+fun DeliveryStatusLegendDialog(
+    appLanguage: String,
+    onDismiss: () -> Unit
+) {
+    val spanish = appLanguage == "Spanish"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (spanish) "Leyenda de entrega" else "Delivery legend",
+                color = TextLight,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (spanish)
+                        "En malla de emergencia, SENT no significa que alguien lo leyó."
+                    else
+                        "On an emergency mesh, SENT does not mean someone read it.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                LegendLine(
+                    icon = "⇢",
+                    title = "SENT",
+                    body = if (spanish)
+                        "Llegó al radio / salió al aire (cobertura flood). No es entrega de extremo a extremo."
+                    else
+                        "Reached the radio / went on air (flood coverage). Not end-to-end delivery."
+                )
+                LegendLine(
+                    icon = "◎",
+                    title = "HEARD",
+                    body = if (spanish)
+                        "Recibo opcional de oyentes (bonus). No es un buzón ni confirmación de lectura."
+                    else
+                        "Optional hearer receipt (bonus). Not a mailbox or read receipt."
+                )
+                LegendLine(
+                    icon = "▥",
+                    title = if (spanish) "En cola" else "Queued",
+                    body = if (spanish)
+                        "Esperando en router / store-and-forward. Aún no está al aire ni entregado."
+                    else
+                        "Waiting on router / store-and-forward. Not on air or delivered yet."
+                )
+                LegendLine(
+                    icon = "✓✓",
+                    title = "DELIVERED",
+                    body = if (spanish)
+                        "Solo DMs: el nodo destino confirmó con ACK de malla."
+                    else
+                        "DMs only: destination node confirmed with a mesh ACK."
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (spanish) "Entendido" else "Got it", color = AccentCyan, fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = SurfaceDark
+    )
+}
+
+@Composable
+private fun LegendLine(icon: String, title: String, body: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(icon, color = AccentCyan, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(28.dp))
+        Column {
+            Text(title, color = TextLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(body, color = TextMuted, fontSize = 11.sp)
+        }
+    }
+}
 

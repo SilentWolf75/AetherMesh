@@ -104,7 +104,9 @@ fun NodesView(
     onRangeTest: (Long) -> Unit = {},
     onOpenNodeDetails: (Long) -> Unit = {},
     selectedNodeId: Long? = null,
-    onRefresh: (() -> Unit)? = null
+    onRefresh: (() -> Unit)? = null,
+    queuedMessagesFor: (Long) -> Int = { 0 },
+    routerQueueDepth: Int = 0
 ) {
     var renamingNode by remember { mutableStateOf<MeshNode?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -310,7 +312,9 @@ fun NodesView(
                                 }
                             },
                             isConnectedNode = true,
-                            selected = selectedNodeId != null && selectedNodeId == connectedNode.nodeId
+                            selected = selectedNodeId != null && selectedNodeId == connectedNode.nodeId,
+                            queuedCount = queuedMessagesFor(connectedNode.nodeId),
+                            routerQueueDepth = routerQueueDepth
                         )
                     }
                 }
@@ -332,7 +336,8 @@ fun NodesView(
                         onRangeTest = { onRangeTest(node.nodeId) },
                         onRemoteConfig = { onRemoteConfig?.invoke(node) },
                         isConnectedNode = false,
-                        selected = selectedNodeId != null && selectedNodeId == node.nodeId
+                        selected = selectedNodeId != null && selectedNodeId == node.nodeId,
+                        queuedCount = queuedMessagesFor(node.nodeId)
                     )
                 }
                 if (staleNodes.isNotEmpty()) {
@@ -363,7 +368,8 @@ fun NodesView(
                             onRangeTest = { onRangeTest(node.nodeId) },
                             onRemoteConfig = { onRemoteConfig?.invoke(node) },
                             isConnectedNode = false,
-                            selected = selectedNodeId != null && selectedNodeId == node.nodeId
+                            selected = selectedNodeId != null && selectedNodeId == node.nodeId,
+                            queuedCount = queuedMessagesFor(node.nodeId)
                         )
                     }
                 }
@@ -445,7 +451,9 @@ fun NodeItem(
     onRemoteConfig: (() -> Unit)? = null,
     isConnectedNode: Boolean = false,
     selected: Boolean = false,
-    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() }
+    getTelemetryHistory: (Long) -> List<com.example.aethermesh.data.TelemetrySample> = { emptyList() },
+    queuedCount: Int = 0,
+    routerQueueDepth: Int = 0
 ) {
     val context = LocalContext.current
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
@@ -546,9 +554,52 @@ fun NodeItem(
                     )
                 }
             }
+            // Always-visible field triage: last heard · queue · battery/voltage
+            val battLabel = when {
+                node.battery <= 0 && node.voltage <= 0f && !node.isCharging ->
+                    if (appLanguage == "Spanish") "Batt —" else "Batt —"
+                node.isCharging && node.battery > 0 -> "${node.battery}%⚡"
+                node.battery > 0 -> "${node.battery}%"
+                node.voltage > 0f -> "%.2fV".format(node.voltage)
+                else -> if (appLanguage == "Spanish") "Batt —" else "Batt —"
+            }
+            val queueLabel = when {
+                isConnectedNode && routerQueueDepth > 0 ->
+                    if (appLanguage == "Spanish") "Cola $routerQueueDepth" else "Queue $routerQueueDepth"
+                queuedCount > 0 ->
+                    if (appLanguage == "Spanish") "Cola $queuedCount" else "Queue $queuedCount"
+                isConnectedNode ->
+                    if (appLanguage == "Spanish") "Cola 0" else "Queue 0"
+                else -> null
+            }
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                buildString {
+                    append(if (appLanguage == "Spanish") "Oído " else "Heard ")
+                    append(formatLastHeard(node.lastActive, appLanguage))
+                    if (queueLabel != null) {
+                        append("  ·  ")
+                        append(queueLabel)
+                    }
+                    append("  ·  ")
+                    append(battLabel)
+                    if (node.voltage > 0f && node.battery > 0) {
+                        append(" ")
+                        append("%.2fV".format(node.voltage))
+                    }
+                },
+                color = when {
+                    lvSafe || queuedCount > 0 || routerQueueDepth > 0 -> AccentAmber
+                    stale -> TextMuted.copy(alpha = 0.85f)
+                    else -> TextMuted
+                },
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             val fieldBits = buildList {
                 if (voltageTrendLabel != null) add(voltageTrendLabel)
-                else if (node.voltage > 0f) add("%.2f V".format(node.voltage))
                 if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
                     add(
                         formatGpsLockAge(

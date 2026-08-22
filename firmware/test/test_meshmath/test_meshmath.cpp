@@ -460,6 +460,22 @@ void test_relay_loss_recovery_policy() {
     TEST_ASSERT_TRUE(relayLossRetargetDelayMs(12, 0) < earlyProbeMinDelayMs(12));
 }
 
+void test_text_pending_ack_defer_scales_with_sf() {
+    TEST_ASSERT_EQUAL_UINT32(80, textPendingAckDeferMs(7));
+    TEST_ASSERT_EQUAL_UINT32(150, textPendingAckDeferMs(10));
+    TEST_ASSERT_EQUAL_UINT32(250, textPendingAckDeferMs(11));
+    TEST_ASSERT_EQUAL_UINT32(400, textPendingAckDeferMs(12));
+    TEST_ASSERT_TRUE(textPendingAckDeferMs(12) > textPendingAckDeferMs(11));
+    TEST_ASSERT_TRUE(textPendingAckDeferMs(11) > textPendingAckDeferMs(7));
+}
+
+void test_soft_stale_route_floods() {
+    TEST_ASSERT_FALSE(shouldFloodSoftStaleRoute(1000, 200000));
+    TEST_ASSERT_FALSE(shouldFloodSoftStaleRoute(200000, 200000));
+    TEST_ASSERT_TRUE(shouldFloodSoftStaleRoute(200001, 200000));
+    TEST_ASSERT_FALSE(shouldFloodSoftStaleRoute(999999, 0)); // softAge disabled
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_hopcost_strong_link_is_min);
@@ -508,5 +524,7 @@ int main(int, char**) {
     RUN_TEST(test_congestion_score_and_deferral);
     RUN_TEST(test_link_quality_adjusted_metric);
     RUN_TEST(test_relay_loss_recovery_policy);
+    RUN_TEST(test_text_pending_ack_defer_scales_with_sf);
+    RUN_TEST(test_soft_stale_route_floods);
     return UNITY_END();
 }

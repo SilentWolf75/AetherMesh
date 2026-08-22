@@ -294,10 +294,22 @@ void MeshRouter::applyDirectedNextHop(aethermesh_MeshPacket* packet,
         packet->next_hop_id = 0; // flood fallback after recent failure
         return;
     }
+    if (route != nullptr) {
+        // Soft-stale primary: try backup demote before giving up on directed.
+        maybeSoftDemoteRoute(route);
+    }
     const bool hasDirected =
         route != nullptr &&
         meshmath::hasUsableDirectedHop(route->nextHopId) &&
         isLiveNeighbor(route->nextHopId);
+    // Dest-route soft-age: do not keep stamping a stale directed path — flood
+    // so relays rediscover instead of black-holing on a quiet next_hop.
+    if (hasDirected &&
+        meshmath::shouldFloodSoftStaleRoute(millis() - route->timestamp,
+                                            ROUTE_SOFT_AGE_MS)) {
+        packet->next_hop_id = 0;
+        return;
+    }
     packet->next_hop_id = meshmath::restampNextHopId(
         hasDirected ? route->nextHopId : 0, hasDirected);
 }
@@ -821,6 +833,13 @@ bool MeshRouter::tryEarlyPathRepair(PendingAck& pending, uint32_t now) {
         sf, routeMetric, routeAge, ROUTE_SOFT_AGE_MS, 0);
     uint32_t floodAfter = meshmath::earlyFloodDelayMs(
         sf, routeMetric, routeAge, ROUTE_SOFT_AGE_MS, 0);
+    // Soft-stale directed: pull limited flood earlier so we do not wait a full
+    // ACK exhaustion before backup/flood repair.
+    if (directed &&
+        meshmath::shouldFloodSoftStaleRoute(routeAge, ROUTE_SOFT_AGE_MS)) {
+        uint32_t earlierFlood = probeAfter + meshmath::earlyFloodGapMs(sf) / 2u;
+        if (earlierFlood < floodAfter) floodAfter = earlierFlood;
+    }
 
     const bool hasUsableBackup =
         route != nullptr && route->hasBackup &&
@@ -948,11 +967,19 @@ void MeshRouter::loop() {
     // Drain highest-priority due slot first. Slot-order used to let queued ACKs
     // grab the radio before local channel/DM text that was also due — phone
     // sends then failed CAD/busy and never went out while "Waiting to be heard".
+    uint8_t sfNow = radio ? radio->getSpreadingFactor() : 11;
+    const uint32_t ackHoldMs = meshmath::textPendingAckDeferMs(sfNow);
     while (true) {
         int best = -1;
         for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
             if (!pendingRebroadcasts[i].active) continue;
             if ((int32_t)(now - pendingRebroadcasts[i].transmitTime) < 0) continue;
+            // Honesty under SF11/busy mesh: if local user text is imminent,
+            // skip due ACKs this pass so text is not starved by HEARD waves.
+            if (pendingRebroadcasts[i].packet.which_payload == aethermesh_MeshPacket_ack_tag &&
+                hasImminentLocalText(now, ackHoldMs)) {
+                continue;
+            }
             if (best < 0 ||
                 pendingRebroadcasts[i].priority > pendingRebroadcasts[best].priority ||
                 (pendingRebroadcasts[i].priority == pendingRebroadcasts[best].priority &&
@@ -1662,13 +1689,23 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
 
         if (packet.hop_limit > 1) {
             RouteEntry* route = getRoute(packet.recipient_id);
+            if (route != nullptr) {
+                maybeSoftDemoteRoute(route);
+            }
             const bool failedRecently = isRouteFailedRecently(packet.recipient_id);
             const bool hasDirected =
                 route != nullptr &&
                 meshmath::hasUsableDirectedHop(route->nextHopId) &&
                 isLiveNeighbor(route->nextHopId);
+            const bool routeSoftStale =
+                route != nullptr &&
+                meshmath::shouldFloodSoftStaleRoute(millis() - route->timestamp,
+                                                    ROUTE_SOFT_AGE_MS);
+            // Soft-stale dest routes flood — do not cancel peer floods on a
+            // stale next_hop (handled above); originator/relay also avoid
+            // directed when the table row itself is aged out.
             const bool useDirected =
-                hasDirected &&
+                hasDirected && !routeSoftStale &&
                 !meshmath::shouldFloodUnicast(true, failedRecently);
 
             // Metric for RouteDiscovery is already accumulated once on decode.
@@ -1695,12 +1732,14 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 uint32_t jitter = 80 + (uint32_t)random(0, 200);
                 queueRebroadcast(packet, millis() + delay / 2 + jitter);
             } else if (shouldFloodUnknownUnicast(packet) &&
-                       meshmath::shouldFloodUnicast(hasDirected, failedRecently)) {
-                // Flood only when cold or recently failed. SNR-weighted delay +
-                // duplicate cancel keep the storm small; RREQ has its own cooldown.
+                       (routeSoftStale ||
+                        meshmath::shouldFloodUnicast(hasDirected, failedRecently))) {
+                // Flood when cold, recently failed, or soft-stale directed path.
+                // Soft-stale: prefer rediscovery over silent next_hop drops.
                 noteFloodDest(packet.recipient_id);
-                Serial.printf("Flooding unicast packet %u for 0x%08X (no/failed route)\n",
-                              packet.packet_id, packet.recipient_id);
+                Serial.printf("Flooding unicast packet %u for 0x%08X (%s)\n",
+                              packet.packet_id, packet.recipient_id,
+                              routeSoftStale ? "soft-stale route" : "no/failed route");
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
                 packet.next_hop_id = meshmath::restampNextHopId(0, false);
@@ -2296,9 +2335,24 @@ void MeshRouter::deferQueuedAcks(uint32_t deferMs) {
     }
 }
 
+// True when local user text is queued and due soon — hold ACKs so SF11 airtime
+// goes to the message first.
+bool MeshRouter::hasImminentLocalText(uint32_t now, uint32_t withinMs) const {
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (!isLocalOriginatedText(pendingRebroadcasts[i].packet)) continue;
+        if (isRangeTestTextPacket(pendingRebroadcasts[i].packet)) continue;
+        int32_t dt = (int32_t)(pendingRebroadcasts[i].transmitTime - now);
+        if (dt <= (int32_t)withinMs) return true;
+    }
+    return false;
+}
+
 void MeshRouter::ensureLocalTextQueued(const aethermesh_MeshPacket& packet, uint32_t transmitTime) {
     // Coalesce duplicate ASAP/insurance entries for the same attempt so rapid
     // phone sends do not fill the 8-deep queue with copies of one packet.
+    uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+    const uint32_t ackDefer = meshmath::textPendingAckDeferMs(sf);
     for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
         if (!pendingRebroadcasts[i].active) continue;
         if (pendingRebroadcasts[i].packet.sender_id != packet.sender_id) continue;
@@ -2315,10 +2369,10 @@ void MeshRouter::ensureLocalTextQueued(const aethermesh_MeshPacket& packet, uint
         pendingRebroadcasts[i].packet = packet;
         pendingRebroadcasts[i].priority = packetPriority(packet);
         pendingRebroadcasts[i].queuedAtTime = now;
-        deferQueuedAcks(80);
+        deferQueuedAcks(ackDefer);
         return;
     }
-    deferQueuedAcks(80);
+    deferQueuedAcks(ackDefer);
     queueRebroadcast(packet, transmitTime);
 }
 
@@ -2395,6 +2449,11 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
     pendingRebroadcasts[emptySlot].queuedAtTime = millis();
     pendingRebroadcasts[emptySlot].priority = priority;
     pendingRebroadcasts[emptySlot].active = true;
+
+    if (localText) {
+        uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+        deferQueuedAcks(meshmath::textPendingAckDeferMs(sf));
+    }
     
     if (packet.which_payload == aethermesh_MeshPacket_ack_tag &&
         packet.sender_id == localNodeId) {

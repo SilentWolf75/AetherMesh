@@ -18,11 +18,10 @@ this APK; do not mix older BLE protocol builds with new diagnostics UI.
 
 ## New in 1.3.0 (I–L)
 
-### I — Interop (experimental)
-- Settings → **Interop (experimental)**: MQTT broker / topic prefs saved (live
-  publish **not** wired — no MQTT client in this build); APRS comment template
-  share from node position; in-app notes + GitHub `docs/INTEROP.md` link
-- Clear **not Meshtastic-compatible on air** disclaimer
+### I — Interop (withdrawn in 1.3.2)
+- 1.3.0 shipped Settings stubs only (MQTT prefs / APRS template; **no** MQTT client).
+- **1.3.2** removes the Interop Settings category and dead prefs for offline-first
+  emergency use (no internet messaging bridges in the companion app).
 
 ### J — Field reliability toolkit
 - Mesh Health → **mesh self-test** (5 channel pings → HEARD / RX Δ score, EN/ES dialog)

@@ -304,10 +304,26 @@ class AetherMeshRepository(private val context: Context) {
         val progress: Int = 0,          // 0-100
         val status: String = "",
         val error: Boolean = false,
-        val done: Boolean = false
+        val done: Boolean = false,
+        /** Catalog / package label remembered for success + post-reconnect verify. */
+        val expectedVersion: String = "",
+        /** True when transfer finished but telemetry still matches pre-flash FW. */
+        val suspectRollback: Boolean = false
     )
     private val _otaState = MutableStateFlow(OtaState())
     val otaState: StateFlow<OtaState> = _otaState.asStateFlow()
+
+    /**
+     * After reconnect/auth (and post-OTA), Installed / Node Details should not
+     * confidently show a possibly-stale cached firmware string until a fresh
+     * Telemetry.firmware_version arrives (firmware already loopbacks post-auth).
+     */
+    data class FirmwareFreshness(
+        val awaitingFreshTelemetry: Boolean = false,
+        val connectedNodeId: Long = 0L
+    )
+    private val _firmwareFreshness = MutableStateFlow(FirmwareFreshness())
+    val firmwareFreshness: StateFlow<FirmwareFreshness> = _firmwareFreshness.asStateFlow()
 
     // Remember which node / expected label we flashed so DFU completion can
     // invalidate the Room-cached "Firmware:" string (telemetry may be minutes away).
@@ -315,6 +331,14 @@ class AetherMeshRepository(private val context: Context) {
     private var otaTargetNodeId: Long = 0L
     @Volatile
     private var otaExpectedFirmwareVersion: String = ""
+    @Volatile
+    private var otaPreFlashFirmwareVersion: String = ""
+    @Volatile
+    private var otaVerifyExpected: String = ""
+    @Volatile
+    private var otaVerifyPre: String = ""
+    @Volatile
+    private var otaVerifyNodeId: Long = 0L
 
     private val diagnosticRing = ArrayDeque<String>(64)
     private val _diagnosticLogs = MutableStateFlow<List<String>>(emptyList())
@@ -435,6 +459,11 @@ class AetherMeshRepository(private val context: Context) {
                 _isDeviceAuthenticated.value = false
                 _authenticationRequired.value = null
                 _needsRegionSetup.value = false
+                // Keep post-OTA verify across the intentional disconnect; only clear
+                // "checking…" when we're not waiting to confirm an update.
+                if (otaVerifyNodeId == 0L) {
+                    _firmwareFreshness.value = FirmwareFreshness()
+                }
                 if (_isRangeTestActive.value) {
                     stopRangeTest()
                 }
@@ -748,6 +777,9 @@ class AetherMeshRepository(private val context: Context) {
                         .apply()
                 }
 
+                // Firmware already pushes BLE telemetry loopback post-auth (1.3.0+).
+                // Mark Installed UI as checking until that packet (or later telemetry) arrives.
+                markAwaitingFirmwareTelemetry(senderId)
                 refreshData()
             } else {
                 // Firmware emits AuthResponse(false, "Authentication required") on BLE
@@ -1089,6 +1121,9 @@ class AetherMeshRepository(private val context: Context) {
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
                 notifyLowBattery(senderId, telemetry.batteryLevel, telemetry.isCharging)
                 retryQueuedDirectMessages(senderId)
+                if (telemetry.firmwareVersion.isNotBlank()) {
+                    onFreshFirmwareTelemetry(senderId, telemetry.firmwareVersion)
+                }
                 refreshData()
             }
             MeshPacket.PayloadCase.TRACE_ROUTE -> {
@@ -1411,8 +1446,13 @@ class AetherMeshRepository(private val context: Context) {
                     .edit()
                     .putString("node_name", name)
                     .putString("node_short_name", clippedShort)
+                    .putBoolean("power_save_mode", powerSaveMode)
                     .apply()
             }
+            context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("last_connected_power_save", powerSaveMode)
+                .apply()
             refreshData()
             // Full local Settings apply always reboots the MCU (~1.5s). Drop auth
             // immediately and proactively refresh GATT so we never keep a zombie
@@ -1467,6 +1507,11 @@ class AetherMeshRepository(private val context: Context) {
                 }
             )
             .putBoolean("device_synced", true)
+            .apply()
+
+        context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("last_connected_power_save", config.powerSaveMode)
             .apply()
 
         if (config.nodeName.isNotBlank() || config.nodeShortName.isNotBlank()) {
@@ -1830,12 +1875,18 @@ class AetherMeshRepository(private val context: Context) {
         }
         val nodeId = bleManager.connectedNodeId
         otaTargetNodeId = nodeId
+        captureOtaPreFlashVersion(nodeId)
         // Expected label may have been set by [rememberOtaExpectedFirmware] from catalog.
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
             bleManager.otaExclusive = true
             try {
-                _otaState.value = OtaState(active = true, status = "Preparing...")
+                val expected = otaExpectedFirmwareVersion
+                _otaState.value = OtaState(
+                    active = true,
+                    status = "Preparing...",
+                    expectedVersion = expected
+                )
                 bleManager.requestHighConnectionPriority()
 
                 val md5 = MessageDigest.getInstance("MD5").digest(firmware)
@@ -1853,7 +1904,11 @@ class AetherMeshRepository(private val context: Context) {
                         break
                     } catch (e: Exception) {
                         if (attempt == 2) throw e
-                        _otaState.value = OtaState(active = true, status = "Retrying start...")
+                        _otaState.value = OtaState(
+                            active = true,
+                            status = "Retrying start...",
+                            expectedVersion = expected
+                        )
                         delay(1500)
                         while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
                     }
@@ -1864,7 +1919,11 @@ class AetherMeshRepository(private val context: Context) {
                 val window = otaWindowForNode(chunkHint)
                 Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+confirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
 
-                _otaState.value = OtaState(active = true, status = "Uploading...")
+                _otaState.value = OtaState(
+                    active = true,
+                    status = "Uploading...",
+                    expectedVersion = expected
+                )
                 var offset = 0
                 while (offset < firmware.size) {
                     var windowEndOffset = offset
@@ -1915,18 +1974,24 @@ class AetherMeshRepository(private val context: Context) {
                     _otaState.value = OtaState(
                         active = true,
                         progress = (offset.toLong() * 100 / firmware.size).toInt(),
-                        status = "Uploading... ${offset / 1024} / ${firmware.size / 1024} kB"
+                        status = "Uploading... ${offset / 1024} / ${firmware.size / 1024} kB",
+                        expectedVersion = expected
                     )
                 }
 
-                _otaState.value = OtaState(active = true, progress = 100, status = "Verifying...")
+                _otaState.value = OtaState(
+                    active = true,
+                    progress = 100,
+                    status = "Verifying...",
+                    expectedVersion = expected
+                )
                 sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.END, 0, "")
                 awaitOtaState(com.example.aethermesh.proto.OtaStatus.State.SUCCESS, 20_000, "verification")
 
                 markOtaFirmwareCacheUpdated()
-                _otaState.value = OtaState(
-                    progress = 100, done = true,
-                    status = "Update verified — reconnecting after node reboot…"
+                _otaState.value = otaSuccessState(
+                    expected = expected,
+                    status = otaSuccessStatus(expected, dfu = false)
                 )
                 delay(4_000)
                 try {
@@ -1934,9 +1999,9 @@ class AetherMeshRepository(private val context: Context) {
                 } catch (e: Exception) {
                     Log.w(TAG, "Post-OTA reconnect schedule failed: ${e.message}")
                 }
-                _otaState.value = OtaState(
-                    progress = 100, done = true,
-                    status = "Update verified — waiting for node to come back online"
+                _otaState.value = otaSuccessState(
+                    expected = expected,
+                    status = otaReconnectingStatus(expected, dfu = false)
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 try {
@@ -1987,17 +2052,30 @@ class AetherMeshRepository(private val context: Context) {
     private val dfuProgressListener = object : no.nordicsemi.android.dfu.DfuProgressListenerAdapter() {
         override fun onDeviceConnecting(deviceAddress: String) {
             dfuSawActivity = true
-            _otaState.value = OtaState(active = true, status = "DFU: connecting to bootloader...")
+            _otaState.value = OtaState(
+                active = true,
+                status = "DFU: connecting to bootloader...",
+                expectedVersion = otaExpectedFirmwareVersion
+            )
         }
 
         override fun onDfuProcessStarting(deviceAddress: String) {
             dfuSawActivity = true
-            _otaState.value = OtaState(active = true, status = "DFU: starting transfer...")
+            _otaState.value = OtaState(
+                active = true,
+                status = "DFU: starting transfer...",
+                expectedVersion = otaExpectedFirmwareVersion
+            )
         }
 
         override fun onFirmwareValidating(deviceAddress: String) {
             dfuSawActivity = true
-            _otaState.value = OtaState(active = true, progress = 100, status = "DFU: validating firmware...")
+            _otaState.value = OtaState(
+                active = true,
+                progress = 100,
+                status = "DFU: validating firmware...",
+                expectedVersion = otaExpectedFirmwareVersion
+            )
         }
 
         override fun onDeviceDisconnecting(deviceAddress: String?) {
@@ -2009,17 +2087,34 @@ class AetherMeshRepository(private val context: Context) {
             currentPart: Int, partsTotal: Int
         ) {
             dfuSawActivity = true
-            _otaState.value = OtaState(active = true, progress = percent, status = "DFU uploading... $percent%")
+            val partHint = if (partsTotal > 1) " (part $currentPart/$partsTotal)" else ""
+            _otaState.value = OtaState(
+                active = true,
+                progress = percent,
+                status = "DFU uploading... $percent%$partHint",
+                expectedVersion = otaExpectedFirmwareVersion
+            )
         }
 
         override fun onDfuCompleted(deviceAddress: String) {
+            val expected = otaExpectedFirmwareVersion
             markOtaFirmwareCacheUpdated()
-            _otaState.value = OtaState(
-                progress = 100, done = true,
-                status = "DFU complete - node rebooting into the new firmware"
+            _otaState.value = otaSuccessState(
+                expected = expected,
+                status = otaSuccessStatus(expected, dfu = true)
             )
             dfuController = null
             bleManager.resumeAfterDfu()
+            // Follow-up status once reconnect scheduling is running.
+            repositoryScope.launch {
+                delay(1_500)
+                if (_otaState.value.done && !_otaState.value.suspectRollback) {
+                    _otaState.value = otaSuccessState(
+                        expected = expected,
+                        status = otaReconnectingStatus(expected, dfu = true)
+                    )
+                }
+            }
         }
 
         override fun onDfuAborted(deviceAddress: String) {
@@ -2096,14 +2191,20 @@ class AetherMeshRepository(private val context: Context) {
         val deviceName = bleManager.connectedDeviceName ?: "AetherMesh"
         val nodeId = bleManager.connectedNodeId
         otaTargetNodeId = nodeId
+        captureOtaPreFlashVersion(nodeId)
 
         otaJob = repositoryScope.launch(Dispatchers.IO) {
             try {
                 // SAF content:// grants are activity-scoped; the DFU service needs a
                 // FileProvider URI under our cacheDir.
                 val readableZip = copyZipForDfuService(zipUri)
+                val expected = otaExpectedFirmwareVersion
 
-                _otaState.value = OtaState(active = true, status = "Rebooting node into DFU bootloader...")
+                _otaState.value = OtaState(
+                    active = true,
+                    status = "Rebooting node into DFU bootloader...",
+                    expectedVersion = expected
+                )
                 while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
 
                 sendOtaControl(nodeId, com.example.aethermesh.proto.OtaControl.Op.ENTER_DFU, 0, "")
@@ -2117,13 +2218,21 @@ class AetherMeshRepository(private val context: Context) {
                 // Nordic-family bootloaders often advertise on a DIFFERENT
                 // address (MAC+1) and name in DFU mode, so scan for the DFU
                 // service instead of assuming the application's address.
-                _otaState.value = OtaState(active = true, status = "Searching for DFU bootloader...")
+                _otaState.value = OtaState(
+                    active = true,
+                    status = "Searching for DFU bootloader...",
+                    expectedVersion = expected
+                )
                 val dfuMac = findDfuDevice(15_000)
                     ?: throw Exception("DFU bootloader not advertising (node may need a newer bootloader)")
                 Log.d(TAG, "DFU bootloader found at $dfuMac (app was at $mac)")
 
                 dfuSawActivity = false
-                _otaState.value = OtaState(active = true, status = "Starting DFU transfer...")
+                _otaState.value = OtaState(
+                    active = true,
+                    status = "Starting DFU transfer...",
+                    expectedVersion = expected
+                )
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         no.nordicsemi.android.dfu.DfuServiceInitiator.createDfuNotificationChannel(context)
@@ -2192,17 +2301,141 @@ class AetherMeshRepository(private val context: Context) {
         otaExpectedFirmwareVersion = versionLabel?.trim().orEmpty()
     }
 
+    private fun captureOtaPreFlashVersion(nodeId: Long) {
+        if (nodeId == 0L) {
+            otaPreFlashFirmwareVersion = ""
+            return
+        }
+        otaPreFlashFirmwareVersion = _nodes.value
+            .firstOrNull { it.nodeId == nodeId }
+            ?.firmwareVersion
+            ?.trim()
+            .orEmpty()
+        if (otaPreFlashFirmwareVersion.isEmpty()) {
+            otaPreFlashFirmwareVersion = dbHelper.getNodes()
+                .firstOrNull { it.nodeId == nodeId }
+                ?.firmwareVersion
+                ?.trim()
+                .orEmpty()
+        }
+    }
+
+    private fun otaSuccessStatus(expected: String, dfu: Boolean): String {
+        val label = expected.ifBlank { "new firmware" }
+        return if (dfu) {
+            "DFU success — installed $label. Node rebooting / reconnecting…"
+        } else {
+            "OTA success — installed $label. Node rebooting / reconnecting…"
+        }
+    }
+
+    private fun otaReconnectingStatus(expected: String, dfu: Boolean): String {
+        val label = expected.ifBlank { "new firmware" }
+        val kind = if (dfu) "DFU" else "OTA"
+        return "$kind success — expected $label. Rebooting / reconnecting… (confirming version)"
+    }
+
+    private fun otaSuccessState(expected: String, status: String) = OtaState(
+        progress = 100,
+        done = true,
+        status = status,
+        expectedVersion = expected
+    )
+
+    private fun markAwaitingFirmwareTelemetry(nodeId: Long) {
+        if (nodeId == 0L) return
+        _firmwareFreshness.value = FirmwareFreshness(
+            awaitingFreshTelemetry = true,
+            connectedNodeId = nodeId
+        )
+    }
+
+    private fun onFreshFirmwareTelemetry(nodeId: Long, reported: String) {
+        val fresh = reported.trim()
+        if (fresh.isEmpty()) return
+        val awaiting = _firmwareFreshness.value
+        if (awaiting.awaitingFreshTelemetry &&
+            (awaiting.connectedNodeId == 0L || awaiting.connectedNodeId == nodeId)
+        ) {
+            _firmwareFreshness.value = FirmwareFreshness(
+                awaitingFreshTelemetry = false,
+                connectedNodeId = nodeId
+            )
+        }
+        maybeConfirmOtaApplied(nodeId, fresh)
+    }
+
+    private fun maybeConfirmOtaApplied(nodeId: Long, reported: String) {
+        if (otaVerifyNodeId == 0L || nodeId != otaVerifyNodeId) return
+        val expected = otaVerifyExpected
+        val pre = otaVerifyPre
+        val stillOnPre = pre.isNotBlank() &&
+            reported.equals(pre, ignoreCase = true)
+        val matchesExpected = expected.isNotBlank() && firmwareVersionsLookCompatible(reported, expected)
+        when {
+            stillOnPre && (expected.isBlank() || !matchesExpected) -> {
+                val msg = "Update may not have applied — still on $reported"
+                Log.w(TAG, msg)
+                _otaState.value = OtaState(
+                    progress = 100,
+                    done = true,
+                    error = true,
+                    suspectRollback = true,
+                    expectedVersion = expected,
+                    status = msg
+                )
+                otaVerifyNodeId = 0L
+                otaVerifyExpected = ""
+                otaVerifyPre = ""
+            }
+            matchesExpected || (pre.isNotBlank() && !stillOnPre) -> {
+                val label = expected.ifBlank { reported }
+                _otaState.value = OtaState(
+                    progress = 100,
+                    done = true,
+                    expectedVersion = expected,
+                    status = "Update confirmed — now running $reported" +
+                        if (expected.isNotBlank() && reported != expected) " (expected $label)" else ""
+                )
+                otaVerifyNodeId = 0L
+                otaVerifyExpected = ""
+                otaVerifyPre = ""
+            }
+            else -> {
+                // Telemetry arrived but we cannot yet decide; keep waiting.
+            }
+        }
+    }
+
+    /** Loose match: exact, or reported contains expected semver/base, or vice versa. */
+    private fun firmwareVersionsLookCompatible(reported: String, expected: String): Boolean {
+        val a = reported.trim().lowercase()
+        val b = expected.trim().lowercase()
+        if (a.isEmpty() || b.isEmpty()) return false
+        if (a == b) return true
+        if (a.contains(b) || b.contains(a)) return true
+        val aBase = a.substringBefore('-').substringBefore('+')
+        val bBase = b.substringBefore('-').substringBefore('+')
+        return aBase.isNotEmpty() && aBase == bBase
+    }
+
     private fun markOtaFirmwareCacheUpdated() {
         val nodeId = otaTargetNodeId.takeIf { it != 0L } ?: bleManager.connectedNodeId
         if (nodeId == 0L) return
         val label = otaExpectedFirmwareVersion
+        val pre = otaPreFlashFirmwareVersion
         // Prefer the known package label; otherwise clear so UI shows unknown
         // instead of a confidently wrong pre-OTA string.
         dbHelper.setNodeFirmwareVersion(nodeId, label)
+        otaVerifyNodeId = nodeId
+        otaVerifyExpected = label
+        otaVerifyPre = pre
         otaExpectedFirmwareVersion = ""
+        otaPreFlashFirmwareVersion = ""
         otaTargetNodeId = 0L
+        markAwaitingFirmwareTelemetry(nodeId)
         refreshData()
-        Log.d(TAG, "Post-OTA firmware cache for 0x${nodeId.toString(16)} -> '${label.ifEmpty { "(cleared)" }}'")
+        Log.d(TAG, "Post-OTA firmware cache for 0x${nodeId.toString(16)} -> '${label.ifEmpty { "(cleared)" }}' (pre='$pre')")
     }
 
     private fun sendOtaControl(
@@ -2888,11 +3121,16 @@ class AetherMeshRepository(private val context: Context) {
         return dbHelper.getAllRangeTestLogs()
     }
 
+    fun getAllChatMessages(): List<ChatMessage> = dbHelper.getAllMessages()
+
     fun getMeshDiagnosticsHistory(): List<MeshDiagnosticsSnapshot> =
         dbHelper.getMeshDiagnosticsHistory()
 
     fun countQueuedStoreForwardMessages(): Int =
         dbHelper.countQueuedStoreForwardMessages()
+
+    fun countQueuedMessagesForRecipient(recipientId: Long): Int =
+        dbHelper.countQueuedMessagesForRecipient(recipientId)
 
     /**
      * Channel mesh self-test: send N short channel texts, score HEARD receipts

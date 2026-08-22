@@ -1,6 +1,8 @@
 package com.example.aethermesh.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -8,7 +10,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
+import java.io.InterruptedIOException
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URL
 import java.security.MessageDigest
 
@@ -29,7 +35,47 @@ object FirmwareCatalog {
     const val GITHUB_RELEASES_URL =
         "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=30"
     const val GITHUB_RELEASES_WEB = "https://github.com/$GITHUB_REPO/releases"
-    const val USER_AGENT = "AetherMesh-Android/1.3.0"
+    const val USER_AGENT = "AetherMesh-Android/1.3.3"
+
+    /**
+     * Honest offline status for airplane mode / no phone data.
+     * Mesh BLE + LoRa stay local; only the optional GitHub catalog needs the internet.
+     */
+    const val OFFLINE_CATALOG_STATUS =
+        "Offline — OTA catalog needs phone data (Wi‑Fi/cellular). Mesh stays local. Use a local .bin/.zip, or turn data on and Check again."
+
+    /** True when the phone has a validated internet path (not mesh/BLE). */
+    fun isPhoneDataAvailable(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    fun isOfflineNetworkError(error: Throwable?): Boolean {
+        var t: Throwable? = error
+        while (t != null) {
+            when (t) {
+                is UnknownHostException,
+                is ConnectException,
+                is SocketTimeoutException,
+                is InterruptedIOException -> return true
+            }
+            val msg = t.message.orEmpty().lowercase()
+            if (msg.contains("unable to resolve host") ||
+                msg.contains("failed to connect") ||
+                msg.contains("network is unreachable") ||
+                msg.contains("software caused connection abort") ||
+                msg.contains("cleartext") && msg.contains("not permitted")
+            ) {
+                return true
+            }
+            t = t.cause
+        }
+        return false
+    }
 
     enum class Channel {
         /** Prefer non-prerelease GitHub Release assets for this board. */
@@ -193,9 +239,16 @@ object FirmwareCatalog {
     private fun fetchLatest(boardId: String?, model: String?): CatalogResult {
         val list = try {
             fetchOtaManifestSync()
-        } catch (e: IllegalStateException) {
+        } catch (e: Exception) {
+            if (isOfflineNetworkError(e)) {
+                return CatalogResult(
+                    artifact = null,
+                    channel = Channel.LATEST,
+                    status = OFFLINE_CATALOG_STATUS
+                )
+            }
             val msg = e.message.orEmpty()
-            if (msg.contains("HTTP 404")) {
+            if (msg.contains("HTTP 404") || msg.contains("not published", ignoreCase = true)) {
                 return CatalogResult(
                     artifact = null,
                     channel = Channel.LATEST,
@@ -261,13 +314,28 @@ object FirmwareCatalog {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Stable Releases fetch failed: ${e.message}")
+            if (isOfflineNetworkError(e)) {
+                return CatalogResult(
+                    artifact = null,
+                    channel = Channel.STABLE,
+                    status = OFFLINE_CATALOG_STATUS
+                )
+            }
             val tip = try {
                 fetchLatest(boardId, model)
             } catch (e2: Exception) {
                 return CatalogResult(
                     artifact = null,
                     channel = Channel.STABLE,
-                    status = "Could not reach GitHub Releases: ${e.message}"
+                    status = if (isOfflineNetworkError(e2)) OFFLINE_CATALOG_STATUS
+                    else "Could not reach GitHub Releases: ${e.message}"
+                )
+            }
+            if (tip.status == OFFLINE_CATALOG_STATUS) {
+                return CatalogResult(
+                    artifact = null,
+                    channel = Channel.STABLE,
+                    status = OFFLINE_CATALOG_STATUS
                 )
             }
             CatalogResult(

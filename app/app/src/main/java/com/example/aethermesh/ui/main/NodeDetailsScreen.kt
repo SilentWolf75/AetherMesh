@@ -87,7 +87,10 @@ fun NodeDetailsScreen(
     onTraceRoute: () -> Unit,
     onRemoteConfig: (() -> Unit)? = null,
     onViewOnMap: (() -> Unit)? = null,
-    onStartRangeTest: (() -> Unit)? = null
+    onStartRangeTest: (() -> Unit)? = null,
+    awaitingFirmware: Boolean = false,
+    queuedCount: Int = 0,
+    routerQueueDepth: Int = 0
 ) {
     val shortName = node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
     val route = observedRoutes[node.nodeId]
@@ -169,7 +172,11 @@ fun NodeDetailsScreen(
                     node = node,
                     hops = hops,
                     stale = stale,
-                    appLanguage = appLanguage
+                    appLanguage = appLanguage,
+                    connectedNodeId = connectedNodeId,
+                    awaitingFirmware = awaitingFirmware,
+                    queuedCount = queuedCount,
+                    routerQueueDepth = routerQueueDepth
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -304,7 +311,12 @@ fun NodeDetailsScreen(
                                 if (node.voltage > 0f) append("  ·  ${"%.2f".format(node.voltage)} V")
                                 if (node.isCharging) append(if (appLanguage == "Spanish") "  ·  cargando" else "  ·  charging")
                             }
-                            if (node.firmwareVersion.isNotEmpty()) append("  ·  fw ${node.firmwareVersion}")
+                            val fwLabel = formatFirmwareVersionValue(
+                                node.firmwareVersion.takeIf { it.isNotEmpty() },
+                                awaitingFirmware && sameMeshNodeId(node.nodeId, connectedNodeId),
+                                appLanguage
+                            )
+                            if (fwLabel.isNotEmpty()) append("  ·  fw $fwLabel")
                         },
                         onClick = null,
                         trailingBolt = node.isCharging
@@ -444,7 +456,11 @@ private fun DetailsCard(
     node: MeshNode,
     hops: Int?,
     stale: Boolean,
-    appLanguage: String
+    appLanguage: String,
+    connectedNodeId: Long = 0L,
+    awaitingFirmware: Boolean = false,
+    queuedCount: Int = 0,
+    routerQueueDepth: Int = 0
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -538,8 +554,30 @@ private fun DetailsCard(
                     if (node.uptimeSeconds > 0) {
                         MetaItem(Icons.Default.Timer, if (appLanguage == "Spanish") "Activo" else "Uptime", formatUptime(node.uptimeSeconds, appLanguage))
                     }
-                    if (node.firmwareVersion.isNotEmpty()) {
-                        MetaItem(Icons.Default.Memory, if (appLanguage == "Spanish") "Firmware" else "Firmware", node.firmwareVersion)
+                    MetaItem(
+                        Icons.Default.Memory,
+                        if (appLanguage == "Spanish") "Firmware" else "Firmware",
+                        formatFirmwareVersionValue(
+                            node.firmwareVersion.takeIf { it.isNotEmpty() },
+                            awaitingFirmware && sameMeshNodeId(node.nodeId, connectedNodeId),
+                            appLanguage
+                        )
+                    )
+                    val queueValue = when {
+                        sameMeshNodeId(node.nodeId, connectedNodeId) && routerQueueDepth > 0 ->
+                            if (appLanguage == "Spanish") "Router $routerQueueDepth" else "Router $routerQueueDepth"
+                        queuedCount > 0 ->
+                            if (appLanguage == "Spanish") "DM en cola $queuedCount" else "Queued DMs $queuedCount"
+                        sameMeshNodeId(node.nodeId, connectedNodeId) ->
+                            if (appLanguage == "Spanish") "Cola 0" else "Queue 0"
+                        else -> null
+                    }
+                    if (queueValue != null) {
+                        MetaItem(
+                            Icons.Default.Tag,
+                            if (appLanguage == "Spanish") "Cola" else "Queue",
+                            queueValue
+                        )
                     }
                     if (node.loraSf in 7..12) {
                         val profile = radioProfileLabel(node.loraSf) +

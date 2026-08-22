@@ -239,6 +239,8 @@ private fun NodeDetailsRoute(
     val nodes by viewModel.nodes.collectAsStateWithLifecycle()
     val observedRoutes by viewModel.observedRoutes.collectAsStateWithLifecycle()
     val phoneLocation by viewModel.phoneLocation.collectAsStateWithLifecycle()
+    val firmwareFreshness by viewModel.firmwareFreshness.collectAsStateWithLifecycle()
+    val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
     val prefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
     val appLanguage = prefs.getString("app_language", "English") ?: "English"
     val useImperialUnits = prefs.getBoolean("use_imperial_units", true)
@@ -305,6 +307,12 @@ private fun NodeDetailsRoute(
         },
         onStartRangeTest = if (!sameMeshNodeId(node.nodeId, viewModel.connectedNodeId)) {
             { viewModel.requestRangeTestDialog(node.nodeId) }
-        } else null
+        } else null,
+        awaitingFirmware = firmwareFreshness.awaitingFreshTelemetry &&
+            (firmwareFreshness.connectedNodeId == 0L ||
+                sameMeshNodeId(firmwareFreshness.connectedNodeId, node.nodeId)),
+        queuedCount = viewModel.countQueuedMessagesForRecipient(node.nodeId),
+        routerQueueDepth = if (sameMeshNodeId(node.nodeId, viewModel.connectedNodeId))
+            meshDiagnostics?.rebroadcastQueueDepth ?: 0 else 0
     )
 }

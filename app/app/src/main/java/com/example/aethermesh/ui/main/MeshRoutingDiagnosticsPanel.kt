@@ -191,6 +191,140 @@ fun MeshRoutingDiagnosticsPanel(
         modifier = Modifier.padding(bottom = 12.dp)
     )
 
+    // Actionable field tip: Battery Saver / leave-behind sleepers
+    Card(
+        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.45f))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                if (spanish) "Despertar leave-behind / Battery Saver"
+                else "Wake leave-behind / Battery Saver",
+                color = AccentAmber,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                if (spanish)
+                    "Si un nodo no aparece al escanear: pulsa el botón del dispositivo para despertar BLE (~5 min de anuncios), espera un momento y vuelve a escanear. La malla LoRa puede seguir activa aunque BLE esté dormido."
+                else
+                    "If a node won’t show when scanning: press the device button to wake BLE (~5 min advertise), wait a moment, then scan again. LoRa mesh can still be alive while BLE is asleep.",
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+        }
+    }
+
+    // Who heard whom / connectivity snapshot
+    val relativeTick = rememberRelativeTimeTick()
+    val connectivityNodes = remember(nodes, observedRoutes, relativeTick) {
+        nodes.sortedByDescending { it.lastActive }.take(12)
+    }
+    if (connectivityNodes.isNotEmpty()) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            border = BorderStroke(1.dp, BorderDark)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    if (spanish) "Conectividad (quién oye a quién)"
+                    else "Connectivity (who heard whom)",
+                    color = TextLight,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    if (spanish)
+                        "Último oído, SNR y cola. Usa traceroute / auto-prueba abajo para comprobar el camino."
+                    else
+                        "Last heard, SNR, and queue. Use traceroute / self-test below to verify the path.",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                connectivityNodes.forEach { node ->
+                    val route = observedRoutes.values.firstOrNull { r ->
+                        sameMeshNodeId(r.targetId, node.nodeId) || sameMeshNodeId(r.nextHopId, node.nodeId)
+                    }
+                    val snr = when {
+                        route != null && route.lastSnr != 0f -> route.lastSnr
+                        node.snr != 0f -> node.snr
+                        else -> null
+                    }
+                    val queued = viewModel.countQueuedMessagesForRecipient(node.nodeId)
+                    val via = route?.let { r ->
+                        val hop = nodes.find { sameMeshNodeId(it.nodeId, r.nextHopId) }
+                        hop?.name ?: "0x${(r.nextHopId and 0xFFFFL).toString(16).uppercase()}"
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                node.name.ifBlank {
+                                    "0x${node.nodeId.toString(16).uppercase()}"
+                                },
+                                color = TextLight,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                buildString {
+                                    append(formatLastHeard(node.lastActive, appLanguage))
+                                    if (via != null) {
+                                        append(if (spanish) " · vía $via" else " · via $via")
+                                        append(" (${route!!.hops}h)")
+                                    }
+                                    if (queued > 0) {
+                                        append(if (spanish) " · cola $queued" else " · queued $queued")
+                                    }
+                                },
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Text(
+                            when (snr) {
+                                null -> if (spanish) "SNR —" else "SNR —"
+                                else -> "SNR %.1f".format(snr)
+                            },
+                            color = when {
+                                snr == null -> TextMuted
+                                snr >= 0f -> AccentMint
+                                snr >= -7.5f -> AccentAmber
+                                else -> AccentRed
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                val qDepth = meshDiagnostics?.rebroadcastQueueDepth ?: 0
+                val ackQ = meshDiagnostics?.pendingAckDepth ?: 0
+                if (qDepth > 0 || ackQ > 0 || queuedStoreForward > 0) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        if (spanish)
+                            "Colas: rebroadcast $qDepth · ACK $ackQ · DM store-forward $queuedStoreForward"
+                        else
+                            "Queues: rebroadcast $qDepth · ACK $ackQ · DM store-forward $queuedStoreForward",
+                        color = AccentAmber,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+    }
+
     if (isConnected && isDeviceAuthenticated && onApplyRoutingSettings != null) {
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -686,6 +820,21 @@ fun MeshRoutingDiagnosticsPanel(
                                     color = TextMuted,
                                     fontSize = 11.sp
                                 )
+                                if (route.lastSnr != 0f || route.lastRssi != 0f) {
+                                    Text(
+                                        buildString {
+                                            if (route.lastSnr != 0f) {
+                                                append("SNR %.1f dB".format(route.lastSnr))
+                                            }
+                                            if (route.lastRssi != 0f) {
+                                                if (isNotEmpty()) append(" · ")
+                                                append("RSSI ${route.lastRssi.toInt()} dBm")
+                                            }
+                                        },
+                                        color = AccentCyan,
+                                        fontSize = 10.sp
+                                    )
+                                }
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 Box(

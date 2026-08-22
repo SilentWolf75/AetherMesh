@@ -128,6 +128,21 @@ inline uint32_t storeForwardWakeDelayMs(uint8_t sf, uint32_t jitterMs) {
     return base + j;
 }
 
+// When local user text is queued/ASAP, push due ACKs out of the immediate
+// radio slot so SF11/12 airtime is not consumed by hearer ACK floods.
+inline uint32_t textPendingAckDeferMs(uint8_t sf) {
+    if (sf >= 12) return 400;
+    if (sf >= 11) return 250;
+    if (sf >= 10) return 150;
+    return 80;
+}
+
+// Soft-stale directed routes should flood (or promote backup) instead of
+// silently depending on a next_hop that has not been reinforced recently.
+inline bool shouldFloodSoftStaleRoute(uint32_t routeAgeMs, uint32_t softAgeMs) {
+    return softAgeMs > 0 && routeAgeMs > softAgeMs;
+}
+
 inline bool shouldWakeStoredPending(bool isStored, bool storedWakeDone,
                                     bool hasActiveRoute) {
     return isStored && !storedWakeDone && hasActiveRoute;

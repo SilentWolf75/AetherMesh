@@ -142,23 +142,31 @@ fun SettingsView(
     var deployConfirmProfile by remember { mutableStateOf<DeployProfile?>(null) }
     var channelPendingDelete by remember { mutableStateOf<ChannelConfig?>(null) }
 
-    val sharedPrefs = remember { context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE) }
+    val sharedPrefs = remember {
+        context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE).also { prefs ->
+            // 1.3.2: drop Phase I MQTT/APRS interop stubs (offline-first; never wired to a client).
+            if (prefs.contains("mqtt_enabled") ||
+                prefs.contains("mqtt_broker_url") ||
+                prefs.contains("mqtt_topic_prefix") ||
+                prefs.contains("mqtt_username") ||
+                prefs.contains("aprs_callsign")
+            ) {
+                prefs.edit()
+                    .remove("mqtt_enabled")
+                    .remove("mqtt_broker_url")
+                    .remove("mqtt_topic_prefix")
+                    .remove("mqtt_username")
+                    .remove("aprs_callsign")
+                    .apply()
+            }
+        }
+    }
     var bgAlertsEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("bg_alerts_enabled", true)) }
     var useImperialUnitsSetting by remember { mutableStateOf(sharedPrefs.getBoolean("use_imperial_units", true)) }
     var enablePhoneGpsSharing by remember { mutableStateOf(sharedPrefs.getBoolean("enable_phone_gps_sharing", true)) }
     var channelHearerReceipts by remember {
         mutableStateOf(sharedPrefs.getBoolean("channel_hearer_receipts", false))
     }
-    var mqttEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("mqtt_enabled", false)) }
-    var mqttBrokerUrl by remember {
-        mutableStateOf(sharedPrefs.getString("mqtt_broker_url", "tcp://broker.hivemq.com:1883") ?: "tcp://broker.hivemq.com:1883")
-    }
-    var mqttTopicPrefix by remember {
-        mutableStateOf(sharedPrefs.getString("mqtt_topic_prefix", "aethermesh/") ?: "aethermesh/")
-    }
-    var mqttUsername by remember { mutableStateOf(sharedPrefs.getString("mqtt_username", "") ?: "") }
-    var aprsCallsign by remember { mutableStateOf(sharedPrefs.getString("aprs_callsign", "") ?: "") }
-    var showInteropDocDialog by remember { mutableStateOf(false) }
 
     val consoleMessages by viewModel.messages.collectAsStateWithLifecycle()
     val diagnosticLogs by viewModel.diagnosticLogs.collectAsStateWithLifecycle()
@@ -475,14 +483,12 @@ fun SettingsView(
         )
         val appCategories = listOf(
             Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, units, and background alerts"),
-            Triple(SettingsCategory.INTEROP, "Interop (experimental)", "MQTT prefs stub, APRS export, and interop notes"),
             Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
         )
 
         fun categoryNeedsDevice(cat: SettingsCategory): Boolean =
             cat != SettingsCategory.PREFERENCES &&
-                cat != SettingsCategory.DEVELOPER &&
-                cat != SettingsCategory.INTEROP
+                cat != SettingsCategory.DEVELOPER
 
         @Composable
         fun SettingsCategoryCard(cat: SettingsCategory, title: String, desc: String) {
@@ -496,7 +502,6 @@ fun SettingsView(
                 SettingsCategory.SECURITY -> Icons.Default.Lock
                 SettingsCategory.ROUTING -> Icons.Default.AltRoute
                 SettingsCategory.PREFERENCES -> Icons.Default.Palette
-                SettingsCategory.INTEROP -> Icons.Default.Hub
                 SettingsCategory.DEVELOPER -> Icons.Default.Terminal
             }
             val iconColor = when (cat) {
@@ -507,7 +512,6 @@ fun SettingsView(
                 SettingsCategory.SECURITY -> Color(0xFFEF4444)
                 SettingsCategory.ROUTING -> AccentCyan
                 SettingsCategory.PREFERENCES -> Color(0xFFFBBF24)
-                SettingsCategory.INTEROP -> Color(0xFF34D399)
                 SettingsCategory.DEVELOPER -> AccentSteel
             }
             Card(
@@ -755,7 +759,6 @@ fun SettingsView(
                         SettingsCategory.SECURITY -> t("Security & Keys", appLanguage)
                         SettingsCategory.ROUTING -> t("Mesh Routing", appLanguage)
                         SettingsCategory.PREFERENCES -> t("App Preferences", appLanguage)
-                        SettingsCategory.INTEROP -> t("Interop (experimental)", appLanguage)
                         SettingsCategory.DEVELOPER -> t("Developer & Diagnostics", appLanguage)
                         SettingsCategory.FIRMWARE -> t("Firmware Update", appLanguage)
                         SettingsCategory.POSITION -> t("GPS & Position Settings", appLanguage)
@@ -2242,6 +2245,7 @@ fun SettingsView(
             // RAK/nRF52: node reboots into its DFU bootloader and the Nordic DFU
             // library streams the .zip package to it (Meshtastic-style).
             val otaState by viewModel.otaState.collectAsStateWithLifecycle()
+            val firmwareFreshness by viewModel.firmwareFreshness.collectAsStateWithLifecycle()
             var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
             var otaFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
             var otaFileName by remember { mutableStateOf("") }
@@ -2278,7 +2282,8 @@ fun SettingsView(
             val firmwareScope = rememberCoroutineScope()
             LaunchedEffect(otaModelHint, isConnected, otaSupported, firmwareChannel) {
                 if (isConnected && otaSupported) {
-                    viewModel.refreshGithubFirmware(otaModelHint)
+                    val online = FirmwareCatalog.isPhoneDataAvailable(context)
+                    viewModel.refreshGithubFirmware(otaModelHint, networkAvailable = online)
                 }
             }
             val otaFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -2326,13 +2331,30 @@ fun SettingsView(
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+                    val awaitingFw = firmwareFreshness.awaitingFreshTelemetry &&
+                        (firmwareFreshness.connectedNodeId == 0L ||
+                            firmwareFreshness.connectedNodeId == connectedNode?.nodeId)
                     Text(
-                        text = (if (appLanguage == "Spanish") "Instalado: " else "Installed: ") +
-                            (connectedNode?.firmwareVersion?.ifEmpty { "unknown" } ?: "—"),
-                        color = TextMuted,
+                        text = formatInstalledFirmwareLabel(
+                            connectedNode?.firmwareVersion,
+                            awaitingFw,
+                            appLanguage
+                        ),
+                        color = if (awaitingFw) AccentAmber else TextMuted,
                         fontSize = 12.sp
                     )
-                    val installedFw = connectedNode?.firmwareVersion.orEmpty()
+                    if (otaState.suspectRollback ||
+                        (otaState.error && otaState.status.startsWith("Update may not have applied"))
+                    ) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            localizeOtaStatus(otaState.status, appLanguage),
+                            color = AccentAmber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    val installedFw = if (awaitingFw) "" else connectedNode?.firmwareVersion.orEmpty()
                     if (installedFw.isNotEmpty() && isFirmwareTooOld(installedFw)) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -2371,7 +2393,7 @@ fun SettingsView(
                     // BLE link so the bootloader can take over, and the old
                     // !isConnected-first ordering swapped to the "connect to a
                     // node" prompt mid-flash - hiding the DFU progress entirely.
-                    if (otaState.active) {
+                        if (otaState.active) {
                         LinearProgressIndicator(
                             progress = { otaState.progress / 100f },
                             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
@@ -2380,6 +2402,17 @@ fun SettingsView(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(localizeOtaStatus(otaState.status, appLanguage), color = TextLight, fontSize = 12.sp)
+                        if (otaState.expectedVersion.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                if (appLanguage == "Spanish")
+                                    "Destino: ${otaState.expectedVersion}"
+                                else
+                                    "Target: ${otaState.expectedVersion}",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = if (appLanguage == "Spanish") "No cierres la app durante la actualización." else "Keep the app open and the phone near the node.",
@@ -2408,9 +2441,26 @@ fun SettingsView(
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 localizeOtaStatus(otaState.status, appLanguage),
-                                color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
-                                fontSize = 12.sp
+                                color = when {
+                                    otaState.suspectRollback -> AccentAmber
+                                    otaState.error -> AccentRed
+                                    otaState.done -> AccentMint
+                                    else -> TextMuted
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = if (otaState.done || otaState.error) FontWeight.SemiBold else FontWeight.Normal
                             )
+                            if (otaState.done && otaState.expectedVersion.isNotBlank() && !otaState.error) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    if (appLanguage == "Spanish")
+                                        "Esperado: ${otaState.expectedVersion}"
+                                    else
+                                        "Expected: ${otaState.expectedVersion}",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
                             if (otaState.error) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
@@ -2463,6 +2513,15 @@ fun SettingsView(
                         }
                         // Stable = GitHub Releases; Latest = Pages ota-manifest
                         Text(
+                            text = if (appLanguage == "Spanish")
+                                "Catálogo GitHub (opcional): necesita datos del teléfono. La malla BLE/LoRa sigue local en modo avión. También puedes elegir un .bin/.zip guardado."
+                            else
+                                "GitHub catalog (optional): needs phone data. BLE/LoRa mesh stays local in airplane mode. You can always pick a saved .bin/.zip.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
                             text = if (appLanguage == "Spanish") "Canal de firmware" else "Firmware channel",
                             color = TextMuted,
                             fontSize = 11.sp
@@ -2477,7 +2536,10 @@ fun SettingsView(
                             OutlinedButton(
                                 onClick = {
                                     viewModel.setFirmwareChannel(FirmwareCatalog.Channel.STABLE)
-                                    viewModel.refreshGithubFirmware(otaModelHint)
+                                    viewModel.refreshGithubFirmware(
+                                        otaModelHint,
+                                        networkAvailable = FirmwareCatalog.isPhoneDataAvailable(context)
+                                    )
                                 },
                                 enabled = !githubBusy && !otaState.active,
                                 modifier = Modifier.weight(1f),
@@ -2500,7 +2562,10 @@ fun SettingsView(
                             OutlinedButton(
                                 onClick = {
                                     viewModel.setFirmwareChannel(FirmwareCatalog.Channel.LATEST)
-                                    viewModel.refreshGithubFirmware(otaModelHint)
+                                    viewModel.refreshGithubFirmware(
+                                        otaModelHint,
+                                        networkAvailable = FirmwareCatalog.isPhoneDataAvailable(context)
+                                    )
                                 },
                                 enabled = !githubBusy && !otaState.active,
                                 modifier = Modifier.weight(1f),
@@ -2523,7 +2588,12 @@ fun SettingsView(
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
-                            onClick = { viewModel.refreshGithubFirmware(otaModelHint) },
+                            onClick = {
+                                viewModel.refreshGithubFirmware(
+                                    otaModelHint,
+                                    networkAvailable = FirmwareCatalog.isPhoneDataAvailable(context)
+                                )
+                            },
                             enabled = !githubBusy && !otaState.active,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
@@ -2541,11 +2611,11 @@ fun SettingsView(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 if (firmwareChannel == FirmwareCatalog.Channel.STABLE) {
-                                    if (appLanguage == "Spanish") "Buscar Releases (estable)"
-                                    else "Check GitHub Releases (stable)"
+                                    if (appLanguage == "Spanish") "Buscar Releases (necesita datos)"
+                                    else "Check Releases (needs phone data)"
                                 } else {
-                                    if (appLanguage == "Spanish") "Buscar Pages (último)"
-                                    else "Check GitHub Pages (latest)"
+                                    if (appLanguage == "Spanish") "Buscar Pages (necesita datos)"
+                                    else "Check Pages (needs phone data)"
                                 },
                                 fontSize = 12.sp
                             )
@@ -2572,9 +2642,11 @@ fun SettingsView(
                         }
                         if (githubStatus.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(6.dp))
+                            val offlineStatus = githubStatus == FirmwareCatalog.OFFLINE_CATALOG_STATUS ||
+                                githubStatus.startsWith("Offline")
                             Text(
                                 localizeGithubFirmwareStatus(githubStatus, appLanguage),
-                                color = TextMuted,
+                                color = if (offlineStatus) AccentAmber else TextMuted,
                                 fontSize = 11.sp
                             )
                         }
@@ -2591,8 +2663,8 @@ fun SettingsView(
                         if (artifact != null) {
                             Spacer(modifier = Modifier.height(8.dp))
                             val availableLabel = artifact.displayVersion?.let { ver ->
-                                if (appLanguage == "Spanish") "Disponible: $ver"
-                                else "Available: $ver"
+                                if (appLanguage == "Spanish") "Disponible en catálogo: $ver"
+                                else "Available in catalog: $ver"
                             }
                             if (availableLabel != null) {
                                 Text(
@@ -2600,6 +2672,15 @@ fun SettingsView(
                                     color = AccentMint,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    if (appLanguage == "Spanish")
+                                        "No instalado hasta que termine OTA/DFU y se confirme la versión."
+                                    else
+                                        "Not installed until OTA/DFU finishes and the version is confirmed.",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                             }
@@ -2727,9 +2808,26 @@ fun SettingsView(
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 localizeOtaStatus(otaState.status, appLanguage),
-                                color = if (otaState.error) AccentRed else if (otaState.done) AccentMint else TextMuted,
-                                fontSize = 12.sp
+                                color = when {
+                                    otaState.suspectRollback -> AccentAmber
+                                    otaState.error -> AccentRed
+                                    otaState.done -> AccentMint
+                                    else -> TextMuted
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = if (otaState.done || otaState.error) FontWeight.SemiBold else FontWeight.Normal
                             )
+                            if (otaState.done && otaState.expectedVersion.isNotBlank() && !otaState.error) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    if (appLanguage == "Spanish")
+                                        "Esperado: ${otaState.expectedVersion}"
+                                    else
+                                        "Expected: ${otaState.expectedVersion}",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
                             if (otaState.error) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
@@ -2745,9 +2843,9 @@ fun SettingsView(
 
             Text(
                 text = if (appLanguage == "Spanish")
-                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin (nunca .zip DFU); RAK usa el paquete .zip (nunca .bin ESP). Canal Estable = GitHub Releases; Último = Pages. Se rechazan placas/archivos cruzados y se verifica tamaño/SHA-256 cuando hay catálogo."
+                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin (nunca .zip DFU); RAK usa el paquete .zip (nunca .bin ESP). Canal Estable = GitHub Releases; Último = Pages — ambos son opcionales y necesitan datos del teléfono; en modo avión usa un archivo local. Se rechazan placas/archivos cruzados y se verifica tamaño/SHA-256 cuando hay catálogo."
                 else
-                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin (never a Nordic DFU .zip); RAK takes the .zip DFU package (never an ESP .bin). Stable = GitHub Releases; Latest = Pages. Cross-board/wrong-format packages are refused; size/SHA-256 are checked when the catalog provides them.",
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin (never a Nordic DFU .zip); RAK takes the .zip DFU package (never an ESP .bin). Stable = GitHub Releases; Latest = Pages — both are optional and need phone data; in airplane mode use a local file. Cross-board/wrong-format packages are refused; size/SHA-256 are checked when the catalog provides them.",
                 color = TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
@@ -2946,221 +3044,6 @@ fun SettingsView(
             )
         }
 
-        if (activeCategory == SettingsCategory.INTEROP) {
-            AetherSectionHeader(
-                title = t("Interop (experimental)", appLanguage),
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                border = BorderStroke(1.dp, AccentAmber.copy(alpha = 0.45f))
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        if (spanishUi) "Aviso" else "Disclaimer",
-                        color = AccentAmber,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        if (spanishUi)
-                            "AetherMesh no es compatible con Meshtastic en el aire. El tramo LoRa, el cifrado y los canales son distintos."
-                        else
-                            "AetherMesh is not Meshtastic-compatible on the air. LoRa framing, crypto, and channels differ.",
-                        color = TextLight,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TextButton(
-                        onClick = { showInteropDocDialog = true },
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text(
-                            if (spanishUi) "Ver notas (docs/INTEROP.md)" else "View notes (docs/INTEROP.md)",
-                            color = AccentCyan,
-                            fontSize = 12.sp
-                        )
-                    }
-                    TextButton(
-                        onClick = {
-                            try {
-                                context.startActivity(
-                                    android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        android.net.Uri.parse(
-                                            "https://github.com/SilentWolf75/AetherMesh/blob/main/docs/INTEROP.md"
-                                        )
-                                    )
-                                )
-                            } catch (_: Exception) {
-                                showInteropDocDialog = true
-                            }
-                        },
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text(
-                            if (spanishUi) "Abrir INTEROP.md en GitHub" else "Open INTEROP.md on GitHub",
-                            color = AccentMint,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        if (spanishUi) "MQTT (salida)" else "MQTT (outbound)",
-                        color = TextLight,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        if (spanishUi)
-                            "Las preferencias se guardan. La publicación en vivo no está cableada en 1.3.0 (sin cliente MQTT)."
-                        else
-                            "Prefs are saved. Live publish is not wired in 1.3.0 (no MQTT client dependency).",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (spanishUi) "Habilitar (futuro)" else "Enable (future)",
-                            color = TextLight,
-                            fontSize = 13.sp
-                        )
-                        Switch(
-                            checked = mqttEnabled,
-                            onCheckedChange = {
-                                mqttEnabled = it
-                                sharedPrefs.edit().putBoolean("mqtt_enabled", it).apply()
-                            }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mqttBrokerUrl,
-                        onValueChange = {
-                            mqttBrokerUrl = it
-                            sharedPrefs.edit().putString("mqtt_broker_url", it).apply()
-                        },
-                        label = { Text(if (spanishUi) "Broker URL" else "Broker URL") },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mqttTopicPrefix,
-                        onValueChange = {
-                            mqttTopicPrefix = it
-                            sharedPrefs.edit().putString("mqtt_topic_prefix", it).apply()
-                        },
-                        label = { Text(if (spanishUi) "Prefijo de tema" else "Topic prefix") },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = mqttUsername,
-                        onValueChange = {
-                            mqttUsername = it
-                            sharedPrefs.edit().putString("mqtt_username", it).apply()
-                        },
-                        label = { Text(if (spanishUi) "Usuario (opcional)" else "Username (optional)") },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        if (spanishUi) "APRS (exportar)" else "APRS (export)",
-                        color = TextLight,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        if (spanishUi)
-                            "Comparte una plantilla de comentario APRS-IS con la posición del nodo. No hay puerta APRS en la app."
-                        else
-                            "Share an APRS-IS comment template with the node position. No in-app APRS-IS gateway.",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = aprsCallsign,
-                        onValueChange = {
-                            aprsCallsign = it
-                            sharedPrefs.edit().putString("aprs_callsign", it).apply()
-                        },
-                        label = { Text(if (spanishUi) "Indicativo" else "Callsign") },
-                        singleLine = true,
-                        colors = aetherTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = {
-                            val node = connectedNode
-                            if (node == null) {
-                                AppUiFeedback.show(
-                                    if (spanishUi) "Conecta un nodo con posición para exportar."
-                                    else "Connect a node with a position to export.",
-                                    duration = SnackbarDuration.Short
-                                )
-                            } else {
-                                shareAprsPositionTemplate(
-                                    context = context,
-                                    callsign = aprsCallsign,
-                                    nodeName = node.name,
-                                    nodeId = node.nodeId,
-                                    latitude = node.latitude,
-                                    longitude = node.longitude,
-                                    appLanguage = appLanguage
-                                )
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AccentCyan,
-                            contentColor = DarkBackground
-                        )
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            if (spanishUi) "Compartir plantilla APRS" else "Share APRS template",
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
 
         if (activeCategory == SettingsCategory.PREFERENCES) {
             // --- 4. APP PREFERENCES CARD ---
@@ -3354,6 +3237,40 @@ fun SettingsView(
                     Column {
                         Text(t("Export all packets", appLanguage), color = TextLight, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(t("Export full message list to CSV and copy", appLanguage), color = TextMuted, fontSize = 11.sp)
+                    }
+                }
+                HorizontalDivider(color = BorderDark, modifier = Modifier.padding(vertical = 4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        exportAfterActionReport(
+                            context = context,
+                            messages = viewModel.getAllChatMessages(),
+                            nodes = viewModel.nodes.value,
+                            appLanguage = appLanguage,
+                            diagnosticLines = diagnosticLogs
+                        )
+                    }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, tint = AccentMint, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            if (appLanguage == "Spanish") "Exportar post-evento (chat + nodos)"
+                            else "Export after-action (chat + nodes)",
+                            color = TextLight,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (appLanguage == "Spanish")
+                                "Solo local / hoja de compartir — sin nube ni MQTT"
+                            else
+                                "Local share sheet only — no cloud upload, no MQTT",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
@@ -4031,56 +3948,6 @@ fun SettingsView(
         )
     }
 
-    if (showInteropDocDialog) {
-        AlertDialog(
-            onDismissRequest = { showInteropDocDialog = false },
-            title = {
-                Text(
-                    if (spanishUi) "Interop (experimental)" else "Interop (experimental)",
-                    color = TextLight,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        if (spanishUi)
-                            "Solo interop del lado de la app: stubs MQTT, export APRS y notas. No hay puente de malla completo."
-                        else
-                            "App-side pragmatic interop only: MQTT stubs, APRS export, and notes. No full mesh bridge.",
-                        color = TextMuted,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        if (spanishUi)
-                            "MQTT: guarda broker/tema; publicar en vivo llega en una versión futura. Prefijo sugerido: aethermesh/{node_id}/telemetry|position."
-                        else
-                            "MQTT: save broker/topic; live publish comes in a future release. Suggested prefix: aethermesh/{node_id}/telemetry|position.",
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        if (spanishUi)
-                            "APRS: exporta un comentario de plantilla; el indicativo y passcode son tu responsabilidad."
-                        else
-                            "APRS: export a comment template; callsign and passcode remain your responsibility.",
-                        color = TextMuted,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("docs/INTEROP.md", color = AccentCyan, fontSize = 12.sp)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showInteropDocDialog = false }) {
-                    Text(if (spanishUi) "Cerrar" else "Close", color = AccentCyan)
-                }
-            },
-            containerColor = SurfaceDark
-        )
-    }
 
     if (showRegenKeysDialog) {
         AlertDialog(

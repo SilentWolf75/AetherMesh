@@ -14,6 +14,11 @@ public:
     // Sends a raw packet over LoRa. skipCad=true bypasses channel-activity check
     // for time-critical small replies (e.g. range-test PONG).
     bool sendPacket(uint8_t* payload, size_t len, bool skipCad = false);
+
+    // Low-voltage cutoff: refuse TX while pack is critically low. RX / BLE stay up
+    // so leave-behinds recover when voltage returns (do not brick silently).
+    void setTxBlocked(bool blocked) { txBlocked = blocked; }
+    bool isTxBlocked() const { return txBlocked; }
     
     // Callback registers
     void onReceive(void (*callback)(uint8_t* data, size_t len, float rssi, float snr));
@@ -55,6 +60,7 @@ private:
     // State
     float lastRssi;
     float lastSnr;
+    bool txBlocked;
     bool isTransmitting;
     uint32_t txStartTime;
     uint32_t txTimeoutMs;   // expected airtime + margin for the in-flight packet

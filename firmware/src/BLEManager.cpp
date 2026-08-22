@@ -79,8 +79,13 @@ class EspServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) override {
         if (espBLEInstance) espBLEInstance->isConnected = false;
         Serial.println("Phone disconnected from BLE (ESP32).");
-        // Restart advertising
-        pServer->startAdvertising();
+        // Restart advertising through BLEManager so isAdvertising stays honest.
+        // main.cpp still owns the Battery Saver 5-minute window / stop timer.
+        if (espBLEInstance) {
+            espBLEInstance->startAdvertising();
+        } else {
+            pServer->startAdvertising();
+        }
     }
 };
 
@@ -277,13 +282,17 @@ void BLEManager::stopAdvertising() {
     Bluefruit.Advertising.stop();
 #endif
     isAdvertising = false;
-    Serial.println("BLE advertising stopped to save power.");
+    // Ghost-node note: under Battery Saver / leave-behind, phones will no longer
+    // scan-discover this node until the user button wakes a fresh advertise
+    // window. LoRa mesh RX/TX continue; only BLE discoverability pauses.
+    Serial.println("BLE advertising stopped to save power (press button to wake ~5 min window).");
 }
 
 void BLEManager::startAdvertising() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     BLEDevice::startAdvertising();
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+    // restartOnDisconnect may already be running; start(0) is safe to re-arm.
     Bluefruit.Advertising.start(0);
 #endif
     isAdvertising = true;

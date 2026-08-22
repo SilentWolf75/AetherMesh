@@ -354,6 +354,7 @@ private:
     void queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t transmitTime);
     uint8_t packetPriority(const aethermesh_MeshPacket& packet) const;
     bool isLocalOriginatedText(const aethermesh_MeshPacket& packet) const;
+    bool hasImminentLocalText(uint32_t now, uint32_t withinMs) const;
     // Push pending ACK deadlines so freshly queued local text can claim the radio.
     void deferQueuedAcks(uint32_t deferMs);
     // When immediate LoRa TX fails (busy/CAD), still guarantee local text gets a slot.

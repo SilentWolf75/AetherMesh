@@ -246,9 +246,29 @@ fun localizeOtaStatus(status: String, appLanguage: String): String {
         status == "Uploading..." -> "Subiendo…"
         status.startsWith("Uploading...") -> status.replace("Uploading...", "Subiendo…")
         status == "Verifying..." -> "Verificando…"
-        status.startsWith("Update verified") -> "Actualización verificada — el nodo está reiniciando con el nuevo firmware"
+        status.startsWith("OTA success") || status.startsWith("DFU success") ||
+            status.startsWith("Update verified") || status.startsWith("Update confirmed") -> {
+            status
+                .replace("OTA success", "OTA correcta")
+                .replace("DFU success", "DFU correcto")
+                .replace("Update verified", "Actualización verificada")
+                .replace("Update confirmed", "Actualización confirmada")
+                .replace("installed", "instalado")
+                .replace("expected", "esperado")
+                .replace("Node rebooting / reconnecting…", "Nodo reiniciando / reconectando…")
+                .replace("Rebooting / reconnecting… (confirming version)", "Reiniciando / reconectando… (confirmando versión)")
+                .replace("now running", "ahora ejecuta")
+                .replace("(confirming version)", "(confirmando versión)")
+        }
+        status.startsWith("Update may not have applied") ->
+            status.replace("Update may not have applied — still on", "Es posible que la actualización no se aplicara — sigue en")
         status == "Update cancelled" -> "Actualización cancelada"
         status.startsWith("Update failed:") -> status.replace("Update failed:", "Falló la actualización:")
+        status.startsWith("Update interrupted") ->
+            status.replace(
+                "Update interrupted — Bluetooth dropped. Reconnect and retry the update.",
+                "Actualización interrumpida — se perdió Bluetooth. Reconecta e inténtalo de nuevo."
+            )
         status.startsWith("DFU: connecting") -> "DFU: conectando al bootloader…"
         status.startsWith("DFU: starting") -> "DFU: iniciando transferencia…"
         status.startsWith("DFU: validating") -> "DFU: validando firmware…"
@@ -257,8 +277,38 @@ fun localizeOtaStatus(status: String, appLanguage: String): String {
         status == "DFU cancelled" -> "DFU cancelado"
         status.startsWith("DFU failed:") -> status.replace("DFU failed:", "DFU falló:")
         status.startsWith("Rebooting node into DFU") -> "Reiniciando nodo en bootloader DFU…"
+        status.startsWith("Searching for DFU") -> "Buscando bootloader DFU…"
+        status.startsWith("Starting DFU transfer") -> "Iniciando transferencia DFU…"
         status == "No device address" -> "Sin dirección del dispositivo"
         else -> status
+    }
+}
+
+/** Installed firmware line for Node Details / Firmware Update / Connection. */
+fun formatInstalledFirmwareLabel(
+    cachedVersion: String?,
+    awaitingFresh: Boolean,
+    appLanguage: String
+): String {
+    val spanish = appLanguage == "Spanish"
+    val prefix = if (spanish) "Instalado: " else "Installed: "
+    return when {
+        awaitingFresh -> prefix + if (spanish) "comprobando…" else "checking…"
+        !cachedVersion.isNullOrBlank() -> prefix + cachedVersion
+        else -> prefix + if (spanish) "desconocido" else "unknown"
+    }
+}
+
+fun formatFirmwareVersionValue(
+    cachedVersion: String?,
+    awaitingFresh: Boolean,
+    appLanguage: String
+): String {
+    val spanish = appLanguage == "Spanish"
+    return when {
+        awaitingFresh -> if (spanish) "comprobando…" else "checking…"
+        !cachedVersion.isNullOrBlank() -> cachedVersion
+        else -> if (spanish) "desconocida" else "unknown"
     }
 }
 
@@ -359,8 +409,6 @@ fun t(text: String, lang: String): String {
         "Reset Node Directory" -> "Reiniciar Directorio de Nodos"
         "Clear all discovered nodes and restart directory" -> "Borrar todos los nodos descubiertos y reiniciar directorio"
         "App Preferences" -> "Preferencias de la Aplicación"
-        "Interop (experimental)" -> "Interop (experimental)"
-        "MQTT prefs stub, APRS export, and interop notes" -> "Stub MQTT, export APRS y notas de interop"
         "Theme" -> "Tema"
         "Language" -> "Idioma"
         "Device DB cache limit" -> "Límite de caché de la base de datos"
@@ -535,7 +583,7 @@ enum class TabItem {
 }
 
 enum class SettingsCategory {
-    CHANNELS, RADIO, POSITION, FIRMWARE, SECURITY, ROUTING, PREFERENCES, INTEROP, DEVELOPER
+    CHANNELS, RADIO, POSITION, FIRMWARE, SECURITY, ROUTING, PREFERENCES, DEVELOPER
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -570,6 +618,9 @@ fun MainScreen(
     val authenticationRequired by viewModel.authenticationRequired.collectAsStateWithLifecycle()
     val authFailureTick by viewModel.authFailureTick.collectAsStateWithLifecycle()
     val needsRegionSetup by viewModel.needsRegionSetup.collectAsStateWithLifecycle()
+    val meshDiagnostics by viewModel.meshDiagnostics.collectAsStateWithLifecycle()
+    val routerQueueDepth = meshDiagnostics?.rebroadcastQueueDepth ?: 0
+    val firmwareFreshness by viewModel.firmwareFreshness.collectAsStateWithLifecycle()
 
     LaunchedEffect(isConnected) {
         if (!isConnected) {
@@ -1040,7 +1091,9 @@ fun MainScreen(
                                             onRangeTest = { nodeId -> viewModel.requestRangeTestDialog(nodeId) },
                                             onOpenNodeDetails = { nodeId -> selectedNodeDetailsId = nodeId },
                                             selectedNodeId = selectedNodeDetailsId,
-                                            onRefresh = { viewModel.refresh() }
+                                            onRefresh = { viewModel.refresh() },
+                                            queuedMessagesFor = { id -> viewModel.countQueuedMessagesForRecipient(id) },
+                                            routerQueueDepth = routerQueueDepth
                                         )
                                     }
                                     Box(
@@ -1080,7 +1133,13 @@ fun MainScreen(
                                                 },
                                                 onStartRangeTest = if (!sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId)) {
                                                     { viewModel.requestRangeTestDialog(detailNode.nodeId) }
-                                                } else null
+                                                } else null,
+                                                awaitingFirmware = firmwareFreshness.awaitingFreshTelemetry &&
+                                                    (firmwareFreshness.connectedNodeId == 0L ||
+                                                        sameMeshNodeId(firmwareFreshness.connectedNodeId, detailNode.nodeId)),
+                                                queuedCount = viewModel.countQueuedMessagesForRecipient(detailNode.nodeId),
+                                                routerQueueDepth = if (sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId))
+                                                    routerQueueDepth else 0
                                             )
                                         } else {
                                             Box(
@@ -1122,7 +1181,9 @@ fun MainScreen(
                                     onOpenNodeDetails = { nodeId ->
                                         onItemClick(com.example.aethermesh.NodeDetails(nodeId))
                                     },
-                                    onRefresh = { viewModel.refresh() }
+                                    onRefresh = { viewModel.refresh() },
+                                    queuedMessagesFor = { id -> viewModel.countQueuedMessagesForRecipient(id) },
+                                    routerQueueDepth = routerQueueDepth
                                 )
                             }
                         }

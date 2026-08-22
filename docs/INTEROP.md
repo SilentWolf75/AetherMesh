@@ -1,40 +1,23 @@
-# Interop (Phase I — experimental)
+# Interop — withdrawn from the companion app (1.3.2)
 
-AetherMesh is **not Meshtastic-compatible on the air**. LoRa packet framing,
-crypto, channels, and MQTT payloads differ. Do not expect Meshtastic nodes or
-brokers to decode AetherMesh RF or BLE traffic.
+AetherMesh is an **offline-first** emergency mesh: phone ↔ node is BLE, node ↔ node is LoRa. The companion app does **not** expose MQTT, APRS-IS, or other messaging bridges that would steer users toward putting the mesh on the internet.
 
-This phase is **app-side pragmatic interop only**: settings stubs, documentation,
-and light export helpers. There is no full mesh bridge.
+## What was removed
 
-## MQTT (outbound stub)
+In **1.3.0–1.3.1**, Settings briefly showed an experimental **Interop** category with:
 
-**Settings → Interop (experimental)** stores enable flag, broker URL, topic
-prefix, and optional username. Live publish is **not wired** in 1.3.0 (no MQTT
-client dependency). Prefs are kept so a later release can publish without a
-settings redesign. Intended shape when outbound lands:
+- MQTT broker / topic **prefs stubs** (never wired to an MQTT client)
+- APRS comment **template share** (no APRS-IS gateway)
+- Links to this doc
 
-| Piece | Suggested value |
-|-------|-----------------|
-| Topic prefix | `aethermesh/{node_id_hex}/` |
-| Telemetry | `…/telemetry` — JSON: `batt_v`, `uptime_s`, `role`, `sf`, `rssi`/`snr` if known |
-| Position | `…/position` — JSON: `lat`, `lon`, `alt_m`, `ts_ms` |
-| QoS | 0 or 1; retain optional for last position only |
+**1.3.2** removes that Settings entry, the stubs, and the dead prefs. No MQTT client was ever shipped.
 
-### Meshtastic-compatible topic notes (future optional mapper)
+## Product stance
 
-Meshtastic often uses `msh/US/2/json/…` (region / channel / encoding). Mapping
-AetherMesh telemetry into that tree would be a **lossy translator** on the phone
-or a gateway — never on-air. Prefer a dedicated `aethermesh/…` prefix first;
-add a Meshtastic-shaped mirror only if a field deployment needs an existing
-dashboard.
+- Keep local BLE ↔ LoRa mesh.
+- Do **not** add outbound messaging bridges (MQTT, Meshtastic broker mirrors, APRS-IS) in the companion app unless product explicitly revisits offline-first policy.
+- Optional, **user-initiated** firmware catalog checks (GitHub Releases / Pages) remain under Settings → Firmware Update — that is phone OS internet for OTA packages, not mesh gatewaying.
 
-## APRS
+## Historical note (not product UI)
 
-No APRS-IS gateway in-app. **Share APRS template** copies a one-line comment
-you can paste into an existing APRS client. Callsign and passcode remain your
-responsibility.
-
-## Firmware
-
-No firmware change for Phase I. Serial / BLE stay AetherMesh-native.
+AetherMesh is still **not Meshtastic-compatible on the air**. LoRa framing, crypto, and channels differ.

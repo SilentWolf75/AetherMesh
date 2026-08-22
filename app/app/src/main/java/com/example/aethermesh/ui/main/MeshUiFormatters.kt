@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aethermesh.data.ChatMessage
 import com.example.aethermesh.data.ChannelConfig
+import com.example.aethermesh.data.FirmwareCatalog
 import com.example.aethermesh.data.MeshNode
 import com.example.aethermesh.data.TraceRouteState
 import com.example.aethermesh.ui.AppUiFeedback
@@ -577,55 +578,6 @@ fun shareMeshDiagnosticsSnapshotText(
     }
 }
 
-/** APRS-IS comment-style position line for paste into an external client (Phase I). */
-fun shareAprsPositionTemplate(
-    context: Context,
-    callsign: String,
-    nodeName: String,
-    nodeId: Long,
-    latitude: Float,
-    longitude: Float,
-    altitudeM: Int? = null,
-    appLanguage: String = "English"
-) {
-    val spanish = appLanguage == "Spanish"
-    val cs = callsign.trim().uppercase(java.util.Locale.US).ifBlank { "NOCALL" }
-    if (!hasValidPosition(latitude, longitude)) {
-        AppUiFeedback.show(
-            if (spanish) "Sin posición válida del nodo para APRS."
-            else "No valid node position for APRS export.",
-            duration = SnackbarDuration.Short
-        )
-        return
-    }
-    val lat = String.format(java.util.Locale.US, "%.5f", latitude)
-    val lon = String.format(java.util.Locale.US, "%.5f", longitude)
-    val altPart = altitudeM?.let { " alt=${it}m" } ?: ""
-    val comment =
-        "AetherMesh $nodeName 0x${nodeId.toString(16)} lat=$lat lon=$lon$altPart (not on-air APRS)"
-    val line = "$cs>APRS,TCPIP*:$comment"
-    try {
-        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(android.content.Intent.EXTRA_SUBJECT, "AetherMesh APRS comment")
-            putExtra(android.content.Intent.EXTRA_TEXT, line)
-        }
-        startShareChooser(
-            context,
-            intent,
-            if (spanish) "Compartir plantilla APRS" else "Share APRS template"
-        )
-    } catch (e: Exception) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("APRS", line))
-        AppUiFeedback.show(
-            if (spanish) "Plantilla APRS copiada al portapapeles."
-            else "APRS template copied to clipboard.",
-            duration = SnackbarDuration.Short
-        )
-    }
-}
-
 /** Share one chat thread as plain text or CSV (NEW_TASK-safe chooser). */
 fun exportThreadMessages(
     context: Context,
@@ -750,6 +702,8 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLang
 fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String {
     if (appLanguage != "Spanish" || status.isBlank()) return status
     return when {
+        status == FirmwareCatalog.OFFLINE_CATALOG_STATUS || status.startsWith("Offline —") ->
+            "Sin conexión — el catálogo OTA necesita datos del teléfono (Wi‑Fi/móvil). La malla sigue local. Usa un .bin/.zip local, o activa datos y pulsa Buscar."
         status.startsWith("Checking GitHub Releases") ->
             "Consultando GitHub Releases (estable)…"
         status.startsWith("Checking GitHub Pages") ->
@@ -844,6 +798,116 @@ fun exportBreadcrumbsToKml(
         )
     } catch (e: java.lang.Exception) {
         AppUiFeedback.show(if (spanish) "Error al exportar: ${e.localizedMessage}" else "Export failed: ${e.localizedMessage}", duration = SnackbarDuration.Long)
+    }
+}
+
+/**
+ * Local-only after-action bundle: chat messages + node directory.
+ * Uses the share sheet / file export path — no cloud upload, no MQTT.
+ */
+fun exportAfterActionReport(
+    context: Context,
+    messages: List<ChatMessage>,
+    nodes: List<MeshNode>,
+    appLanguage: String = "English",
+    diagnosticLines: List<String> = emptyList()
+) {
+    val spanish = appLanguage == "Spanish"
+    if (messages.isEmpty() && nodes.isEmpty()) {
+        AppUiFeedback.show(
+            if (spanish) "Nada que exportar todavía." else "Nothing to export yet.",
+            duration = SnackbarDuration.Short
+        )
+        return
+    }
+    try {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        val exportDir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+
+        val msgCsv = StringBuilder(
+            "timestamp,datetime,sender_id,recipient_id,channel,status,heard_count,encrypted,content\n"
+        )
+        messages.forEach { msg ->
+            msgCsv.append(
+                "${msg.timestamp},\"${timeFmt.format(Date(msg.timestamp))}\"," +
+                    "0x${msg.senderId.toString(16).uppercase()}," +
+                    "0x${msg.recipientId.toString(16).uppercase()}," +
+                    "\"${msg.channel.replace("\"", "\"\"")}\",\"${msg.status}\"," +
+                    "${msg.heardCount},${msg.isEncrypted}," +
+                    "\"${msg.content.replace("\"", "\"\"")}\"\n"
+            )
+        }
+        val msgFile = java.io.File(exportDir, "aethermesh_after_action_messages_$stamp.csv")
+        msgFile.writeText(msgCsv.toString())
+
+        val nodeCsv = StringBuilder(
+            "node_id,name,short_name,last_active,last_active_iso,snr,rssi,battery,voltage," +
+                "latitude,longitude,model,firmware,lora_sf,region\n"
+        )
+        nodes.forEach { n ->
+            val lastIso = if (n.lastActive > 0L) timeFmt.format(Date(n.lastActive)) else ""
+            nodeCsv.append(
+                "0x${n.nodeId.toString(16).uppercase()},\"${n.name.replace("\"", "\"\"")}\"," +
+                    "\"${n.shortName.replace("\"", "\"\"")}\",${n.lastActive},\"$lastIso\"," +
+                    "${n.snr},${n.rssi},${n.battery},${n.voltage}," +
+                    "${n.latitude},${n.longitude},\"${n.model.replace("\"", "\"\"")}\"," +
+                    "\"${n.firmwareVersion.replace("\"", "\"\"")}\",${n.loraSf},${n.region}\n"
+            )
+        }
+        val nodeFile = java.io.File(exportDir, "aethermesh_after_action_nodes_$stamp.csv")
+        nodeFile.writeText(nodeCsv.toString())
+
+        val summary = StringBuilder()
+        summary.appendLine("AetherMesh after-action export (local only — not uploaded)")
+        summary.appendLine("Generated: ${timeFmt.format(Date())}")
+        summary.appendLine("Messages: ${messages.size}")
+        summary.appendLine("Nodes: ${nodes.size}")
+        if (diagnosticLines.isNotEmpty()) {
+            summary.appendLine("--- recent diagnostic lines ---")
+            diagnosticLines.takeLast(40).forEach { summary.appendLine(it) }
+        }
+        summary.appendLine("--- files ---")
+        summary.appendLine(msgFile.name)
+        summary.appendLine(nodeFile.name)
+        val summaryFile = java.io.File(exportDir, "aethermesh_after_action_readme_$stamp.txt")
+        summaryFile.writeText(summary.toString())
+
+        val uris = ArrayList<android.net.Uri>(3)
+        listOf(msgFile, nodeFile, summaryFile).forEach { file ->
+            uris.add(
+                androidx.core.content.FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", file
+                )
+            )
+        }
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "text/*"
+            putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
+            putExtra(
+                android.content.Intent.EXTRA_SUBJECT,
+                if (spanish) "AetherMesh informe post-evento" else "AetherMesh after-action export"
+            )
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startShareChooser(
+            context,
+            intent,
+            if (spanish) "Exportar post-evento (local)" else "Export after-action (local)"
+        )
+        AppUiFeedback.show(
+            if (spanish)
+                "Exportación local lista (${messages.size} msgs, ${nodes.size} nodos). Sin nube."
+            else
+                "Local export ready (${messages.size} msgs, ${nodes.size} nodes). No cloud upload.",
+            duration = SnackbarDuration.Short
+        )
+    } catch (e: Exception) {
+        AppUiFeedback.show(
+            if (spanish) "Error al exportar: ${e.localizedMessage}"
+            else "Export failed: ${e.localizedMessage}",
+            duration = SnackbarDuration.Long
+        )
     }
 }
 

@@ -36,6 +36,7 @@ RadioManager::RadioManager() {
     transmitDoneCallback = nullptr;
     lastRssi = 0.0f;
     lastSnr = 0.0f;
+    txBlocked = false;
     isTransmitting = false;
     txTimeoutMs = 2500;
     recentAirtimeMs = 0;
@@ -372,6 +373,17 @@ void RadioManager::loop() {
 }
 
 bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
+    if (txBlocked) {
+        // Critical low-voltage cutoff — keep RX, refuse TX so the pack can recover.
+        static uint32_t lastLvTxLogMs = 0;
+        uint32_t now = millis();
+        if ((uint32_t)(now - lastLvTxLogMs) > 10000u) {
+            lastLvTxLogMs = now;
+            Serial.println("LV_CUTOFF: LoRa TX refused (pack critically low).");
+        }
+        txFailures++;
+        return false;
+    }
     if (isTransmitting) {
         // Polling fallback check
         uint16_t irq = radio->getIrqStatus();

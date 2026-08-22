@@ -98,6 +98,7 @@ fun ConnectionView(
     val blePhase by viewModel.bleConnectionPhase.collectAsStateWithLifecycle()
     val bleReconnectAttempt by viewModel.bleReconnectAttempt.collectAsStateWithLifecycle()
     val bleReconnectGaveUp by viewModel.bleReconnectGaveUp.collectAsStateWithLifecycle()
+    val firmwareFreshness by viewModel.firmwareFreshness.collectAsStateWithLifecycle()
     val connectedNode = resolveConnectedMeshNode(
         nodes = nodes,
         connectedId = viewModel.connectedNodeId,
@@ -330,11 +331,17 @@ fun ConnectionView(
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                    val fwVersion = connectedNode?.firmwareVersion?.takeIf { it.isNotEmpty() }
-                                        ?: if (spanish) "desconocida" else "unknown"
+                                    val awaitingFw = firmwareFreshness.awaitingFreshTelemetry &&
+                                        (firmwareFreshness.connectedNodeId == 0L ||
+                                            firmwareFreshness.connectedNodeId == connectedNode?.nodeId)
+                                    val fwVersion = formatFirmwareVersionValue(
+                                        connectedNode?.firmwareVersion,
+                                        awaitingFw,
+                                        appLanguage
+                                    )
                                     Text(
                                         "${t("Firmware Version", appLanguage)}: $fwVersion",
-                                        color = TextMuted,
+                                        color = if (awaitingFw) AccentAmber else TextMuted,
                                         fontSize = 11.sp
                                     )
                                 }
@@ -670,6 +677,13 @@ fun ConnectionView(
 
             // Bluetooth Devices Scan List
             if (scannedDevices.isEmpty()) {
+                val knownBatterySaver = remember(nodes, context) {
+                    nodes.any { node ->
+                        context.getSharedPreferences("node_settings_${node.nodeId}", Context.MODE_PRIVATE)
+                            .getBoolean("power_save_mode", false)
+                    } || context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+                        .getBoolean("last_connected_power_save", false)
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -700,16 +714,26 @@ fun ConnectionView(
                                 scanBlockReason != com.example.aethermesh.ble.BleScanBlockReason.None ->
                                     if (spanish) "Corrige el aviso de arriba e inténtalo de nuevo."
                                     else "Fix the issue above, then try Scan again."
+                                isScanning && knownBatterySaver ->
+                                    if (spanish)
+                                        "Si usas leave-behind / Ahorro de batería: pulsa el botón del nodo para despertar BLE (~5 min), luego vuelve a escanear."
+                                    else
+                                        "If this is a leave-behind / Battery Saver node: press the device button to wake BLE (~5 min), then scan again."
                                 isScanning ->
                                     if (spanish) "Mantén el nodo encendido y cerca."
                                     else "Keep the node powered and nearby."
+                                knownBatterySaver ->
+                                    if (spanish)
+                                        "Leave-behind / Ahorro de batería deja de anunciar BLE tras ~5 min. Pulsa el botón del nodo, espera un momento y pulsa Escanear."
+                                    else
+                                        "Leave-behind / Battery Saver stops BLE advertising after ~5 min. Press the device button, wait a moment, then tap Scan."
                                 else ->
                                     if (spanish)
                                         "Enciende el nodo, acércalo al teléfono y pulsa Escanear (o aquí)."
                                     else
                                         "Power the node, keep it near the phone, then tap Scan (or tap here)."
                             },
-                            color = TextMuted,
+                            color = if (knownBatterySaver) AccentAmber else TextMuted,
                             textAlign = TextAlign.Center,
                             fontSize = 12.sp
                         )

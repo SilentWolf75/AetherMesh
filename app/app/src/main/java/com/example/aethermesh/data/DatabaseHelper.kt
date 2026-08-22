@@ -803,6 +803,22 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return count
     }
 
+    /** Queued outbound DMs waiting for a specific peer (store-forward catch-up). */
+    fun countQueuedMessagesForRecipient(recipientId: Long): Int {
+        if (recipientId == 0L) return 0
+        val db = this.readableDatabase
+        val cursor = db.rawQuery(
+            """
+            SELECT COUNT(*) FROM $TABLE_MESSAGES
+            WHERE $COL_MSG_STATUS = ? AND $COL_MSG_RECIPIENT = ? AND $COL_MSG_CHANNEL = ''
+            """.trimIndent(),
+            arrayOf("QUEUED", recipientId.toString())
+        )
+        val count = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        cursor.close()
+        return count
+    }
+
     fun updateMessageStatusById(messageId: Long, status: String) {
         val db = this.writableDatabase
         val values = ContentValues().apply {
@@ -840,6 +856,23 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val args = if (isChannel) arrayOf(channel) else arrayOf(canonicalChatId.toString(), canonicalChatId.toString())
 
         val cursor = db.rawQuery(query, args)
+        if (cursor.moveToFirst()) {
+            do {
+                list.add(chatMessageFromCursor(cursor))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return list
+    }
+
+    /** All stored chat messages (channels + DMs) for after-action export. */
+    fun getAllMessages(): List<ChatMessage> {
+        val db = this.readableDatabase
+        val list = mutableListOf<ChatMessage>()
+        val cursor = db.rawQuery(
+            "SELECT * FROM $TABLE_MESSAGES ORDER BY $COL_MSG_TIMESTAMP ASC",
+            null
+        )
         if (cursor.moveToFirst()) {
             do {
                 list.add(chatMessageFromCursor(cursor))
