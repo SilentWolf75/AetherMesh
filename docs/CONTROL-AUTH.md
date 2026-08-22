@@ -26,9 +26,6 @@ When **true**:
 When enabling **`refuse_legacy`**, refresh peer telemetry first — the app caches
 `protocol_version` per node. A stale `2` becomes a rejected packet once the flag is on.
 
-`ControlAuth.sign` still derives the PBKDF2 key inline (≈60–150 ms on phone). Prefer calling
-it off the main thread when wiring new UI paths.
-
 ESP32: `preferences` key `refuse_legacy`.  
 nRF (RAK / T-Echo): `/refuse_legacy.bin` (one byte, non-zero = true).
 
@@ -49,7 +46,18 @@ iteration/XOR structure and canonical layout are the firmware code.
 
 ## PBKDF2 cost
 
-Derivation runs **once** in `packetauth::setControlPassword()` at boot and whenever the admin password is saved — **not** per packet. Each v3 verify is a single HMAC against the cached key.
+**Firmware:** derivation runs **once** in `packetauth::setControlPassword()` at boot and
+whenever the admin password is saved — **not** per packet. Each v3 verify is a single
+HMAC against the cached key.
+
+**App:** `ControlKeyDerivation` memoizes the last derived key so `ControlAuth.sign`
+(v3) does not re-run 120k iterations on every remote rename/config. The cache is
+keyed by a domain-separated SHA-256 digest, not the password, so no admin password
+is retained in the heap. `saveNodePassword` and `clearSavedPassword` both call
+`ControlKeyDerivation.clearCache()`, so a password change invalidates it.
+
+Caching only helps calls 2..n. The first derivation after a miss still costs roughly
+60-150 ms, so call `ControlAuth.sign` off the main thread when wiring new UI paths.
 
 ## Rate limiting
 
