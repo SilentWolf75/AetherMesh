@@ -19,6 +19,11 @@ public:
     // so leave-behinds recover when voltage returns (do not brick silently).
     void setTxBlocked(bool blocked) { txBlocked = blocked; }
     bool isTxBlocked() const { return txBlocked; }
+    // Suppress TX for the duration of a BLE firmware update. A 96-byte
+    // frame at SF12/BW125 occupies the radio for seconds, during which the
+    // BLE link is not serviced and blows its supervision timeout.
+    void setOtaSuppressed(bool suppressed) { otaSuppressed = suppressed; }
+    bool isOtaSuppressed() const { return otaSuppressed; }
     
     // Callback registers
     void onReceive(void (*callback)(uint8_t* data, size_t len, float rssi, float snr));
@@ -61,6 +66,7 @@ private:
     float lastRssi;
     float lastSnr;
     bool txBlocked;
+    bool otaSuppressed;
     bool isTransmitting;
     uint32_t txStartTime;
     uint32_t txTimeoutMs;   // expected airtime + margin for the in-flight packet

@@ -70,11 +70,32 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
 // ESP32 Static Pointers
 static BLEServer* espBLEServer = nullptr;
 static BLECharacteristic* espRxChar = nullptr;
+static esp_bd_addr_t espPeerAddr = {};
+static bool espPeerKnown = false;
 
 class EspServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
         if (espBLEInstance) espBLEInstance->isConnected = true;
         Serial.println("Phone connected via BLE (ESP32).");
+    }
+
+    // Phones propose a 5s supervision timeout, and until now the node just took
+    // it. This peripheral shares one CPU with a LoRa radio and writes flash
+    // during OTA, so it routinely stops answering for longer than that and the
+    // central tears the link down (GATT status 8 / 147). Ask for headroom:
+    // 20s of supervision, no peripheral latency, and an interval fast enough to
+    // keep OTA throughput reasonable.
+    void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t* param) override {
+        if (param == nullptr) return;
+        memcpy(espPeerAddr, param->connect.remote_bda, sizeof(espPeerAddr));
+        espPeerKnown = true;
+        // Units: interval x1.25ms, timeout x10ms.
+        pServer->updateConnParams(param->connect.remote_bda,
+                                  /*minInterval=*/12,   //  15 ms
+                                  /*maxInterval=*/24,   //  30 ms
+                                  /*latency=*/0,
+                                  /*timeout=*/2000);    //  20 s
+        Serial.println("BLE: requested 20s supervision timeout (was 5s default).");
     }
     void onDisconnect(BLEServer* pServer) override {
         if (espBLEInstance) espBLEInstance->isConnected = false;
@@ -231,6 +252,18 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
 #else
     Serial.println("BLE not supported on this architecture.");
     return false;
+#endif
+}
+
+// Re-assert our preferred connection parameters. The phone lowers the
+// supervision timeout back to its own default whenever it requests a high
+// priority link (it does this at OTA start), which is exactly when the node
+// needs the extra headroom to survive flash writes.
+void BLEManager::reassertConnectionParams() {
+#if defined(ESP32)
+    if (!espPeerKnown || espBLEServer == nullptr) return;
+    espBLEServer->updateConnParams(espPeerAddr, 12, 24, 0, 2000);
+    Serial.println("BLE: re-asserted 20s supervision timeout.");
 #endif
 }
 

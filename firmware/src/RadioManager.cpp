@@ -37,6 +37,7 @@ RadioManager::RadioManager() {
     lastRssi = 0.0f;
     lastSnr = 0.0f;
     txBlocked = false;
+    otaSuppressed = false;
     isTransmitting = false;
     txTimeoutMs = 2500;
     recentAirtimeMs = 0;
@@ -373,6 +374,18 @@ void RadioManager::loop() {
 }
 
 bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
+    if (otaSuppressed) {
+        // A BLE firmware update is streaming. LoRa TX at SF12 holds the radio
+        // for several seconds and starves the BLE link past its supervision
+        // timeout, which drops the transfer. Mesh traffic resumes on reboot.
+        static uint32_t lastOtaTxLogMs = 0;
+        uint32_t nowMs = millis();
+        if ((uint32_t)(nowMs - lastOtaTxLogMs) > 10000u) {
+            lastOtaTxLogMs = nowMs;
+            Serial.println("OTA: LoRa TX suppressed during firmware update.");
+        }
+        return false;
+    }
     if (txBlocked) {
         // Critical low-voltage cutoff — keep RX, refuse TX so the pack can recover.
         static uint32_t lastLvTxLogMs = 0;
