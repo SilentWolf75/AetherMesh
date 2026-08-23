@@ -1277,6 +1277,23 @@ static void serviceSerialDeployCommand() {
             }
             if (strcmp(cmdBuf, "DEPLOY_LB") == 0) {
                 applyLeaveBehindDeployProfile();
+            } else if (strncmp(cmdBuf, "SET_SF ", 7) == 0) {
+                // USB escape hatch for radio settings. At SF12 the radio owns the
+                // air for seconds per frame and the BLE link can drop before a
+                // settings write lands, which makes the setting unreachable from
+                // the app exactly when you most need to change it.
+                long sf = strtol(cmdBuf + 7, nullptr, 10);
+                if (sf < 7 || sf > 12) {
+                    Serial.printf("SET_SF: %ld out of range (7-12)\n", sf);
+                } else {
+                    loraSF = (uint32_t)sf;
+                    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion,
+                                 nodePassword, nodeRole, telemetryIntervalSec,
+                                 screenTimeoutSecs, powerSaveMode);
+                    Serial.printf("SET_SF: spreading factor now %lu; rebooting\n",
+                                  (unsigned long)loraSF);
+                    scheduleMcuReset(1500);
+                }
             } else {
                 Serial.printf("Unknown serial cmd: '%s'\n", cmdBuf);
             }
@@ -3826,6 +3843,7 @@ void otaAbort(const char* reason) {
     // Report the last contiguous offset before clearing so the phone can resume.
     const uint32_t resumeAt = otaExpectedOffset;
     otaActive = false;
+    radioMgr.setOtaSuppressed(false);
     otaExpectedOffset = 0;
     otaExpectedSha256[0] = '\0';
     bleMgr.setInlinePhoneDelivery(false);
@@ -3873,11 +3891,25 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             otaExpectedSha256[sizeof(otaExpectedSha256) - 1] = '\0';
             otaSha256.reset();
             otaActive = true;
+            // Hold off LoRa TX: an SF12 frame owns the radio for seconds and
+            // starves the BLE link past its 5s supervision timeout.
+            radioMgr.setOtaSuppressed(true);
+            // The phone drops the supervision timeout to its default when it
+            // asks for a high-priority link at OTA start; take it back.
+            bleMgr.reassertConnectionParams();
             otaExpectedOffset = 0;
             otaTotalSize = ctl.total_size;
             otaLastChunkMs = millis();
             otaChunksSinceAck = 0;
-            bleMgr.setInlinePhoneDelivery(true);
+            // Deliberately NOT inline. Inline delivery runs the phone callback
+            // inside the Bluedroid GATT write callback, so every OTA chunk did a
+            // 512-byte stack copy, a nanopb MeshPacket decode and an SPI flash
+            // erase/write on the BLE task's small stack -- with the flash cache
+            // disabled while that same stack needed to run. The node panicked on
+            // the first chunk. The 16-slot RX ring exists for exactly this burst
+            // ("absorbs OTA bursts across flash-erase stalls"); let the main loop
+            // drain it, where the flash write has the loop task's stack.
+            bleMgr.setInlinePhoneDelivery(false);
             Serial.printf("OTA begin: %u bytes, sha256=%s\n", ctl.total_size,
                           otaExpectedSha256[0] ? otaExpectedSha256 : "legacy-md5-only");
             drawOtaProgress(0, "receiving");
@@ -5430,7 +5462,7 @@ void loop() {
                           batteryVoltage,
                           radioMgr.isTxBlocked() ? 1 : 0);
         }
-        if (millis() - lastTelemetry > (effectiveTelemetrySec * 1000L)) {
+        if (!otaActive && millis() - lastTelemetry > (effectiveTelemetrySec * 1000L)) {
             lastTelemetry = millis();
             
             // No fix -> broadcast 0,0 so the app plots no marker (it skips lat/lon == 0),
