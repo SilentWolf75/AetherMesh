@@ -651,8 +651,13 @@ class BleConnectionManager(private val context: Context) {
             while (writeInFlight) {
                 val left = writeDeadline - System.currentTimeMillis()
                 if (left <= 0) {
-                    Log.w(TAG, "sendPacket: timed out waiting for write callback")
-                    writeInFlight = false
+                    // Do NOT clear writeInFlight here. The callback is late, not
+                    // cancelled: the GATT stack still owns this write, and every
+                    // writeCharacteristic() issued before it lands is rejected
+                    // with "prior command is not finished". Leaving the gate shut
+                    // makes the next sendPacket wait for the real callback, which
+                    // is what a peripheral stalled mid flash-erase needs.
+                    Log.w(TAG, "sendPacket: write callback late after ${timeoutMs}ms; keeping gate shut")
                     return false
                 }
                 try {
