@@ -1959,8 +1959,10 @@ class AetherMeshRepository(private val context: Context) {
                             .toByteArray()
                         var tries = 0
                         while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = true, otaStream = true)) {
-                            if (++tries > 8) throw Exception("BLE write failed repeatedly")
-                            delay(50)
+                            if (++tries > com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.MAX_ATTEMPTS) {
+                                throw Exception("BLE write failed repeatedly")
+                            }
+                            delay(com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.delayMs(tries))
                         }
                         windowEndOffset += len
                         if (w < window - 1 && windowEndOffset < firmware.size) {
