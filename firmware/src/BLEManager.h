@@ -27,6 +27,8 @@ public:
     bool isDeviceConnected() { return isConnected; }
     void stopAdvertising();
     void startAdvertising();
+    /** Re-request our supervision timeout (phone resets it on priority change). */
+    void reassertConnectionParams();
 
     bool isConnected;
     bool isAdvertising;
