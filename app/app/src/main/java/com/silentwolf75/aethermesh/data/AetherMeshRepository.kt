@@ -1951,7 +1951,7 @@ class AetherMeshRepository(private val context: Context) {
 
                 val chunkSize = otaChunkSizeForLink(chunkHint)
                 val window = otaWindowForNode(chunkHint)
-                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+confirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
+                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+unconfirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
 
                 _otaState.value = OtaState(
                     active = true,
@@ -1975,7 +1975,17 @@ class AetherMeshRepository(private val context: Context) {
                             .build()
                             .toByteArray()
                         var tries = 0
-                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = true, otaStream = true)) {
+                        // Unconfirmed writes. A confirmed write costs a full round
+                        // trip per chunk -- one write per connection event -- which
+                        // was the floor at ~35ms/chunk. Unconfirmed lets the
+                        // controller queue several per event.
+                        //
+                        // The ATT layer is not what protects this transfer: a window
+                        // is 8 chunks against the node's 16-slot RX ring with an
+                        // IN_PROGRESS ack per window, and any chunk that goes missing
+                        // surfaces as an offset gap the node asks to resume from. Eight
+                        // outstanding chunks cannot overflow sixteen slots.
+                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = false, otaStream = true)) {
                             if (++tries > com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.MAX_ATTEMPTS) {
                                 throw Exception("BLE write failed repeatedly")
                             }
