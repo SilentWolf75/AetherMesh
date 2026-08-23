@@ -1865,18 +1865,35 @@ class AetherMeshRepository(private val context: Context) {
     private val OTA_CHUNK_LEGACY = 128
     private val OTA_WINDOW_LEGACY = 4
     private val OTA_PROTO_OVERHEAD = 56
-    // Pace slower than flash sector erases + main-loop work on Heltec.
-    private val OTA_INTER_CHUNK_MS = 80L
+    // Was 80ms, added alongside the inline-delivery change that made the node
+    // panic on the first chunk; it paced around instability rather than fixing
+    // it. At 128-byte chunks that is ~8500 chunks and ~11 minutes of a 14-minute
+    // transfer spent deliberately idle.
+    //
+    // Flow control is already covered twice over: OTA writes are confirmed
+    // (withResponse), so each one waits for its GATT callback, and a window is
+    // 8 chunks against a 16-slot node RX ring with an IN_PROGRESS ack per
+    // window. At most 8 chunks are ever outstanding, so the ring cannot
+    // overflow. Raise this only if a node actually reports gaps.
+    private val OTA_INTER_CHUNK_MS = 0L
 
     private fun otaChunkSizeForLink(nodeHint: Int): Int {
         val attMax = (bleManager.negotiatedMtu - 3).coerceAtLeast(20)
-        val legacyNodeCap = 256 - OTA_PROTO_OVERHEAD
-        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtMost(legacyNodeCap)
-        val wanted = OTA_CHUNK_RELIABLE
-        return wanted.coerceAtMost(linkCap).coerceAtLeast(64).also {
-            if (nodeHint >= OTA_CHUNK_FAST_CAP && it < OTA_CHUNK_FAST_CAP) {
-                Log.d(TAG, "OTA chunk capped to $it (node advertised $nodeHint)")
-            }
+        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtLeast(64)
+        // A node that advertises its max chunk in READY.next_offset is running
+        // firmware with the 512-byte RX ring, so the real ceiling is simply what
+        // one ATT write carries. Pinning this to 128 regardless cost ~35% of
+        // throughput on links that measured 197. Unknown or legacy nodes keep
+        // the conservative size and the 256-byte RX-slot assumption.
+        val wanted = if (nodeHint >= OTA_CHUNK_FAST_CAP) {
+            nodeHint.coerceAtMost(linkCap)
+        } else {
+            OTA_CHUNK_RELIABLE.coerceAtMost(
+                linkCap.coerceAtMost(256 - OTA_PROTO_OVERHEAD)
+            )
+        }
+        return wanted.coerceAtLeast(64).also {
+            Log.d(TAG, "OTA chunk $it (node advertised $nodeHint, link carries $linkCap)")
         }
     }
 

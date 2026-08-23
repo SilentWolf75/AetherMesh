@@ -91,8 +91,8 @@ class EspServerCallbacks : public BLEServerCallbacks {
         espPeerKnown = true;
         // Units: interval x1.25ms, timeout x10ms.
         pServer->updateConnParams(param->connect.remote_bda,
-                                  /*minInterval=*/12,   //  15 ms
-                                  /*maxInterval=*/24,   //  30 ms
+                                  /*minInterval=*/6,    // 7.5 ms
+                                  /*maxInterval=*/12,   //  15 ms
                                   /*latency=*/0,
                                   /*timeout=*/2000);    //  20 s
         Serial.println("BLE: requested 20s supervision timeout (was 5s default).");
@@ -262,7 +262,10 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
 void BLEManager::reassertConnectionParams() {
 #if defined(ESP32)
     if (!espPeerKnown || espBLEServer == nullptr) return;
-    espBLEServer->updateConnParams(espPeerAddr, 12, 24, 0, 2000);
+    // latency must stay 0: a peripheral latency of 1 lets the node skip every
+    // other connection event, which halves OTA throughput. Measured at 47ms per
+    // chunk against a 15ms interval because the phone negotiated latency=1.
+    espBLEServer->updateConnParams(espPeerAddr, 6, 12, 0, 2000);
     Serial.println("BLE: re-asserted 20s supervision timeout.");
 #endif
 }
