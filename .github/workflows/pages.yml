@@ -62,13 +62,18 @@ jobs:
         run: |
           APP_VERSION=$(grep '^app_version=' ../VERSION | cut -d= -f2)
           APP_CODE=${GITHUB_RUN_NUMBER}
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+          # Gradle only builds a signing config when all four values are
+          # present (see releaseSigningReady in app/build.gradle.kts). Branching
+          # on the keystore alone let a partial secret setup take the release
+          # path and emit an APK with no signature, which will not install --
+          # worse than the debug fallback, and it reports "release" in the logs.
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$AETHERMESH_ANDROID_STORE_PASSWORD" ] && [ -n "$AETHERMESH_ANDROID_KEY_ALIAS" ] && [ -n "$AETHERMESH_ANDROID_KEY_PASSWORD" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aethermesh-release.jks"
             export AETHERMESH_ANDROID_KEYSTORE="$RUNNER_TEMP/aethermesh-release.jks"
             ./gradlew :app:assembleRelease -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
             echo "release" > "$RUNNER_TEMP/android-build-type"
           else
-            echo "::warning::Android signing secrets are absent; publishing a debug-signed APK."
+            echo "::warning::Android signing secrets incomplete; publishing a debug-signed APK. Need ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
             ./gradlew :app:assembleDebug -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
             echo "debug" > "$RUNNER_TEMP/android-build-type"
           fi
