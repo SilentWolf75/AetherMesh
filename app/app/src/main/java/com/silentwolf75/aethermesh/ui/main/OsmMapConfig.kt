@@ -11,8 +11,8 @@ import java.io.File
  *
  * OpenStreetMap's public tile servers block generic agents and often reject
  * `com.example.*` package IDs with HTTP 403 ("Access Denied" / Forbidden).
- * We always identify as AetherMesh with a contact URL, and prefer CARTO
- * basemaps for online tiles (MAPNIK is reserved for offline archives only).
+ * We always identify as AetherMesh with a contact URL. Online tiles default to
+ * OpenTopo / OSM HOT; optional CARTO layers need a free API key in gradle.properties.
  */
 object OsmMapConfig {
     private const val TAG = "OsmMapConfig"
@@ -33,13 +33,14 @@ object OsmMapConfig {
         cfg.osmdroidBasePath = base
         cfg.osmdroidTileCache = tileCache
         // Prefer app-private storage (scoped storage friendly).
-        cfg.load(app, app.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        cfg.load(app, prefs)
         // load() can overwrite UA from prefs — force ours after.
         cfg.userAgentValue = userAgent()
         cfg.osmdroidBasePath = base
         cfg.osmdroidTileCache = tileCache
-        // One-time wipe of old MAPNIK / blocked-tile cache that shows as gray "Access Denied".
-        purgeLegacyBlockedCacheOnce(app, tileCache)
+        // Drop cached CARTO "API KEY REQUIRED" watermark tiles (Aug 2025 policy change).
+        purgeLegacyBlockedCacheOnce(app, tileCache, prefs, "purged_carto_watermark_v1")
         Log.i(TAG, "osmdroid ready ua='${cfg.userAgentValue}' cache=${tileCache.absolutePath}")
     }
 
@@ -52,15 +53,18 @@ object OsmMapConfig {
         }
     }
 
-    private fun purgeLegacyBlockedCacheOnce(app: Context, tileCache: File) {
-        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (prefs.getBoolean("purged_mapnik_cache_v1", false)) return
+    private fun purgeLegacyBlockedCacheOnce(
+        app: Context,
+        tileCache: File,
+        prefs: android.content.SharedPreferences,
+        prefKey: String
+    ) {
+        if (prefs.getBoolean(prefKey, false)) return
         deleteRecursively(tileCache)
         tileCache.mkdirs()
-        // Also drop common legacy external cache paths from older builds.
         deleteRecursively(File(app.cacheDir, "osmdroid"))
-        prefs.edit().putBoolean("purged_mapnik_cache_v1", true).apply()
-        Log.i(TAG, "Purged legacy tile cache (MAPNIK/403 leftovers)")
+        prefs.edit().putBoolean(prefKey, true).apply()
+        Log.i(TAG, "Purged legacy tile cache ($prefKey)")
     }
 
     private fun deleteRecursively(file: File): Boolean {
