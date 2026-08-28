@@ -61,15 +61,15 @@ jobs:
         working-directory: app
         run: |
           APP_VERSION=$(grep '^app_version=' ../VERSION | cut -d= -f2)
-          APP_CODE=${GITHUB_RUN_NUMBER}
+          APP_CODE=$(grep '^app_version_code=' ../VERSION | cut -d= -f2)
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aethermesh-release.jks"
             export AETHERMESH_ANDROID_KEYSTORE="$RUNNER_TEMP/aethermesh-release.jks"
-            ./gradlew :app:assembleRelease -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
+            ./gradlew :app:assembleRelease -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}
             echo "release" > "$RUNNER_TEMP/android-build-type"
           else
             echo "::warning::Android signing secrets are absent; publishing a debug-signed APK."
-            ./gradlew :app:assembleDebug -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
+            ./gradlew :app:assembleDebug -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}
             echo "debug" > "$RUNNER_TEMP/android-build-type"
           fi
 
@@ -197,6 +197,11 @@ jobs:
             echo "ERROR: Compiled APK not found!"
             exit 1
           fi
+          HASH=$(git rev-parse --short=7 HEAD)
+          APP_VERSION=$(grep '^app_version=' VERSION | cut -d= -f2)
+          APP_CODE=$(grep '^app_version_code=' VERSION | cut -d= -f2)
+          printf '{"version":"%s","versionCode":%s,"commit":"%s"}\n' \
+            "$APP_VERSION" "$APP_CODE" "$HASH" > web-flasher/app-version.json
           cd web-flasher
           sha256sum aethermesh-app.apk firmware/* > SHA256SUMS.txt
 

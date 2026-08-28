@@ -1,4 +1,4 @@
 # AetherMesh release versions — single source of truth for CI drift checks.
-app_version=1.3.5
-app_version_code=14
+app_version=1.3.6
+app_version_code=15
 firmware_version=1.3.2

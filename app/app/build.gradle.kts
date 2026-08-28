@@ -24,8 +24,8 @@ android {
         applicationId = "com.silentwolf75.aethermesh"
         minSdk = 24
         targetSdk = 36
-        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 14
-        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.5"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 15
+        versionName = providers.gradleProperty("versionName").orNull ?: "1.3.6"
         val cartoApiKey = providers.gradleProperty("cartoApiKey").orNull?.trim().orEmpty()
             .ifEmpty { System.getenv("CARTO_API_KEY")?.trim().orEmpty() }
         buildConfigField("String", "CARTO_API_KEY", "\"${cartoApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")

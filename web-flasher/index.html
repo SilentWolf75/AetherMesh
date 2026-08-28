@@ -1575,11 +1575,20 @@
       manifest = Array.isArray(list) ? list : [];
       populateFirmwareDropdown();
 
-      // Stamp the build hash next to the APK/app download so you can tell if
-      // the copy you have is current. All artifacts (firmware + APK) come from
-      // the same commit, so the hash from any manifest entry applies.
+      // Stamp app version next to the APK download (app-version.json from Pages deploy).
+      fetch("./app-version.json?t=" + Date.now())
+        .then((r) => r.ok ? r.json() : null)
+        .then((info) => {
+          const verEl = document.getElementById("apk-version");
+          if (!verEl || !info || !info.version) return;
+          const commit = info.commit ? ` · ${info.commit}` : "";
+          verEl.textContent = `v${info.version}${commit}`;
+        })
+        .catch(() => {});
+
+      // Stamp the build hash from firmware manifest when app-version.json is absent.
       const verEl = document.getElementById("apk-version");
-      if (verEl && manifest.length > 0) {
+      if (verEl && !verEl.textContent && manifest.length > 0) {
         const m = (manifest[0].name || manifest[0].file || "").match(/([0-9a-f]{7})/);
         if (m) verEl.textContent = "build " + m[1];
       }

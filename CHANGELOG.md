@@ -2,7 +2,16 @@
 
 Release history for AetherMesh. Detailed phase notes live in [docs/RELEASE-NOTES-1.3.md](docs/RELEASE-NOTES-1.3.md).
 
-## [1.3.5] — unreleased
+## [1.3.6] — 2026-08-28
+
+### App
+- **Map:** CARTO raster basemaps now require a free API key; default online tiles switched to **OpenTopoMap** and **OSM HOT** (no key). Optional `cartoApiKey` in `app/gradle.properties` restores CARTO Voyager/Dark. Auto-migrates off CARTO and purges cached watermark tiles.
+- **BLE OTA:** Faster Heltec uploads — chunk size matched to the link, redundant pacing removed, unconfirmed writes where safe (~3m14s → ~1m08s on tested hardware).
+
+### Release / web flasher
+- App **1.3.6** (`versionCode` **15**). Merging to `main` triggers the Pages workflow: rebuilds firmware, signs/copies `aethermesh-app.apk`, refreshes `firmware/manifest.json`, and redeploys the [web flasher](https://silentwolf75.github.io/AetherMesh/).
+
+## [1.3.5] — 2026-08-22
 
 ### App
 - Release builds enable R8 minify; ProGuard keep rules exercised in CI.
