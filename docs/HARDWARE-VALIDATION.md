@@ -45,7 +45,15 @@ Generate the release checklist, fill it while testing each physical board, then
 validate it. A release is not hardware-qualified until every required row is
 `PASS`; compilation alone does not satisfy this gate.
 
+A blank checklist is in [docs/hardware-qualification-template.csv](hardware-qualification-template.csv)
+(64 rows: 8 boards × 8 checks). Copy it, fill `PASS` rows with the **full 40-char
+commit SHA** you actually flashed, then validate:
+
 ```bash
-python tools/hardware_qualification.py release-hardware.csv --create-template
+python tools/hardware_qualification.py docs/hardware-qualification-template.csv --create-template
+cp docs/hardware-qualification-template.csv release-hardware.csv
 python tools/hardware_qualification.py release-hardware.csv
 ```
+
+Field-stable GitHub releases are drafted only via `.github/workflows/stable-release.yml`
+once every required row is `PASS` for that commit.
