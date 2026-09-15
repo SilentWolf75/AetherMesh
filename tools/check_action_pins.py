@@ -20,8 +20,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-PIN_RE = re.compile(r"uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@([0-9a-f]{40})\b")
-TAG_RE = re.compile(r"uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@(v[0-9][^\s#]*)")
+PIN_RE = re.compile(
+    r"uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(?:/[A-Za-z0-9._-]+)?@([0-9a-f]{40})\b"
+)
+TAG_RE = re.compile(
+    r"uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(?:/[A-Za-z0-9._-]+)?@(v[0-9][^\s#]*)"
+)
 
 
 def collect(pattern: re.Pattern[str]) -> set[tuple[str, str]]:
