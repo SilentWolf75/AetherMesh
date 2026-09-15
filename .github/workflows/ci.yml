@@ -4,6 +4,13 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to validate
+        required: false
+        type: string
+        default: ''
 
 jobs:
   firmware:
@@ -15,6 +22,8 @@ jobs:
         env: [heltec_v4, heltec_v3, rak4631, rak3401_1w, rak19026, lilygo_t_echo, lilygo_t_deck, elecrow_crowpanel_35]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -29,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -40,12 +51,19 @@ jobs:
       - name: Run native tests
         working-directory: firmware
         run: pio test -e native
+      - name: Test production router with simulated radio failures
+        run: |
+          cmake -S firmware/host-tests -B firmware/host-tests/build -DNANOPB_DIR="$PWD/firmware/.pio/libdeps/native/Nanopb"
+          cmake --build firmware/host-tests/build
+          ctest --test-dir firmware/host-tests/build --output-on-failure
 
   mesh-simulator:
     name: Deterministic mesh simulator
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -67,6 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -80,6 +100,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -96,3 +118,17 @@ jobs:
       - name: Android Lint
         working-directory: app
         run: ./gradlew :app:lintDebug
+
+  browser-tests:
+    name: Flasher browser interactions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - run: npm ci
+        working-directory: tools/browser-tests
+      - run: npx playwright install --with-deps chromium
+        working-directory: tools/browser-tests
+      - run: npm test
+        working-directory: tools/browser-tests

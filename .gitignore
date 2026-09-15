@@ -45,3 +45,8 @@ ota-images/
 # Force-add intentional releases: `git add -f hardware/path/to/file`.
 /hardware/**
 !/hardware/README.md
+
+# Browser integration test dependencies and reports
+node_modules/
+playwright-report/
+test-results/

@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 22
+        private const val DATABASE_VERSION = 23
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -126,7 +126,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_MSG_STATUS TEXT DEFAULT 'SENT',
                 $COL_MSG_IS_ENCRYPTED INTEGER DEFAULT 0,
                 $COL_MSG_HEARD_COUNT INTEGER DEFAULT 0,
-                $COL_MSG_HEARD_NODES TEXT DEFAULT ''
+                $COL_MSG_HEARD_NODES TEXT DEFAULT '',
+                wire_packet BLOB,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at INTEGER NOT NULL DEFAULT 0,
+                next_retry_at INTEGER NOT NULL DEFAULT 0,
+                expires_at INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent()
 
@@ -443,6 +448,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 android.util.Log.e("DatabaseHelper", "Failed to add last_position_at: ${e.message}")
             }
         }
+        if (oldVersion < 23) {
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN wire_packet BLOB")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN next_retry_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     private fun meshDiagnosticsTableSql() = """
@@ -689,7 +701,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val values = ContentValues().apply {
             put(COL_MSG_STATUS, status)
         }
-        db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?", arrayOf(packetId.toString()))
+        val terminalGuard = if (status == "DELIVERED") "" else " AND $COL_MSG_STATUS NOT IN ('DELIVERED', 'EXPIRED', 'RETRIED')"
+        db.update(TABLE_MESSAGES, values, "$COL_MSG_PACKET_ID = ?$terminalGuard", arrayOf(packetId.toString()))
     }
 
     fun isChannelMessage(packetId: Int): Boolean {
@@ -835,7 +848,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return db.update(
             TABLE_MESSAGES,
             values,
-            "$COL_MSG_STATUS = ? AND $COL_MSG_TIMESTAMP <= ?",
+            "$COL_MSG_STATUS = ? AND COALESCE(NULLIF(last_attempt_at, 0), $COL_MSG_TIMESTAMP) <= CAST(? AS INTEGER)",
             arrayOf("PENDING", cutoffTimestamp.toString())
         )
     }

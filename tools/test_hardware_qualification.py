@@ -24,8 +24,13 @@ class HardwareQualificationTest(unittest.TestCase):
                 writer.writeheader()
                 for target in TARGETS:
                     for check in CHECKS:
-                        writer.writerow({"target": target, "check": check, "result": "PASS"})
-            self.assertTrue(validate(path)["complete"])
+                        writer.writerow({"target": target, "check": check, "result": "PASS",
+                                         "commit": "a" * 40, "region": "US915", "antenna": "test antenna",
+                                         "tester": "test fixture", "timestamp_utc": "2026-09-15T12:00:00Z"})
+            self.assertTrue(validate(path, "a" * 40)["complete"])
+            self.assertFalse(validate(path, "b" * 40)["complete"])
+            path.write_text(path.read_text().replace("test fixture", ""))
+            self.assertFalse(validate(path)["complete"])
 
     def test_duplicate_and_missing_rows_are_rejected(self):
         with TemporaryDirectory() as tmp:

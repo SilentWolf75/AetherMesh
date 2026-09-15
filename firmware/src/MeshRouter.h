@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include "mesh.pb.h"
-#include "RadioManager.h"
+#include "MeshRadio.h"
 #include "MeshTables.h"
 
 // Define constants
@@ -176,7 +176,7 @@ struct NeighborQuality {
 
 class MeshRouter {
 public:
-    MeshRouter(RadioManager* radioMgr);
+    MeshRouter(MeshRadio* radioMgr);
     void init(uint32_t localId);
     void loop();
 
@@ -231,7 +231,7 @@ public:
     bool sendRawPacket(aethermesh_MeshPacket* packet, bool urgent = false);
 
 private:
-    RadioManager* radio;
+    MeshRadio* radio;
     uint32_t localNodeId;
     uint32_t packetSequenceCounter;
     uint64_t sessionId;

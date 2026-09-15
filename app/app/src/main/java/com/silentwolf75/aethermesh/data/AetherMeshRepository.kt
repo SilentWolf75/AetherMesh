@@ -118,55 +118,24 @@ class AetherMeshRepository(private val context: Context) {
         private const val MESSAGE_ACK_TIMEOUT_MS = 45_000L
         private const val RANGE_PING_TIMEOUT_MS = 15_000L
         private const val TRACE_ROUTE_TIMEOUT_MS = 30_000L
-        private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
     }
 
+    private val securePrefs = SecurePreferences.open(context)
     val dbHelper = DatabaseHelper(context)
     val bleManager = BleConnectionManager(context)
+    private val outboundDeliveryStore = OutboundDeliveryStore(dbHelper)
+    private val deliveryRetries by lazy {
+        DeliveryRetryController(
+            outboundDeliveryStore,
+            ready = { bleManager.isConnected && bleManager.isGattReady &&
+                _isDeviceAuthenticated.value && !_isRangeTestActive.value },
+            senderId = { bleManager.connectedNodeId },
+            send = { bleManager.sendPacket(it) }
+        )
+    }
     private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
 
     fun appPrefs(): android.content.SharedPreferences = prefs
-
-    // Keystore-encrypted storage for secrets (node passwords, ECDH private key).
-    // Falls back to a plain file only if the Keystore is unavailable on-device.
-    private val securePrefs: android.content.SharedPreferences = try {
-        val masterKey = androidx.security.crypto.MasterKey.Builder(context)
-            .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        androidx.security.crypto.EncryptedSharedPreferences.create(
-            context,
-            SecurePrefsNames.ENCRYPTED,
-            masterKey,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plain storage: ${e.message}")
-        context.getSharedPreferences(SecurePrefsNames.FALLBACK, Context.MODE_PRIVATE)
-    }
-
-    // One-time migration of secrets that older builds stored in plain prefs
-    private fun migrateSecretsToSecureStorage() {
-        try {
-            val editorSecure = securePrefs.edit()
-            val editorPlain = prefs.edit()
-            var moved = 0
-            for ((key, value) in prefs.all) {
-                if ((key.startsWith("node_pwd_") || key == "ecdh_private_key") && value is String) {
-                    editorSecure.putString(key, value)
-                    editorPlain.remove(key)
-                    moved++
-                }
-            }
-            if (moved > 0) {
-                editorSecure.apply()
-                editorPlain.apply()
-                Log.d(TAG, "Migrated $moved secret(s) from plain prefs to encrypted storage.")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Secret migration failed: ${e.message}")
-        }
-    }
 
     // Flow for active node lists and messages
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -425,7 +394,6 @@ class AetherMeshRepository(private val context: Context) {
             }
         }
 
-        migrateSecretsToSecureStorage()
 
         // Load initial data
         refreshData()
@@ -848,9 +816,6 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         if (packet.payloadCase == MeshPacket.PayloadCase.DELIVERY_STATUS) {
-            if (_isRangeTestActive.value) {
-                return
-            }
             val delivery = packet.deliveryStatus
             when (delivery.state) {
                 DeliveryStatus.State.HEARD -> {
@@ -1225,7 +1190,7 @@ class AetherMeshRepository(private val context: Context) {
         // One-time migration from the legacy plaintext SQLite key table.
         val legacy = dbHelper.getChatKey(chatIdentifier)
         if (!legacy.isNullOrEmpty()) {
-            securePrefs.edit().putString(prefKey, legacy).apply()
+            check(securePrefs.edit().putString(prefKey, legacy).commit()) { "Could not migrate chat key" }
             dbHelper.deleteChatKey(chatIdentifier)
             return legacy
         }
@@ -1249,20 +1214,26 @@ class AetherMeshRepository(private val context: Context) {
         _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
 
-    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult {
+    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult =
+        sendMessageInternal(recipientId, content, channel)
+
+    private fun sendMessageInternal(
+        recipientId: Long, content: String, channel: String, existingMessage: ChatMessage? = null
+    ): SendMessageResult {
         // Require notify-ready GATT + AuthResponse(success). A zombie post-reboot
         // link can report isConnected with stale auth and produce fake SENT rows.
         if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
             return SendMessageResult.NotReady
         }
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
-        val generatedPacketId = PacketIdGenerator.next()
+        val generatedPacketId = existingMessage?.packetId?.takeIf { it != 0 } ?: PacketIdGenerator.next()
         val localNodeId = bleManager.connectedNodeId
 
         val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
         val cryptoContext = ChatContext.authenticatedLabel(localNodeId, recipientId, boundedChannel)
         val passcode = getChatKey(chatIdentifier)
         val isEncrypted = !passcode.isNullOrEmpty()
+        if (existingMessage?.isEncrypted == true && !isEncrypted) return SendMessageResult.EncryptFailed
         val boundedContent = content.takeUtf8Bytes(
             if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH
         )
@@ -1302,7 +1273,7 @@ class AetherMeshRepository(private val context: Context) {
         // Otherwise the composer retains the text and reports the failed handoff.
         if (!bleManager.sendPacket(packet.toByteArray())) return SendMessageResult.NotReady
         lastOutboundPacketId = generatedPacketId
-        dbHelper.insertMessage(
+        val messageId = existingMessage?.id ?: dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
             content = boundedContent,
@@ -1311,48 +1282,34 @@ class AetherMeshRepository(private val context: Context) {
             status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
             isEncrypted = isEncrypted
         )
+        if (existingMessage != null) dbHelper.updateMessageStatusById(messageId, "PENDING")
+        if (!isChannelSend) outboundDeliveryStore.track(messageId, packet.toByteArray(), System.currentTimeMillis())
         refreshData()
         return SendMessageResult.Sent
     }
 
     fun retryMessage(message: ChatMessage): Boolean {
-        if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty()) return false
-        val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
-        if (sent) {
-            dbHelper.updateMessageStatusById(message.id, "RETRIED")
-            refreshData()
+        if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty() ||
+            message.senderId != bleManager.connectedNodeId || _isRangeTestActive.value ||
+            message.status !in setOf("FAILED", "QUEUED", "EXPIRED")) return false
+        val sent = if (outboundDeliveryStore.hasPayload(message.id)) {
+            deliveryRetries.retry(message.id, manual = true)
+        } else {
+            // Legacy records have no saved wire payload. Only an explicit user
+            // retry may rebuild it, and encrypted messages still require their key.
+            sendMessageInternal(message.recipientId, message.content, "", message) == SendMessageResult.Sent
         }
+        refreshData()
         return sent
     }
 
-    // Per-message cooldown so store-and-forward doesn't re-send the same failed
-    // DM on every telemetry from the target (that loop burned airtime forever).
-    // Accessed only on dbDispatcher (single thread).
-    private val dmRetryLastAttempt = mutableMapOf<Long, Long>()
-
     private fun retryQueuedDirectMessages(recipientId: Long) {
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return
-        // Never compete with an active range test for the radio: DM retransmits
-        // through the connected node were observed jamming ping/PONG exchanges.
-        if (_isRangeTestActive.value) return
         repositoryScope.launch(dbDispatcher) {
-            val now = System.currentTimeMillis()
-            val retryable = dbHelper.getRetryableDirectMessages(recipientId)
-                // Legacy range-test control rows must never be resent as DMs
-                .filter { !it.content.startsWith("PING_") && !it.content.startsWith("PONG_") }
-                .filter { (dmRetryLastAttempt[it.id] ?: 0L) + DM_RETRY_COOLDOWN_MS < now }
-            for (message in retryable) {
-                dmRetryLastAttempt[message.id] = now
-                dbHelper.updateMessageStatusById(message.id, "QUEUED")
-                val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
-                dbHelper.updateMessageStatusById(message.id, if (sent) "RETRIED" else "FAILED")
-                // Space resends out; a burst of tracked DMs each retrying 3x
-                // saturates the node's half-duplex radio.
+            for (attempt in deliveryRetries.candidates(recipientId)) {
+                deliveryRetries.retry(attempt.messageId)
                 delay(2_000L)
             }
-            if (retryable.isNotEmpty()) {
-                refreshData()
-            }
+            refreshData()
         }
     }
 
@@ -1361,7 +1318,8 @@ class AetherMeshRepository(private val context: Context) {
             while (true) {
                 delay(5_000L)
                 val cutoff = System.currentTimeMillis() - MESSAGE_ACK_TIMEOUT_MS
-                val changed = dbHelper.markTimedOutPendingMessages(cutoff)
+                val changed = dbHelper.markTimedOutPendingMessages(cutoff) +
+                    outboundDeliveryStore.expire(System.currentTimeMillis())
                 if (changed > 0) {
                     refreshData()
                 }

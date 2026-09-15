@@ -87,6 +87,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val app = application as AetherMeshApplication
+        if (app.secureStorageUnavailable) {
+            setContent {
+                AetherMeshTheme {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center) {
+                            Text("Secure storage is unavailable", style = MaterialTheme.typography.headlineSmall)
+                            Text("Unlock your phone and try again. Your saved secrets have not been reset. Messaging is paused until secure storage can be opened.")
+                            TextButton(onClick = { if (app.initializeRepository()) recreate() }) { Text("Try again") }
+                        }
+                    }
+                }
+            }
+            return
+        }
         ingestNotificationDeepLinks(intent)
 
         // Service start is deferred until BLUETOOTH_CONNECT is granted (see onBlePermissionsReady)

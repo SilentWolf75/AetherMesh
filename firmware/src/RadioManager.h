@@ -4,8 +4,9 @@
 #include <Arduino.h>
 #define RADIOLIB_LOW_LEVEL 1
 #include <RadioLib.h>
+#include "MeshRadio.h"
 
-class RadioManager {
+class RadioManager : public MeshRadio {
 public:
     RadioManager();
     bool init();

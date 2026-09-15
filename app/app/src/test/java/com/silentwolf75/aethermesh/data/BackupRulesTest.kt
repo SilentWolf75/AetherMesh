@@ -1,33 +1,34 @@
 package com.silentwolf75.aethermesh.data
 
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Test
-import java.nio.file.Files
-import java.nio.file.Path
 import java.nio.file.Paths
-import kotlin.io.path.readText
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
 
-/** Ensures Android backup excludes match [SecurePrefsNames] (Keystore-bound prefs). */
 class BackupRulesTest {
-    private val xmlDir: Path = Paths.get(System.getProperty("user.dir"), "src/main/res/xml")
-
-    @Test
-    fun backupRulesExcludeSecurePrefsFiles() {
-        listOf("backup_rules.xml", "data_extraction_rules.xml").forEach { name ->
-            val text = xmlDir.resolve(name).readText()
-            SecurePrefsNames.backupExcludePaths.forEach { path ->
-                assertTrue(
-                    "Missing sharedpref exclude for $path in $name",
-                    text.contains("""path="$path"""")
-                )
+    @Test fun everyBackupTransportExcludesRealSecretFilenamesAndChatDatabase() {
+        val root = Paths.get(System.getProperty("user.dir"), "src/main/res/xml")
+        // Actual Android on-disk filenames, independent of production constants.
+        val required = setOf(
+            "sharedpref:aethermesh_secure_prefs.xml",
+            "sharedpref:aethermesh_secure_prefs_fallback.xml",
+            "sharedpref:aethermesh_prefs.xml",
+            "database:aethermesh.db"
+        )
+        mapOf("backup_rules.xml" to listOf("full-backup-content"),
+            "data_extraction_rules.xml" to listOf("cloud-backup", "device-transfer")
+        ).forEach { (file, transports) ->
+            val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(root.resolve(file).toFile())
+            transports.forEach { transport ->
+                val node = document.getElementsByTagName(transport).item(0) as Element
+                val excludes = node.getElementsByTagName("exclude")
+                val actual = (0 until excludes.length).map {
+                    val element = excludes.item(it) as Element
+                    element.getAttribute("domain") + ":" + element.getAttribute("path")
+                }.toSet()
+                assertTrue("$file/$transport missing exclusions: " + (required - actual), actual.containsAll(required))
             }
-        }
-    }
-
-    @Test
-    fun backupRuleFilesExist() {
-        listOf("backup_rules.xml", "data_extraction_rules.xml").forEach { name ->
-            assertTrue("Missing $name", Files.exists(xmlDir.resolve(name)))
         }
     }
 }

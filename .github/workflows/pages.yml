@@ -9,6 +9,8 @@ on:
       - 'proto/**'
       - 'app/**'
       - 'tools/**'
+      - 'VERSION'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -23,8 +25,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build firmware + bundle flasher
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -125,8 +133,8 @@ jobs:
           # bootloader (drag-and-drop). Family ID 0xADA52840 = Nordic nRF52840.
           BUILD_RAK=firmware/.pio/build/rak4631
           NAME_RAK="aethermesh-rak4631-${HASH}.uf2"
-          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o /tmp/uf2conv.py
-          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2conv.py -o /tmp/uf2conv.py
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2families.json -o /tmp/uf2families.json
           python /tmp/uf2conv.py "$BUILD_RAK/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK"
 
           # RAK3401 1W (nRF52): same UF2 bootloader flow as RAK4631.

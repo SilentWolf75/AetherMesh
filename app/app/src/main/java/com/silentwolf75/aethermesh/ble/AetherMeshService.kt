@@ -32,6 +32,10 @@ class AetherMeshService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if ((application as AetherMeshApplication).secureStorageUnavailable) {
+            stopSelf()
+            return
+        }
         Log.d(TAG, "Service onCreate")
         createNotificationChannel()
         var types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -67,6 +71,7 @@ class AetherMeshService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service onStartCommand")
+        if ((application as AetherMeshApplication).secureStorageUnavailable) return START_NOT_STICKY
         return START_STICKY
     }
 
