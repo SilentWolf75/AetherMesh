@@ -3775,6 +3775,7 @@ void sendMeshDiagnosticsToPhone() {
 // default_16MB layout), MD5-verified before reboot. Windowed flow control:
 // the phone sends OTA_WINDOW chunks then waits for our IN_PROGRESS ack.
 bool otaActive = false;
+static uint32_t gOtaReassertAtMs = 0; // deferred conn-param re-assert after OTA begin
 uint32_t otaExpectedOffset = 0;
 uint32_t otaTotalSize = 0;
 uint32_t otaLastChunkMs = 0;
@@ -3894,9 +3895,12 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             // Hold off LoRa TX: an SF12 frame owns the radio for seconds and
             // starves the BLE link past its 5s supervision timeout.
             radioMgr.setOtaSuppressed(true);
-            // The phone drops the supervision timeout to its default when it
-            // asks for a high-priority link at OTA start; take it back.
-            bleMgr.reassertConnectionParams();
+            // The phone lowers the supervision timeout and raises peripheral
+            // latency when it requests a high-priority link at OTA start.
+            // Re-asserting immediately raced that request and lost, leaving
+            // latency=1 / timeout=500 for the whole transfer. Defer so ours
+            // lands last.
+            gOtaReassertAtMs = millis() + 1500;
             otaExpectedOffset = 0;
             otaTotalSize = ctl.total_size;
             otaLastChunkMs = millis();
@@ -5234,6 +5238,11 @@ void loop() {
         drawEchoStatus();
     }
 #endif
+
+    if (gOtaReassertAtMs != 0 && (int32_t)(millis() - gOtaReassertAtMs) >= 0) {
+        gOtaReassertAtMs = 0;
+        bleMgr.reassertConnectionParams();
+    }
 
     // Abort a stalled firmware update (phone app killed / walked away)
     if (otaActive && (millis() - otaLastChunkMs > OTA_TIMEOUT_MS)) {

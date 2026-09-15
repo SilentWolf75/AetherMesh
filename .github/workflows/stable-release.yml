@@ -1,0 +1,85 @@
+name: Prepare qualified stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tested_commit:
+        description: Full commit SHA tested on all supported boards
+        required: true
+        type: string
+      qualification_record:
+        description: Repository path to the completed qualification CSV on this workflow ref
+        required: true
+        type: string
+      tag:
+        description: New stable release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qualification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate evidence for the exact tested commit
+        env:
+          TESTED_COMMIT: ${{ inputs.tested_commit }}
+          QUALIFICATION_RECORD: ${{ inputs.qualification_record }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          from tools.hardware_qualification import validate
+          commit = os.environ["TESTED_COMMIT"]
+          assert re.fullmatch("[0-9a-f]{40}", commit), "A full commit SHA is required"
+          root = Path.cwd().resolve()
+          record = (root / os.environ["QUALIFICATION_RECORD"]).resolve()
+          assert record.is_relative_to(root), "Qualification record must be in this checkout"
+          report = validate(record, commit)
+          assert report["complete"], report
+          PY
+
+  checks:
+    needs: qualification
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tested_commit }}
+
+  draft:
+    needs: [qualification, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare release draft with qualification evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_COMMIT: ${{ inputs.tested_commit }}
+          QUALIFICATION_RECORD: ${{ inputs.qualification_record }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          from tools.hardware_qualification import validate
+          commit = os.environ["TESTED_COMMIT"]
+          root = Path.cwd().resolve()
+          record = (root / os.environ["QUALIFICATION_RECORD"]).resolve()
+          assert record.is_relative_to(root)
+          assert validate(record, commit)["complete"]
+          notes = Path(os.environ["RUNNER_TEMP"]) / "release-notes.md"
+          notes.write_text(f"Hardware-qualified commit: {commit}\n\nAll required board checks and CI checks passed. Attach artifacts built from this exact commit before publishing.\n")
+          tag = os.environ["RELEASE_TAG"]
+          assert tag and not tag.startswith("-"), "Invalid tag"
+          existing = subprocess.run(["git", "ls-remote", "--tags", "origin", "refs/tags/" + tag], check=True, capture_output=True, text=True)
+          assert not existing.stdout.strip(), "Choose a new tag; existing tags cannot be retargeted"
+          subprocess.run(["gh", "release", "create", tag, str(record),
+                          "--target", commit, "--draft", "--title", f"Field-stable {tag}",
+                          "--notes-file", str(notes)], check=True)
+          PY

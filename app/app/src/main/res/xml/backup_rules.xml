@@ -5,7 +5,9 @@
   crash loop on a new device.
 -->
 <full-backup-content>
-    <exclude domain="sharedpref" path="aethermesh_secure_prefs" />
-    <exclude domain="sharedpref" path="aethermesh_secure_prefs_fallback" />
-    <!-- Paths must match SecurePrefsNames.ENCRYPTED / FALLBACK in Kotlin -->
+    <!-- Paths must match SecurePrefsNames (plus .xml) and the chat database. -->
+    <exclude domain="sharedpref" path="aethermesh_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="aethermesh_secure_prefs_fallback.xml" />
+    <exclude domain="sharedpref" path="aethermesh_prefs.xml" />
+    <exclude domain="database" path="aethermesh.db" />
 </full-backup-content>

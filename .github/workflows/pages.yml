@@ -9,6 +9,8 @@ on:
       - 'proto/**'
       - 'app/**'
       - 'tools/**'
+      - 'VERSION'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -23,8 +25,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build firmware + bundle flasher
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,15 +69,15 @@ jobs:
         working-directory: app
         run: |
           APP_VERSION=$(grep '^app_version=' ../VERSION | cut -d= -f2)
-          APP_CODE=${GITHUB_RUN_NUMBER}
+          APP_CODE=$(grep '^app_version_code=' ../VERSION | cut -d= -f2)
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aethermesh-release.jks"
             export AETHERMESH_ANDROID_KEYSTORE="$RUNNER_TEMP/aethermesh-release.jks"
-            ./gradlew :app:assembleRelease -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
+            ./gradlew :app:assembleRelease -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}
             echo "release" > "$RUNNER_TEMP/android-build-type"
           else
             echo "::warning::Android signing secrets are absent; publishing a debug-signed APK."
-            ./gradlew :app:assembleDebug -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}-${GITHUB_SHA::7}
+            ./gradlew :app:assembleDebug -PversionCode=${APP_CODE} -PversionName=${APP_VERSION}
             echo "debug" > "$RUNNER_TEMP/android-build-type"
           fi
 
@@ -125,8 +133,8 @@ jobs:
           # bootloader (drag-and-drop). Family ID 0xADA52840 = Nordic nRF52840.
           BUILD_RAK=firmware/.pio/build/rak4631
           NAME_RAK="aethermesh-rak4631-${HASH}.uf2"
-          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o /tmp/uf2conv.py
-          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o /tmp/uf2families.json
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2conv.py -o /tmp/uf2conv.py
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2families.json -o /tmp/uf2families.json
           python /tmp/uf2conv.py "$BUILD_RAK/firmware.hex" -c -f 0xADA52840 -o "$OUT/$NAME_RAK"
 
           # RAK3401 1W (nRF52): same UF2 bootloader flow as RAK4631.
@@ -197,6 +205,11 @@ jobs:
             echo "ERROR: Compiled APK not found!"
             exit 1
           fi
+          HASH=$(git rev-parse --short=7 HEAD)
+          APP_VERSION=$(grep '^app_version=' VERSION | cut -d= -f2)
+          APP_CODE=$(grep '^app_version_code=' VERSION | cut -d= -f2)
+          printf '{"version":"%s","versionCode":%s,"commit":"%s"}\n' \
+            "$APP_VERSION" "$APP_CODE" "$HASH" > web-flasher/app-version.json
           cd web-flasher
           sha256sum aethermesh-app.apk firmware/* > SHA256SUMS.txt
 

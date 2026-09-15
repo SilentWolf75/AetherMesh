@@ -32,7 +32,7 @@ static bool isUrgentControlPacket(const aethermesh_MeshPacket& packet) {
 
 // startTransmit() returns as soon as TX begins. Schedule the next direct PONG
 // copy only after the current one should have finished, plus a short gap.
-static uint32_t directPongSpacingMs(RadioManager* radio) {
+static uint32_t directPongSpacingMs(MeshRadio* radio) {
     uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
     uint32_t airtimeMs;
     if (sf >= 12) {
@@ -49,7 +49,7 @@ static uint32_t directPongSpacingMs(RadioManager* radio) {
     return airtimeMs + DIRECT_PONG_RESEND_MS;
 }
 
-MeshRouter::MeshRouter(RadioManager* radioMgr) {
+MeshRouter::MeshRouter(MeshRadio* radioMgr) {
     radio = radioMgr;
     localNodeId = 0;
     packetSequenceCounter = 0;

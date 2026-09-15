@@ -1056,7 +1056,14 @@ fun MainScreen(
                             onSelectDirectMessage = { viewModel.selectDirectMessage(it) },
                             onCreateChannel = { viewModel.createChannel(it) },
                             onSendMessage = { viewModel.sendMessage(it) },
-                            onRetryMessage = { viewModel.retryMessage(it) },
+                            onRetryMessage = {
+                                if (!viewModel.retryMessage(it)) {
+                                    com.silentwolf75.aethermesh.ui.AppUiFeedback.show(
+                                        if (appLanguage == "Spanish") "No se pudo reintentar. Comprueba la conexi?n, la clave del chat y que no haya una prueba de alcance activa."
+                                        else "Could not retry. Check the node connection, chat key, and that no range test is running."
+                                    )
+                                }
+                            },
                             getChatKey = { viewModel.getChatKey(it) },
                             saveChatKey = { key, valStr -> viewModel.saveChatKey(key, valStr) },
                             channelPreviews = viewModel.getChannelInboxPreviews(),

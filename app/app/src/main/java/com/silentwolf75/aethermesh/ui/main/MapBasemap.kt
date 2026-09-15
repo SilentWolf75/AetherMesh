@@ -4,27 +4,27 @@ import android.content.Context
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 
 /**
- * Online basemaps that actually work for mesh apps.
+ * Online basemaps for the map tab.
  *
- * Avoids tile.openstreetmap.org (MAPNIK) — frequently returns 403 Access Denied.
- * Defaults to CARTO (CDN). OpenTopo / OSM.de are Meshtastic-proven fallbacks.
+ * CARTO raster tiles now require a free API key — configure `cartoApiKey` in
+ * app/gradle.properties (see https://carto.com/basemaps/apikey/). Without it,
+ * CARTO layers are omitted and OpenTopo / OSM HOT are the defaults.
  */
 enum class MapBasemap(
     val id: String,
     val labelEn: String,
     val labelEs: String
 ) {
-    CARTO_STREETS("carto_voyager", "Streets", "Calles"),
-    CARTO_DARK("carto_dark", "Dark", "Oscuro"),
     OPEN_TOPO("opentopo", "Terrain", "Terreno"),
+    OSM_HOT("osm_hot", "Streets (OSM)", "Calles (OSM)"),
+    CARTO_STREETS("carto_voyager", "Streets (CARTO)", "Calles (CARTO)"),
+    CARTO_DARK("carto_dark", "Dark (CARTO)", "Oscuro (CARTO)"),
     OSM_DE("osm_de", "OSM Germany", "OSM Alemania");
 
     fun label(appLanguage: String): String =
         if (appLanguage == "Spanish") labelEs else labelEn
 
     fun tileSource(): XYTileSource = when (this) {
-        CARTO_STREETS -> cartoVoyagerTileSource()
-        CARTO_DARK -> cartoDarkTileSource()
         OPEN_TOPO -> XYTileSource(
             "OpenTopoMap",
             0,
@@ -38,6 +38,9 @@ enum class MapBasemap(
             ),
             "© OpenStreetMap, © OpenTopoMap (CC-BY-SA)"
         )
+        OSM_HOT -> osmHotTileSource()
+        CARTO_STREETS -> cartoVoyagerTileSource()
+        CARTO_DARK -> cartoDarkTileSource()
         OSM_DE -> XYTileSource(
             "OpenStreetMapDE",
             0,
@@ -51,18 +54,37 @@ enum class MapBasemap(
 
     companion object {
         const val PREF_KEY = "basemap_id"
-        val DEFAULT = CARTO_STREETS
+        val DEFAULT = OPEN_TOPO
 
-        fun fromId(id: String?): MapBasemap =
-            entries.firstOrNull { it.id == id } ?: DEFAULT
+        fun available(): List<MapBasemap> =
+            if (MapTileConfig.hasCartoApiKey()) {
+                entries
+            } else {
+                entries.filter { it != CARTO_STREETS && it != CARTO_DARK }
+            }
+
+        fun fromId(id: String?): MapBasemap {
+            val match = entries.firstOrNull { it.id == id } ?: DEFAULT
+            return if (match in available()) match else DEFAULT
+        }
 
         fun load(context: Context): MapBasemap {
             val prefs = context.getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
             val stored = prefs.getString(PREF_KEY, null)
-            if (stored != null) return fromId(stored)
-            // Migrate legacy dark_tiles toggle.
+            if (stored != null) {
+                val resolved = fromId(stored)
+                if (resolved.id != stored) {
+                    prefs.edit().putString(PREF_KEY, resolved.id).apply()
+                }
+                return resolved
+            }
+            // Migrate legacy dark_tiles toggle (pre-basemap picker).
             val dark = prefs.getBoolean("dark_tiles", false)
-            val migrated = if (dark) CARTO_DARK else DEFAULT
+            val migrated = when {
+                dark && MapTileConfig.hasCartoApiKey() -> CARTO_DARK
+                dark -> OPEN_TOPO
+                else -> DEFAULT
+            }
             prefs.edit().putString(PREF_KEY, migrated.id).apply()
             return migrated
         }

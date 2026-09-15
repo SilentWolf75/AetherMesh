@@ -8,6 +8,6 @@ object SecurePrefsNames {
     const val ENCRYPTED = "aethermesh_secure_prefs"
     const val FALLBACK = "aethermesh_secure_prefs_fallback"
 
-    /** Paths that must appear in both backup rule files (domain sharedpref, no .xml suffix). */
-    val backupExcludePaths: Set<String> = setOf(ENCRYPTED, FALLBACK)
+    /** Paths that must appear in both backup rule files (domain sharedpref, including the .xml suffix). */
+    val backupExcludePaths: Set<String> = setOf("$ENCRYPTED.xml", "$FALLBACK.xml")
 }

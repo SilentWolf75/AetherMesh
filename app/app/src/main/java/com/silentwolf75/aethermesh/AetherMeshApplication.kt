@@ -54,10 +54,25 @@ class AetherMeshApplication : Application() {
         return id
     }
 
+    var secureStorageUnavailable = false
+        private set
+
+    fun initializeRepository(): Boolean {
+        return try {
+            repository = AetherMeshRepository(applicationContext)
+            secureStorageUnavailable = false
+            true
+        } catch (e: com.silentwolf75.aethermesh.data.SecureStorageUnavailable) {
+            android.util.Log.e("AetherMesh", "Secure storage could not be opened", e)
+            secureStorageUnavailable = true
+            false
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         // Before any MapView is created — OSM blocks bad / com.example User-Agents.
         OsmMapConfig.configure(applicationContext)
-        repository = AetherMeshRepository(applicationContext)
+        initializeRepository()
     }
 }

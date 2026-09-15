@@ -118,55 +118,24 @@ class AetherMeshRepository(private val context: Context) {
         private const val MESSAGE_ACK_TIMEOUT_MS = 45_000L
         private const val RANGE_PING_TIMEOUT_MS = 15_000L
         private const val TRACE_ROUTE_TIMEOUT_MS = 30_000L
-        private const val DM_RETRY_COOLDOWN_MS = 300_000L // 5 min between auto-retries of the same message
     }
 
+    private val securePrefs = SecurePreferences.open(context)
     val dbHelper = DatabaseHelper(context)
     val bleManager = BleConnectionManager(context)
+    private val outboundDeliveryStore = OutboundDeliveryStore(dbHelper)
+    private val deliveryRetries by lazy {
+        DeliveryRetryController(
+            outboundDeliveryStore,
+            ready = { bleManager.isConnected && bleManager.isGattReady &&
+                _isDeviceAuthenticated.value && !_isRangeTestActive.value },
+            senderId = { bleManager.connectedNodeId },
+            send = { bleManager.sendPacket(it) }
+        )
+    }
     private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
 
     fun appPrefs(): android.content.SharedPreferences = prefs
-
-    // Keystore-encrypted storage for secrets (node passwords, ECDH private key).
-    // Falls back to a plain file only if the Keystore is unavailable on-device.
-    private val securePrefs: android.content.SharedPreferences = try {
-        val masterKey = androidx.security.crypto.MasterKey.Builder(context)
-            .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        androidx.security.crypto.EncryptedSharedPreferences.create(
-            context,
-            SecurePrefsNames.ENCRYPTED,
-            masterKey,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        Log.e(TAG, "EncryptedSharedPreferences unavailable, falling back to plain storage: ${e.message}")
-        context.getSharedPreferences(SecurePrefsNames.FALLBACK, Context.MODE_PRIVATE)
-    }
-
-    // One-time migration of secrets that older builds stored in plain prefs
-    private fun migrateSecretsToSecureStorage() {
-        try {
-            val editorSecure = securePrefs.edit()
-            val editorPlain = prefs.edit()
-            var moved = 0
-            for ((key, value) in prefs.all) {
-                if ((key.startsWith("node_pwd_") || key == "ecdh_private_key") && value is String) {
-                    editorSecure.putString(key, value)
-                    editorPlain.remove(key)
-                    moved++
-                }
-            }
-            if (moved > 0) {
-                editorSecure.apply()
-                editorPlain.apply()
-                Log.d(TAG, "Migrated $moved secret(s) from plain prefs to encrypted storage.")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Secret migration failed: ${e.message}")
-        }
-    }
 
     // Flow for active node lists and messages
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -425,7 +394,6 @@ class AetherMeshRepository(private val context: Context) {
             }
         }
 
-        migrateSecretsToSecureStorage()
 
         // Load initial data
         refreshData()
@@ -848,9 +816,6 @@ class AetherMeshRepository(private val context: Context) {
         }
 
         if (packet.payloadCase == MeshPacket.PayloadCase.DELIVERY_STATUS) {
-            if (_isRangeTestActive.value) {
-                return
-            }
             val delivery = packet.deliveryStatus
             when (delivery.state) {
                 DeliveryStatus.State.HEARD -> {
@@ -1225,7 +1190,7 @@ class AetherMeshRepository(private val context: Context) {
         // One-time migration from the legacy plaintext SQLite key table.
         val legacy = dbHelper.getChatKey(chatIdentifier)
         if (!legacy.isNullOrEmpty()) {
-            securePrefs.edit().putString(prefKey, legacy).apply()
+            check(securePrefs.edit().putString(prefKey, legacy).commit()) { "Could not migrate chat key" }
             dbHelper.deleteChatKey(chatIdentifier)
             return legacy
         }
@@ -1249,20 +1214,26 @@ class AetherMeshRepository(private val context: Context) {
         _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
 
-    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult {
+    fun sendMessage(recipientId: Long, content: String, channel: String = _selectedChannel.value): SendMessageResult =
+        sendMessageInternal(recipientId, content, channel)
+
+    private fun sendMessageInternal(
+        recipientId: Long, content: String, channel: String, existingMessage: ChatMessage? = null
+    ): SendMessageResult {
         // Require notify-ready GATT + AuthResponse(success). A zombie post-reboot
         // link can report isConnected with stale auth and produce fake SENT rows.
         if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
             return SendMessageResult.NotReady
         }
         val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
-        val generatedPacketId = PacketIdGenerator.next()
+        val generatedPacketId = existingMessage?.packetId?.takeIf { it != 0 } ?: PacketIdGenerator.next()
         val localNodeId = bleManager.connectedNodeId
 
         val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
         val cryptoContext = ChatContext.authenticatedLabel(localNodeId, recipientId, boundedChannel)
         val passcode = getChatKey(chatIdentifier)
         val isEncrypted = !passcode.isNullOrEmpty()
+        if (existingMessage?.isEncrypted == true && !isEncrypted) return SendMessageResult.EncryptFailed
         val boundedContent = content.takeUtf8Bytes(
             if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH
         )
@@ -1302,7 +1273,7 @@ class AetherMeshRepository(private val context: Context) {
         // Otherwise the composer retains the text and reports the failed handoff.
         if (!bleManager.sendPacket(packet.toByteArray())) return SendMessageResult.NotReady
         lastOutboundPacketId = generatedPacketId
-        dbHelper.insertMessage(
+        val messageId = existingMessage?.id ?: dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
             content = boundedContent,
@@ -1311,48 +1282,34 @@ class AetherMeshRepository(private val context: Context) {
             status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
             isEncrypted = isEncrypted
         )
+        if (existingMessage != null) dbHelper.updateMessageStatusById(messageId, "PENDING")
+        if (!isChannelSend) outboundDeliveryStore.track(messageId, packet.toByteArray(), System.currentTimeMillis())
         refreshData()
         return SendMessageResult.Sent
     }
 
     fun retryMessage(message: ChatMessage): Boolean {
-        if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty()) return false
-        val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
-        if (sent) {
-            dbHelper.updateMessageStatusById(message.id, "RETRIED")
-            refreshData()
+        if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty() ||
+            message.senderId != bleManager.connectedNodeId || _isRangeTestActive.value ||
+            message.status !in setOf("FAILED", "QUEUED", "EXPIRED")) return false
+        val sent = if (outboundDeliveryStore.hasPayload(message.id)) {
+            deliveryRetries.retry(message.id, manual = true)
+        } else {
+            // Legacy records have no saved wire payload. Only an explicit user
+            // retry may rebuild it, and encrypted messages still require their key.
+            sendMessageInternal(message.recipientId, message.content, "", message) == SendMessageResult.Sent
         }
+        refreshData()
         return sent
     }
 
-    // Per-message cooldown so store-and-forward doesn't re-send the same failed
-    // DM on every telemetry from the target (that loop burned airtime forever).
-    // Accessed only on dbDispatcher (single thread).
-    private val dmRetryLastAttempt = mutableMapOf<Long, Long>()
-
     private fun retryQueuedDirectMessages(recipientId: Long) {
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return
-        // Never compete with an active range test for the radio: DM retransmits
-        // through the connected node were observed jamming ping/PONG exchanges.
-        if (_isRangeTestActive.value) return
         repositoryScope.launch(dbDispatcher) {
-            val now = System.currentTimeMillis()
-            val retryable = dbHelper.getRetryableDirectMessages(recipientId)
-                // Legacy range-test control rows must never be resent as DMs
-                .filter { !it.content.startsWith("PING_") && !it.content.startsWith("PONG_") }
-                .filter { (dmRetryLastAttempt[it.id] ?: 0L) + DM_RETRY_COOLDOWN_MS < now }
-            for (message in retryable) {
-                dmRetryLastAttempt[message.id] = now
-                dbHelper.updateMessageStatusById(message.id, "QUEUED")
-                val sent = sendMessage(message.recipientId, message.content, "") == SendMessageResult.Sent
-                dbHelper.updateMessageStatusById(message.id, if (sent) "RETRIED" else "FAILED")
-                // Space resends out; a burst of tracked DMs each retrying 3x
-                // saturates the node's half-duplex radio.
+            for (attempt in deliveryRetries.candidates(recipientId)) {
+                deliveryRetries.retry(attempt.messageId)
                 delay(2_000L)
             }
-            if (retryable.isNotEmpty()) {
-                refreshData()
-            }
+            refreshData()
         }
     }
 
@@ -1361,7 +1318,8 @@ class AetherMeshRepository(private val context: Context) {
             while (true) {
                 delay(5_000L)
                 val cutoff = System.currentTimeMillis() - MESSAGE_ACK_TIMEOUT_MS
-                val changed = dbHelper.markTimedOutPendingMessages(cutoff)
+                val changed = dbHelper.markTimedOutPendingMessages(cutoff) +
+                    outboundDeliveryStore.expire(System.currentTimeMillis())
                 if (changed > 0) {
                     refreshData()
                 }
@@ -1865,18 +1823,35 @@ class AetherMeshRepository(private val context: Context) {
     private val OTA_CHUNK_LEGACY = 128
     private val OTA_WINDOW_LEGACY = 4
     private val OTA_PROTO_OVERHEAD = 56
-    // Pace slower than flash sector erases + main-loop work on Heltec.
-    private val OTA_INTER_CHUNK_MS = 80L
+    // Was 80ms, added alongside the inline-delivery change that made the node
+    // panic on the first chunk; it paced around instability rather than fixing
+    // it. At 128-byte chunks that is ~8500 chunks and ~11 minutes of a 14-minute
+    // transfer spent deliberately idle.
+    //
+    // Flow control is already covered twice over: OTA writes are confirmed
+    // (withResponse), so each one waits for its GATT callback, and a window is
+    // 8 chunks against a 16-slot node RX ring with an IN_PROGRESS ack per
+    // window. At most 8 chunks are ever outstanding, so the ring cannot
+    // overflow. Raise this only if a node actually reports gaps.
+    private val OTA_INTER_CHUNK_MS = 0L
 
     private fun otaChunkSizeForLink(nodeHint: Int): Int {
         val attMax = (bleManager.negotiatedMtu - 3).coerceAtLeast(20)
-        val legacyNodeCap = 256 - OTA_PROTO_OVERHEAD
-        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtMost(legacyNodeCap)
-        val wanted = OTA_CHUNK_RELIABLE
-        return wanted.coerceAtMost(linkCap).coerceAtLeast(64).also {
-            if (nodeHint >= OTA_CHUNK_FAST_CAP && it < OTA_CHUNK_FAST_CAP) {
-                Log.d(TAG, "OTA chunk capped to $it (node advertised $nodeHint)")
-            }
+        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtLeast(64)
+        // A node that advertises its max chunk in READY.next_offset is running
+        // firmware with the 512-byte RX ring, so the real ceiling is simply what
+        // one ATT write carries. Pinning this to 128 regardless cost ~35% of
+        // throughput on links that measured 197. Unknown or legacy nodes keep
+        // the conservative size and the 256-byte RX-slot assumption.
+        val wanted = if (nodeHint >= OTA_CHUNK_FAST_CAP) {
+            nodeHint.coerceAtMost(linkCap)
+        } else {
+            OTA_CHUNK_RELIABLE.coerceAtMost(
+                linkCap.coerceAtMost(256 - OTA_PROTO_OVERHEAD)
+            )
+        }
+        return wanted.coerceAtLeast(64).also {
+            Log.d(TAG, "OTA chunk $it (node advertised $nodeHint, link carries $linkCap)")
         }
     }
 
@@ -1934,7 +1909,7 @@ class AetherMeshRepository(private val context: Context) {
 
                 val chunkSize = otaChunkSizeForLink(chunkHint)
                 val window = otaWindowForNode(chunkHint)
-                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+confirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
+                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+unconfirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
 
                 _otaState.value = OtaState(
                     active = true,
@@ -1958,7 +1933,17 @@ class AetherMeshRepository(private val context: Context) {
                             .build()
                             .toByteArray()
                         var tries = 0
-                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = true, otaStream = true)) {
+                        // Unconfirmed writes. A confirmed write costs a full round
+                        // trip per chunk -- one write per connection event -- which
+                        // was the floor at ~35ms/chunk. Unconfirmed lets the
+                        // controller queue several per event.
+                        //
+                        // The ATT layer is not what protects this transfer: a window
+                        // is 8 chunks against the node's 16-slot RX ring with an
+                        // IN_PROGRESS ack per window, and any chunk that goes missing
+                        // surfaces as an offset gap the node asks to resume from. Eight
+                        // outstanding chunks cannot overflow sixteen slots.
+                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = false, otaStream = true)) {
                             if (++tries > com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.MAX_ATTEMPTS) {
                                 throw Exception("BLE write failed repeatedly")
                             }

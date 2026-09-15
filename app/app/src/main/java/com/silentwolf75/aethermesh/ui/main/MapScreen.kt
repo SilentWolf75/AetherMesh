@@ -1070,7 +1070,7 @@ fun MapViewCompose(
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
                         )
-                        MapBasemap.entries.forEach { basemap ->
+                        MapBasemap.available().forEach { basemap ->
                             val selected = selectedBasemap == basemap
                             Row(
                                 modifier = Modifier
@@ -1103,14 +1103,16 @@ fun MapViewCompose(
                                     )
                                     Text(
                                         text = when (basemap) {
-                                            MapBasemap.CARTO_STREETS ->
-                                                if (appLanguage == "Spanish") "Más fiable (recomendado)" else "Most reliable (recommended)"
-                                            MapBasemap.CARTO_DARK ->
-                                                if (appLanguage == "Spanish") "Misma red, tema oscuro" else "Same CDN, dark theme"
                                             MapBasemap.OPEN_TOPO ->
-                                                if (appLanguage == "Spanish") "Relieve / outdoor" else "Terrain / outdoor"
+                                                if (appLanguage == "Spanish") "Relieve / outdoor (predeterminado)" else "Terrain / outdoor (default)"
+                                            MapBasemap.OSM_HOT ->
+                                                if (appLanguage == "Spanish") "Calles OSM, sin clave API" else "OSM streets, no API key"
+                                            MapBasemap.CARTO_STREETS ->
+                                                if (appLanguage == "Spanish") "CARTO Voyager (clave API en compilación)" else "CARTO Voyager (build-time API key)"
+                                            MapBasemap.CARTO_DARK ->
+                                                if (appLanguage == "Spanish") "CARTO oscuro" else "CARTO dark theme"
                                             MapBasemap.OSM_DE ->
-                                                if (appLanguage == "Spanish") "Calles (alternativa OSM)" else "Streets (OSM alternative)"
+                                                if (appLanguage == "Spanish") "Calles (Alemania)" else "Streets (Germany)"
                                         },
                                         color = TextMuted,
                                         fontSize = 10.sp

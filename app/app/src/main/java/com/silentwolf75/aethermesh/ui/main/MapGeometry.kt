@@ -86,35 +86,56 @@ import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-/** Light online basemap — avoid tile.openstreetmap.org (MAPNIK), which 403s many apps. */
-fun cartoVoyagerTileSource(): XYTileSource = XYTileSource(
-    "CartoVoyager",
-    0,
-    20,
-    256,
-    ".png",
-    arrayOf(
-        "https://a.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://b.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://c.basemaps.cartocdn.com/rastertiles/voyager/",
-        "https://d.basemaps.cartocdn.com/rastertiles/voyager/"
-    ),
-    "© OpenStreetMap contributors © CARTO"
-)
+/** CARTO Voyager — requires a free API key in app/gradle.properties (`cartoApiKey`). */
+fun cartoVoyagerTileSource(): XYTileSource {
+    val ext = MapTileConfig.rasterExtension()
+    return XYTileSource(
+        "CartoVoyager",
+        0,
+        20,
+        256,
+        ext,
+        arrayOf(
+            "https://a.basemaps.cartocdn.com/rastertiles/voyager/",
+            "https://b.basemaps.cartocdn.com/rastertiles/voyager/",
+            "https://c.basemaps.cartocdn.com/rastertiles/voyager/",
+            "https://d.basemaps.cartocdn.com/rastertiles/voyager/"
+        ),
+        "© OpenStreetMap contributors © CARTO"
+    )
+}
 
-fun cartoDarkTileSource(): XYTileSource = XYTileSource(
-    "CartoDarkMatter",
+fun cartoDarkTileSource(): XYTileSource {
+    val ext = MapTileConfig.rasterExtension()
+    return XYTileSource(
+        "CartoDarkMatter",
+        0,
+        20,
+        256,
+        ext,
+        arrayOf(
+            "https://a.basemaps.cartocdn.com/dark_all/",
+            "https://b.basemaps.cartocdn.com/dark_all/",
+            "https://c.basemaps.cartocdn.com/dark_all/",
+            "https://d.basemaps.cartocdn.com/dark_all/"
+        ),
+        "© OpenStreetMap contributors © CARTO"
+    )
+}
+
+/** Humanitarian OSM — free street basemap, no API key (global). */
+fun osmHotTileSource(): XYTileSource = XYTileSource(
+    "OSM-HOT",
     0,
-    20,
+    19,
     256,
     ".png",
     arrayOf(
-        "https://a.basemaps.cartocdn.com/dark_all/",
-        "https://b.basemaps.cartocdn.com/dark_all/",
-        "https://c.basemaps.cartocdn.com/dark_all/",
-        "https://d.basemaps.cartocdn.com/dark_all/"
+        "https://a.tile.openstreetmap.fr/hot/",
+        "https://b.tile.openstreetmap.fr/hot/",
+        "https://c.tile.openstreetmap.fr/hot/"
     ),
-    "© OpenStreetMap contributors © CARTO"
+    "© OpenStreetMap contributors"
 )
 
 /** Bearing in degrees [0, 360) from point A to B. */
