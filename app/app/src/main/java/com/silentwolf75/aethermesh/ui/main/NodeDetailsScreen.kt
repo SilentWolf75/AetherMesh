@@ -22,12 +22,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import com.silentwolf75.aethermesh.data.NodeIdentityPolicy
 import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Person
@@ -62,9 +65,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.Context
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.RadioRegionPolicy
 import com.silentwolf75.aethermesh.data.RouteHopInfo
 import com.silentwolf75.aethermesh.data.TelemetrySample
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
+import com.silentwolf75.aethermesh.ui.components.NodeBadge
+import com.silentwolf75.aethermesh.ui.components.SignalBars
 import org.osmdroid.util.GeoPoint
 
 /**
@@ -322,6 +328,37 @@ fun NodeDetailsScreen(
                         trailingBolt = node.isCharging
                     )
 
+                    // Identity keys. A conflict or rotation is the one thing on
+                    // this screen the user may have to act on, so it is stated
+                    // plainly rather than left to a log on the node.
+                    run {
+                        val spanish = appLanguage == "Spanish"
+                        val state: NodeIdentityPolicy.State =
+                            NodeIdentityPolicy.State.entries.firstOrNull {
+                                it.name == node.identityState
+                            } ?: NodeIdentityPolicy.State.UNKNOWN
+                        val attention = NodeIdentityPolicy.needsAttention(state)
+                        HorizontalDivider(color = BorderDark)
+                        ToolRow(
+                            icon = if (attention) Icons.Default.Warning else Icons.Default.Lock,
+                            label = if (spanish) "Clave del nodo" else "Node key",
+                            subtitle = buildString {
+                                append(NodeIdentityPolicy.label(state, spanish))
+                                if (node.identityFingerprint.isNotEmpty()) {
+                                    append("  ·  ")
+                                    append(node.identityFingerprint)
+                                }
+                            },
+                            onClick = null
+                        )
+                        Text(
+                            text = NodeIdentityPolicy.explanation(state, spanish),
+                            color = if (attention) AccentAmber else TextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                        )
+                    }
+
                     if (history.size >= 2) {
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
@@ -482,20 +519,12 @@ private fun DetailsCard(
             )
             Spacer(modifier = Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 52.dp, height = 36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(getBadgeColor(node.name).copy(alpha = if (stale) 0.45f else 1f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        shortName,
-                        color = Color.Black,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = if (shortName.length > 2) 11.sp else 14.sp
-                    )
-                }
+                NodeBadge(
+                    shortName = shortName,
+                    color = getBadgeColor(node.name),
+                    muted = stale,
+                    hops = hops?.takeIf { it > 0 }
+                )
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(node.name, color = if (stale) TextMuted else TextLight, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -581,7 +610,7 @@ private fun DetailsCard(
                     }
                     if (node.loraSf in 7..12) {
                         val profile = radioProfileLabel(node.loraSf) +
-                            if (node.region >= 0) " · ${radioRegionLabel(node.region)}" else ""
+                            if (RadioRegionPolicy.isKnown(node.region)) " · ${radioRegionLabel(node.region)}" else ""
                         MetaItem(
                             Icons.Default.SignalCellularAlt,
                             if (appLanguage == "Spanish") "Radio" else "Radio",

@@ -57,7 +57,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.silentwolf75.aethermesh.data.CannedReplyPolicy
 import com.silentwolf75.aethermesh.data.ChatMessage
+import com.silentwolf75.aethermesh.data.ChatSendPolicy
 import com.silentwolf75.aethermesh.data.ChannelConfig
 import com.silentwolf75.aethermesh.data.ChatThreadPrefs
 import com.silentwolf75.aethermesh.data.MeshNode
@@ -145,15 +147,9 @@ fun ChatView(
             showDeliveryLegend = true
         }
     }
-    var channelHearerReceipts by remember {
-        mutableStateOf(appPrefs.getBoolean("channel_hearer_receipts", false))
-    }
     var chatPrefsRevision by remember { mutableIntStateOf(0) }
     DisposableEffect(appPrefs) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == null || key == "channel_hearer_receipts") {
-                channelHearerReceipts = appPrefs.getBoolean("channel_hearer_receipts", false)
-            }
             if (ChatThreadPrefs.isChatPrefsKey(key)) {
                 chatPrefsRevision++
             }
@@ -628,7 +624,11 @@ fun ChatView(
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            NodeBadge(shortName = shortName, color = getBadgeColor(node.name), muted = stale)
+                            NodeBadge(
+                                shortName = shortName,
+                                color = getBadgeColor(node.name),
+                                muted = stale
+                            )
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1048,8 +1048,7 @@ fun ChatView(
                             localNodeId = localNodeId,
                             onRetryMessage = onRetryMessage,
                             senderLabel = senderLabel,
-                            appLanguage = appLanguage,
-                            channelHearerReceipts = channelHearerReceipts
+                            appLanguage = appLanguage
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
@@ -1094,7 +1093,10 @@ fun ChatView(
                 spanish -> "Mensaje a ${selectedNode?.name ?: "nodo"}…"
                 else -> "Message ${selectedNode?.name ?: "node"}..."
             }
-            val chatIdForLimit = if (activeChatId == null) "CHANNEL_$selectedChannel" else "DM_$activeChatId"
+            val chatIdForLimit = ChatSendPolicy.chatIdentifier(
+                if (activeChatId == null) ChatSendPolicy.BROADCAST else activeChatId,
+                selectedChannel
+            )
             val encryptedChat = !getChatKey(chatIdForLimit).isNullOrEmpty()
             val maxUtf8 = if (encryptedChat) CHAT_MAX_ENCRYPTED_UTF8_BYTES else CHAT_MAX_PLAIN_UTF8_BYTES
             LaunchedEffect(maxUtf8) {
@@ -1143,6 +1145,74 @@ fun ChatView(
                         else
                             "Message not sent. Check BLE connection and authentication."
                         sendError = msg
+                    }
+                }
+            }
+            val outboxSummary = remember(messages, localNodeId, isConnected, isAuthenticated) {
+                com.silentwolf75.aethermesh.data.OutboxStatusPolicy.summarize(
+                    messages, localNodeId, isConnected, isAuthenticated
+                )
+            }
+            val outboxLabel = outboxSummary.label(spanish)
+            if (outboxLabel != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (outboxSummary.failedCount > 0) Color(0x33FF5555) else SurfaceDark)
+                        .border(1.dp, if (outboxSummary.failedCount > 0) Color(0x66FF5555) else BorderDark, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (outboxSummary.failedCount > 0) Icons.Default.Warning else if (!isConnected) Icons.Default.CloudOff else Icons.Default.Schedule,
+                        contentDescription = null,
+                        tint = if (outboxSummary.failedCount > 0) Color(0xFFFF6666) else AccentCyanDim,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = outboxLabel,
+                        color = if (outboxSummary.failedCount > 0) Color(0xFFFFBBBB) else TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (canSend && textState.isBlank()) {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(CannedReplyPolicy.REPLIES, key = { it.id }) { reply ->
+                        val label = CannedReplyPolicy.label(reply, spanish)
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(SurfaceDark)
+                                .border(1.dp, BorderDark, RoundedCornerShape(16.dp))
+                                .clickable {
+                                    textState = CannedReplyPolicy.applyToDraft(
+                                        textState, reply, spanish
+                                    ).takeUtf8Bytes(maxUtf8)
+                                    sendError = null
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .semantics {
+                                    contentDescription = if (spanish) {
+                                        "Respuesta rápida: $label"
+                                    } else {
+                                        "Canned reply: $label"
+                                    }
+                                }
+                        ) {
+                            Text(label, color = AccentSteel, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -1433,8 +1503,7 @@ fun MessageBubble(
     localNodeId: Long,
     onRetryMessage: (ChatMessage) -> Unit,
     senderLabel: String? = null,
-    appLanguage: String = "English",
-    channelHearerReceipts: Boolean = false
+    appLanguage: String = "English"
 ) {
     val isMe = localNodeId != 0L && message.senderId == localNodeId
     val canRetry = isMe && message.status in setOf("FAILED", "EXPIRED")
@@ -1444,17 +1513,8 @@ fun MessageBubble(
     // HEARD = optional hearer receipt. QUEUED = waiting on router / store-forward.
     val isChannel = message.channel.isNotEmpty() ||
         (message.recipientId and 0xFFFFFFFFL) == 0xFFFFFFFFL
-    val channelWaiting = isChannel && channelHearerReceipts
-    val statusIcon = when (message.status) {
-        "DELIVERED" -> "✓✓"
-        "HEARD" -> "◎"
-        "PENDING" -> "…"
-        "QUEUED" -> "▥"
-        "FAILED", "EXPIRED" -> "!"
-        "RETRIED" -> "↻"
-        "SENT" -> if (channelWaiting) "…" else "⇢"
-        else -> "⇢"
-    }
+    val channelWaiting = isChannel &&
+        ChatSendPolicy.channelReceiptPending(System.currentTimeMillis() - message.timestamp)
     val statusColor = when (message.status) {
         "DELIVERED" -> AccentMint
         "HEARD" -> AccentCyan
@@ -1463,26 +1523,30 @@ fun MessageBubble(
         "PENDING", "QUEUED" -> AccentAmber
         else -> TextMuted
     }
+    // DeliveryTicks draws the status glyph; the text must not repeat it
+    // ("✓✓ ✓✓ delivered" showed four check marks).
     val statusText = when (message.status) {
-        "EXPIRED" -> if (spanish) "$statusIcon sin ACK · tocar para reintentar" else "$statusIcon no ACK · tap to retry"
-        "FAILED" -> if (spanish) "$statusIcon sin respuesta · tocar para reintentar" else "$statusIcon no reply · tap to retry"
-        "PENDING" -> if (spanish) "$statusIcon esperando recepción…" else "$statusIcon waiting for receipt…"
-        "QUEUED" -> if (spanish) "$statusIcon en cola (router / al aire)…" else "$statusIcon queued (router / on-air)…"
-        "RETRIED" -> if (spanish) "$statusIcon reenviado" else "$statusIcon resent"
-        "DELIVERED" -> if (spanish) "$statusIcon entregado al nodo" else "$statusIcon delivered to node"
+        "EXPIRED" -> if (spanish) "sin ACK · tocar para reintentar" else "no ACK · tap to retry"
+        "FAILED" -> if (spanish) "sin respuesta · tocar para reintentar" else "no reply · tap to retry"
+        "PENDING" -> if (spanish) "esperando recepción…" else "waiting for receipt…"
+        "QUEUED" -> if (spanish) "en cola (router / al aire)…" else "queued (router / on-air)…"
+        "RETRIED" -> if (spanish) "reenviado" else "resent"
+        "DELIVERED" -> if (spanish) "entregado al nodo" else "delivered to node"
         "HEARD" -> if (spanish) {
-            "$statusIcon oído por ${message.heardCount}"
+            "oído por ${message.heardCount}"
         } else {
-            "$statusIcon heard by ${message.heardCount}"
+            "heard by ${message.heardCount}"
         }
         "SENT" -> if (channelWaiting) {
-            if (spanish) "$statusIcon SENT · esperando HEARD…" else "$statusIcon SENT · waiting for HEARD…"
+            if (spanish) "SENT · esperando HEARD…" else "SENT · waiting for HEARD…"
         } else if (isChannel) {
-            if (spanish) "$statusIcon SENT · al radio (no entregado)" else "$statusIcon SENT · to radio (not delivered)"
+            // Receipt window passed with nobody answering (or a neighborhood too
+            // crowded for receipts). The message was transmitted; do not imply failure.
+            if (spanish) "SENT · al aire" else "SENT · on air"
         } else {
-            if (spanish) "$statusIcon SENT · al radio" else "$statusIcon SENT · to radio"
+            if (spanish) "SENT · al radio" else "SENT · to radio"
         }
-        else -> statusIcon
+        else -> ""
     }
     val statusDescription = when (message.status) {
         "EXPIRED" -> if (spanish)
@@ -1517,9 +1581,9 @@ fun MessageBubble(
                 "SENT = phone→radio / on air. Waiting for optional HEARD receipts (bonus, not a mailbox)."
         } else if (isChannel) {
             if (spanish)
-                "SENT = llegó al radio y salió al canal (cobertura flood). No significa que alguien lo leyó."
+                "SENT = llegó al radio y salió al canal (cobertura flood). Los recibos de oyentes están desactivados, así que no hay confirmación de entrega. Actívalos en Ajustes → Preferencias para ver cuántos nodos lo oyeron."
             else
-                "SENT = reached the radio and went on the channel (flood coverage). Does not mean anyone read it."
+                "SENT = reached the radio and went out on the channel (flood coverage). Hearer receipts are off, so delivery can't be confirmed. Turn them on in Settings → Preferences to see how many nodes heard it."
         } else {
             if (spanish)
                 "SENT = el teléfono lo entregó al radio. Aún no hay confirmación del destino."
@@ -1591,6 +1655,12 @@ fun MessageBubble(
             Text(time, color = TextMuted, fontSize = 10.sp)
             if (isMe) {
                 Spacer(modifier = Modifier.width(6.dp))
+                DeliveryTicks(
+                    status = message.status,
+                    color = statusColor,
+                    channelWaiting = channelWaiting
+                )
+                Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = statusText,
                     color = statusColor,

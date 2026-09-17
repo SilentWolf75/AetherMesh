@@ -5,11 +5,11 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : SQLiteOpenHelper(context, databaseName, null, DATABASE_VERSION) {
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 23
+        private const val DATABASE_VERSION = 26
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -45,6 +45,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_MSG_IS_ENCRYPTED = "is_encrypted"
         const val COL_MSG_HEARD_COUNT = "heard_count"
         const val COL_MSG_HEARD_NODES = "heard_nodes"
+        // Undecryptable inbound ciphertext, kept until a saved key recovers it.
+        const val COL_MSG_CIPHER_TEXT = "cipher_text"
+        const val COL_MSG_CIPHER_CHAT_ID = "cipher_chat_id"
+        const val COL_MSG_CIPHER_CONTEXT = "cipher_context"
 
         // Nodes Table
         const val TABLE_NODES = "nodes"
@@ -72,6 +76,21 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         const val COL_NODE_REGION = "lora_region"
         /** Epoch ms of last telemetry that carried a valid lat/lon (GPS lock age). */
         const val COL_NODE_LAST_POSITION = "last_position_at"
+        // Telemetry GNSS snapshot (0 = older firmware did not report it).
+        const val COL_NODE_GPS_STATE = "gps_state"
+        const val COL_NODE_POSITION_SOURCE = "position_source"
+        const val COL_NODE_GPS_SATS_USED = "gps_sats_used"
+        const val COL_NODE_GPS_SATS_IN_VIEW = "gps_sats_in_view"
+        const val COL_NODE_GPS_HDOP_X10 = "gps_hdop_x10"
+        const val COL_NODE_GPS_FIX_AGE = "gps_fix_age_secs"
+
+        // Identity keys as reported by our own radio after it verified the
+        // announcement. The phone stores the verdict and the fingerprint, never
+        // the keys themselves — it has nothing to do with them.
+        const val COL_NODE_IDENTITY_FP = "identity_fingerprint"
+        const val COL_NODE_IDENTITY_STATE = "identity_state"
+        const val COL_NODE_IDENTITY_EPOCH = "identity_epoch"
+        const val COL_NODE_IDENTITY_SEEN = "identity_seen_at"
 
         // Encryption Keys Table
         const val TABLE_KEYS = "encryption_keys"
@@ -131,7 +150,10 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 last_attempt_at INTEGER NOT NULL DEFAULT 0,
                 next_retry_at INTEGER NOT NULL DEFAULT 0,
-                expires_at INTEGER NOT NULL DEFAULT 0
+                expires_at INTEGER NOT NULL DEFAULT 0,
+                $COL_MSG_CIPHER_TEXT TEXT,
+                $COL_MSG_CIPHER_CHAT_ID TEXT,
+                $COL_MSG_CIPHER_CONTEXT TEXT
             )
         """.trimIndent()
 
@@ -156,7 +178,17 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COL_NODE_PROTOCOL_VERSION INTEGER DEFAULT 1,
                 $COL_NODE_LORA_SF INTEGER DEFAULT 0,
                 $COL_NODE_REGION INTEGER DEFAULT -1,
-                $COL_NODE_LAST_POSITION INTEGER DEFAULT 0
+                $COL_NODE_LAST_POSITION INTEGER DEFAULT 0,
+                $COL_NODE_GPS_STATE INTEGER DEFAULT 0,
+                $COL_NODE_POSITION_SOURCE INTEGER DEFAULT 0,
+                $COL_NODE_GPS_SATS_USED INTEGER DEFAULT 0,
+                $COL_NODE_GPS_SATS_IN_VIEW INTEGER DEFAULT 0,
+                $COL_NODE_GPS_HDOP_X10 INTEGER DEFAULT 0,
+                $COL_NODE_GPS_FIX_AGE INTEGER DEFAULT 0,
+                $COL_NODE_IDENTITY_FP TEXT DEFAULT '',
+                $COL_NODE_IDENTITY_STATE TEXT DEFAULT '',
+                $COL_NODE_IDENTITY_EPOCH INTEGER DEFAULT 0,
+                $COL_NODE_IDENTITY_SEEN INTEGER DEFAULT 0
             )
         """.trimIndent()
 
@@ -202,7 +234,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val insertDefaultChannel = """
             INSERT OR IGNORE INTO $TABLE_CHANNELS 
             ($COL_CHAN_NAME, $COL_CHAN_PSK, $COL_CHAN_UPLINK, $COL_CHAN_DOWNLINK, $COL_CHAN_POSITION, $COL_CHAN_PRECISE, $COL_CHAN_PRECISION_MILES, $COL_CHAN_PRIMARY)
-            VALUES ('StandardMesh', 'AQ==', 1, 1, 1, 1, 0.0, 1)
+            VALUES ('StandardMesh', '${ChannelPskPolicy.DEFAULT_PSK}', 1, 1, 1, 1, 0.0, 1)
         """.trimIndent()
 
         val createTelemetryTable = """
@@ -295,7 +327,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             val insertDefaultChannel = """
                 INSERT OR IGNORE INTO $TABLE_CHANNELS 
                 ($COL_CHAN_NAME, $COL_CHAN_PSK, $COL_CHAN_UPLINK, $COL_CHAN_DOWNLINK, $COL_CHAN_POSITION, $COL_CHAN_PRECISE, $COL_CHAN_PRECISION_MILES, $COL_CHAN_PRIMARY)
-                VALUES ('StandardMesh', 'AQ==', 1, 1, 1, 1, 0.0, 1)
+                VALUES ('StandardMesh', '${ChannelPskPolicy.DEFAULT_PSK}', 1, 1, 1, 1, 0.0, 1)
             """.trimIndent()
 
             db.execSQL(createChannelsTable)
@@ -454,6 +486,59 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0")
             db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN next_retry_at INTEGER NOT NULL DEFAULT 0")
             db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0")
+        }
+        if (oldVersion < 24) {
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MSG_CIPHER_TEXT TEXT")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MSG_CIPHER_CHAT_ID TEXT")
+            db.execSQL("ALTER TABLE $TABLE_MESSAGES ADD COLUMN $COL_MSG_CIPHER_CONTEXT TEXT")
+        }
+        if (oldVersion < 25) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_GPS_STATE INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_POSITION_SOURCE INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_GPS_SATS_USED INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_GPS_SATS_IN_VIEW INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_GPS_HDOP_X10 INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_GPS_FIX_AGE INTEGER DEFAULT 0")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add GPS telemetry columns: ${e.message}")
+            }
+        }
+        if (oldVersion < 26) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_IDENTITY_FP TEXT DEFAULT ''")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_IDENTITY_STATE TEXT DEFAULT ''")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_IDENTITY_EPOCH INTEGER DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_NODES ADD COLUMN $COL_NODE_IDENTITY_SEEN INTEGER DEFAULT 0")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add identity columns: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Records what our radio decided about a node's announced keys. A node row
+     * may not exist yet — a key can arrive before any telemetry — so this
+     * inserts the id if needed rather than dropping the verdict.
+     */
+    fun recordNodeIdentity(nodeId: Long, fingerprint: String, state: String, epoch: Int): Boolean {
+        return try {
+            writableDatabase.execSQL(
+                "INSERT OR IGNORE INTO $TABLE_NODES ($COL_NODE_ID) VALUES (?)",
+                arrayOf<Any>(nodeId)
+            )
+            val values = ContentValues().apply {
+                put(COL_NODE_IDENTITY_FP, fingerprint)
+                put(COL_NODE_IDENTITY_STATE, state)
+                put(COL_NODE_IDENTITY_EPOCH, epoch)
+                put(COL_NODE_IDENTITY_SEEN, System.currentTimeMillis())
+            }
+            writableDatabase.update(
+                TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(nodeId.toString())
+            ) > 0
+        } catch (e: Exception) {
+            android.util.Log.e("DatabaseHelper", "Failed to record identity: ${e.message}")
+            false
         }
     }
 
@@ -672,7 +757,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         channel: String = "General",
         packetId: Int = 0,
         status: String = "SENT",
-        isEncrypted: Boolean = false
+        isEncrypted: Boolean = false,
+        pendingCipher: PendingCipher? = null
     ): Long {
         val db = this.writableDatabase
         val canonicalSender = resolveCanonicalNodeId(db, senderId)
@@ -690,8 +776,87 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COL_MSG_PACKET_ID, packetId)
             put(COL_MSG_STATUS, status)
             put(COL_MSG_IS_ENCRYPTED, if (isEncrypted) 1 else 0)
+            if (pendingCipher != null) {
+                put(COL_MSG_CIPHER_TEXT, pendingCipher.cipherText)
+                put(COL_MSG_CIPHER_CHAT_ID, pendingCipher.chatIdentifier)
+                put(COL_MSG_CIPHER_CONTEXT, pendingCipher.cryptoContext)
+            }
         }
         return db.insert(TABLE_MESSAGES, null, values)
+    }
+
+    /**
+     * Messages in [chatIdentifier] whose ciphertext has not been decrypted yet,
+     * in id order after [afterRowId]. [limit] < 0 returns every row.
+     */
+    fun getPendingDecryptions(
+        chatIdentifier: String,
+        afterRowId: Long = 0L,
+        limit: Int = -1
+    ): List<PendingDecryption> {
+        val db = this.readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT $COL_MSG_ID, $COL_MSG_CIPHER_TEXT, $COL_MSG_CIPHER_CONTEXT FROM $TABLE_MESSAGES " +
+                "WHERE $COL_MSG_CIPHER_CHAT_ID = ? AND $COL_MSG_CIPHER_TEXT IS NOT NULL AND $COL_MSG_ID > ? " +
+                "ORDER BY $COL_MSG_ID ASC LIMIT ?",
+            arrayOf(chatIdentifier, afterRowId.toString(), limit.toString())
+        )
+        val list = mutableListOf<PendingDecryption>()
+        cursor.use {
+            while (it.moveToNext()) {
+                list.add(PendingDecryption(it.getLong(0), it.getString(1), it.getString(2) ?: ""))
+            }
+        }
+        return list
+    }
+
+    /** Replace a placeholder with recovered plaintext and drop the stored ciphertext. */
+    /** Chats that still hold undecrypted ciphertext. */
+    fun getPendingDecryptionChats(): List<String> {
+        val cursor = readableDatabase.rawQuery(
+            "SELECT DISTINCT $COL_MSG_CIPHER_CHAT_ID FROM $TABLE_MESSAGES " +
+                "WHERE $COL_MSG_CIPHER_TEXT IS NOT NULL AND $COL_MSG_CIPHER_CHAT_ID IS NOT NULL",
+            null
+        )
+        val chats = mutableListOf<String>()
+        cursor.use { while (it.moveToNext()) chats.add(it.getString(0)) }
+        return chats
+    }
+
+    fun getNewestPendingDecryption(chatIdentifier: String): PendingDecryption? {
+        val cursor = readableDatabase.rawQuery(
+            "SELECT $COL_MSG_ID, $COL_MSG_CIPHER_TEXT, $COL_MSG_CIPHER_CONTEXT FROM $TABLE_MESSAGES " +
+                "WHERE $COL_MSG_CIPHER_CHAT_ID = ? AND $COL_MSG_CIPHER_TEXT IS NOT NULL " +
+                "ORDER BY $COL_MSG_ID DESC LIMIT 1",
+            arrayOf(chatIdentifier)
+        )
+        return cursor.use {
+            if (it.moveToFirst()) PendingDecryption(it.getLong(0), it.getString(1), it.getString(2) ?: "") else null
+        }
+    }
+
+    fun resolvePendingDecryption(rowId: Long, plainText: String) =
+        resolvePendingDecryptions(listOf(rowId to plainText))
+
+    /** Batch form of [resolvePendingDecryption]: one transaction per recovery batch. */
+    fun resolvePendingDecryptions(resolved: List<Pair<Long, String>>) {
+        if (resolved.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for ((rowId, plainText) in resolved) {
+                val values = ContentValues().apply {
+                    put(COL_MSG_CONTENT, plainText)
+                    putNull(COL_MSG_CIPHER_TEXT)
+                    putNull(COL_MSG_CIPHER_CHAT_ID)
+                    putNull(COL_MSG_CIPHER_CONTEXT)
+                }
+                db.update(TABLE_MESSAGES, values, "$COL_MSG_ID = ?", arrayOf(rowId.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     // Update message status by packetId
@@ -1421,7 +1586,8 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         advertisedName: String = "",
         protocolVersion: Int = 1,
         loraSf: Int = 0,
-        region: Int = -1
+        region: Int = -1,
+        gps: TelemetryGps = TelemetryGps()
     ) {
         if (nodeId == 0L) return
         val db = this.writableDatabase
@@ -1494,6 +1660,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             if (region >= 0) {
                 put(COL_NODE_REGION, region)
             }
+            // Authoritative per packet, like position precision: state 0 from
+            // older firmware must replace a stale snapshot, not keep it.
+            put(COL_NODE_GPS_STATE, gps.state)
+            put(COL_NODE_POSITION_SOURCE, gps.positionSource)
+            put(COL_NODE_GPS_SATS_USED, gps.satellitesUsed)
+            put(COL_NODE_GPS_SATS_IN_VIEW, gps.satellitesInView)
+            put(COL_NODE_GPS_HDOP_X10, gps.hdopX10)
+            put(COL_NODE_GPS_FIX_AGE, gps.fixAgeSecs)
         }
 
         val rows = db.update(TABLE_NODES, values, "$COL_NODE_ID = ?", arrayOf(canonicalId.toString()))
@@ -1544,10 +1718,27 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                         val idx = cursor.getColumnIndex(COL_NODE_REGION)
                         if (idx >= 0 && !cursor.isNull(idx)) cursor.getInt(idx) else -1
                     },
+                    identityFingerprint = run {
+                        val idx = cursor.getColumnIndex(COL_NODE_IDENTITY_FP)
+                        if (idx >= 0 && !cursor.isNull(idx)) cursor.getString(idx) else ""
+                    },
+                    identityState = run {
+                        val idx = cursor.getColumnIndex(COL_NODE_IDENTITY_STATE)
+                        if (idx >= 0 && !cursor.isNull(idx)) cursor.getString(idx) else ""
+                    },
+                    identityEpoch = cursor.intOrZero(COL_NODE_IDENTITY_EPOCH),
                     lastPositionAt = run {
                         val idx = cursor.getColumnIndex(COL_NODE_LAST_POSITION)
                         if (idx >= 0 && !cursor.isNull(idx)) cursor.getLong(idx) else 0L
-                    }
+                    },
+                    gps = TelemetryGps(
+                        state = cursor.intOrZero(COL_NODE_GPS_STATE),
+                        positionSource = cursor.intOrZero(COL_NODE_POSITION_SOURCE),
+                        satellitesUsed = cursor.intOrZero(COL_NODE_GPS_SATS_USED),
+                        satellitesInView = cursor.intOrZero(COL_NODE_GPS_SATS_IN_VIEW),
+                        hdopX10 = cursor.intOrZero(COL_NODE_GPS_HDOP_X10),
+                        fixAgeSecs = cursor.intOrZero(COL_NODE_GPS_FIX_AGE)
+                    )
                 ))
             } while (cursor.moveToNext())
         }
@@ -1760,11 +1951,33 @@ data class MeshNode(
     val protocolVersion: Int = 1,
     /** Last advertised SF from telemetry; 0 = unknown / older firmware. */
     val loraSf: Int = 0,
+    /** Fingerprint of this node's signing key, as our radio verified it. */
+    val identityFingerprint: String = "",
+    /** NodeIdentityPolicy.State name; empty means no announcement heard yet. */
+    val identityState: String = "",
+    val identityEpoch: Int = 0,
     /** Last advertised region; -1 = unknown, 0 = US915, 1 = EU868. */
     val region: Int = -1,
     /** Epoch ms of last valid GPS/fixed position from telemetry; 0 = never. */
-    val lastPositionAt: Long = 0L
+    val lastPositionAt: Long = 0L,
+    /** GNSS snapshot from the most recent telemetry; all zero for older firmware. */
+    val gps: TelemetryGps = TelemetryGps()
 )
+
+/** Telemetry GNSS fields (see Telemetry.gps_state in mesh.proto). */
+data class TelemetryGps(
+    val state: Int = 0,
+    val positionSource: Int = 0,
+    val satellitesUsed: Int = 0,
+    val satellitesInView: Int = 0,
+    val hdopX10: Int = 0,
+    val fixAgeSecs: Int = 0
+)
+
+private fun android.database.Cursor.intOrZero(column: String): Int {
+    val index = getColumnIndex(column)
+    return if (index >= 0 && !isNull(index)) getInt(index) else 0
+}
 
 data class TelemetrySample(
     val timestamp: Long,
@@ -1791,4 +2004,17 @@ data class RangeTestLog(
     val gpsAccuracyM: Float? = null,
     // timeout | ble_send_fail | auth_blocked | test_stopped | null on success
     val failureReason: String? = null
+)
+
+/** Ciphertext stored with an inbound message that could not be decrypted on arrival. */
+data class PendingCipher(
+    val cipherText: String,
+    val chatIdentifier: String,
+    val cryptoContext: String
+)
+
+data class PendingDecryption(
+    val rowId: Long,
+    val cipherText: String,
+    val cryptoContext: String
 )
