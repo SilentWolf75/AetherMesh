@@ -133,7 +133,7 @@ class OutboundDeliveryTest {
         val id = message()
         now += DeliveryRetryController.COOLDOWN_MS
         assertTrue(controller().retry(id))
-        assertEquals(0, db.markTimedOutPendingMessages(now - 45_000))
+        assertEquals(0, db.markTimedOutPendingMessages(MeshReplyPolicy.ackCutoff(now)))
         assertEquals(1, db.markTimedOutPendingMessages(now))
     }
 
@@ -151,6 +151,6 @@ class OutboundDeliveryTest {
         store = OutboundDeliveryStore(db)
         assertEquals("preserved", db.getAllMessages().single().content)
         assertTrue(store.candidates(20, 10, now).isEmpty())
-        assertEquals(23, db.readableDatabase.version)
+        assertEquals(26, db.readableDatabase.version)
     }
 }

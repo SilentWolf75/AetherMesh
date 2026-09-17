@@ -4,12 +4,16 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.silentwolf75.aethermesh.ble.BleConnectionManager
+import com.silentwolf75.aethermesh.ble.DfuSessionPolicy
+import com.silentwolf75.aethermesh.ble.DfuZipPolicy
+import com.silentwolf75.aethermesh.ble.OtaStartDecision
+import com.silentwolf75.aethermesh.ble.OtaStartPolicy
+import com.silentwolf75.aethermesh.ble.OtaTransferPolicy
+import com.silentwolf75.aethermesh.ble.OtaVerifyDecision
+import com.silentwolf75.aethermesh.ble.OtaVerifyPolicy
 import com.silentwolf75.aethermesh.proto.MeshPacket
-import com.silentwolf75.aethermesh.proto.TextMessage
 import com.silentwolf75.aethermesh.proto.Telemetry
 import com.silentwolf75.aethermesh.proto.Ack
-import com.silentwolf75.aethermesh.proto.DeliveryStatus
-import com.silentwolf75.aethermesh.proto.TraceRoute
 import com.silentwolf75.aethermesh.proto.RangeTestControl
 import com.silentwolf75.aethermesh.proto.NodeConfig
 import kotlinx.coroutines.CoroutineScope
@@ -26,9 +30,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
-import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
 
 data class RouteHopInfo(
     val targetId: Long,
@@ -45,79 +46,11 @@ enum class SendMessageResult {
     EncryptFailed
 }
 
-data class MeshDiagnosticsSnapshot(
-    val timestamp: Long = System.currentTimeMillis(),
-    val txPackets: Long = 0,
-    val txFailures: Long = 0,
-    val rxPackets: Long = 0,
-    val relayedPackets: Long = 0,
-    val retries: Long = 0,
-    val ackedPackets: Long = 0,
-    val ackTimeouts: Long = 0,
-    val duplicatePackets: Long = 0,
-    val cadBusyEvents: Long = 0,
-    val queueDrops: Long = 0,
-    val routeChanges: Long = 0,
-    val activeRoutes: Int = 0,
-    val rebroadcastQueueDepth: Int = 0,
-    val pendingAckDepth: Int = 0,
-    val airtimeMs: Long = 0,
-    val uptimeSeconds: Long = 0,
-    val protocolVersion: Int = 1,
-    val rangePingsRx: Long = 0,
-    val rangePongsQueued: Long = 0,
-    val rangePongsSent: Long = 0,
-    val rangePongTxFailures: Long = 0,
-    val quietMode: Boolean = false,
-    val directedRelays: Long = 0,
-    val suppressRelays: Long = 0,
-    val floodUnicasts: Long = 0,
-    val rreqSent: Long = 0,
-    val earlyRepairs: Long = 0
-)
-
-data class TraceHop(
-    val nodeId: Long,
-    val rssi: Int,
-    val snr: Float
-)
-
-data class TraceRouteState(
-    val visible: Boolean = false,
-    val showDialog: Boolean = false,
-    val active: Boolean = false,
-    val targetId: Long = 0L,
-    val traceId: Int = 0,
-    val forward: List<TraceHop> = emptyList(),
-    val returning: List<TraceHop> = emptyList(),
-    val forwardTruncated: Boolean = false,
-    val returnTruncated: Boolean = false,
-    val error: String? = null,
-    val startedAtMs: Long = 0L,
-    val finishedAtMs: Long = 0L
-) {
-    val durationSeconds: Float?
-        get() {
-            if (startedAtMs <= 0L || finishedAtMs < startedAtMs) return null
-            return (finishedAtMs - startedAtMs) / 1000f
-        }
-}
-
 class AetherMeshRepository(private val context: Context) {
 
     companion object {
         private const val TAG = "MeshRepository"
-        const val DEFAULT_CHANNEL = "General"
-        private const val MAX_TEXT_CONTENT_LENGTH = 127
-        // Encrypted payloads grow: base64(12B IV + plaintext + 16B GCM tag) must
-        // fit the proto's 168-byte content field -> plaintext capped lower.
-        // v2 wire overhead: salt(16) + IV(12) + GCM tag(16), then base64 and "v2:".
-        // 76 plaintext bytes keeps the encoded protobuf string below its 168B cap.
-        private const val MAX_ENCRYPTED_CONTENT_LENGTH = 76
-        private const val MAX_CHANNEL_LENGTH = 31
-        private const val MESSAGE_ACK_TIMEOUT_MS = 45_000L
-        private const val RANGE_PING_TIMEOUT_MS = 15_000L
-        private const val TRACE_ROUTE_TIMEOUT_MS = 30_000L
+        const val DEFAULT_CHANNEL = IncomingChatPolicy.DEFAULT_CHANNEL
     }
 
     private val securePrefs = SecurePreferences.open(context)
@@ -133,7 +66,28 @@ class AetherMeshRepository(private val context: Context) {
             send = { bleManager.sendPacket(it) }
         )
     }
-    private val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+    private var trustedControlNodeId = 0L
+    private var privacySupported: Boolean? = null
+    private var reportedPrivacy: ChannelPrivacy? = null
+    private var privacySyncJob: Job? = null
+    private val _channelPrivacyStatus = MutableStateFlow(ChannelPrivacyStatus.DISCONNECTED)
+    val channelPrivacyStatus: StateFlow<ChannelPrivacyStatus> = _channelPrivacyStatus.asStateFlow()
+    private val otaInbox = OtaStatusInbox()
+    private val esp32OtaSender = Esp32OtaSender(
+        inbox = otaInbox,
+        send = { bytes, timeout, withResponse ->
+            bleManager.sendPacket(
+                bytes,
+                timeoutMs = timeout,
+                withResponse = withResponse,
+                otaStream = true
+            )
+        },
+        negotiatedMtu = { bleManager.negotiatedMtu },
+        isConnected = { bleManager.isConnected }
+    )
+    private val pendingRangePings = RangeTestPendingStore()
+    private val prefs = context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
 
     fun appPrefs(): android.content.SharedPreferences = prefs
 
@@ -246,39 +200,17 @@ class AetherMeshRepository(private val context: Context) {
     val rangeTestLogs: StateFlow<List<RangeTestLog>> = _rangeTestLogs.asStateFlow()
 
     private var rangeTestTargetId: Long = 0L
+    private var rangeTestSf: Int = NodeSettingsPrefs.DEFAULT_SF
     val activeRangeTestTargetId: Long
         get() = rangeTestTargetId
     /** Wall-clock when the current (or last) range-test session started; 0 if never. */
     private val _rangeTestSessionStartMs = MutableStateFlow(0L)
     val rangeTestSessionStartMs: StateFlow<Long> = _rangeTestSessionStartMs.asStateFlow()
     private var rangeTestRxBaseline: Long = -1L
-    private data class RangeTestPosition(
-        val latitude: Double,
-        val longitude: Double,
-        val speedMps: Float?,
-        val gpsAccuracyM: Float?
-    )
-    private data class PendingRangePing(
-        val targetId: Long,
-        val sentAtMs: Long,
-        val position: RangeTestPosition
-    )
-    private val pendingRangePings = java.util.concurrent.ConcurrentHashMap<Int, PendingRangePing>()
     private var rangeTestJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default + Job())
 
     // --- BLE firmware update (OTA) state ---
-    data class OtaState(
-        val active: Boolean = false,
-        val progress: Int = 0,          // 0-100
-        val status: String = "",
-        val error: Boolean = false,
-        val done: Boolean = false,
-        /** Catalog / package label remembered for success + post-reconnect verify. */
-        val expectedVersion: String = "",
-        /** True when transfer finished but telemetry still matches pre-flash FW. */
-        val suspectRollback: Boolean = false
-    )
     private val _otaState = MutableStateFlow(OtaState())
     val otaState: StateFlow<OtaState> = _otaState.asStateFlow()
 
@@ -287,10 +219,6 @@ class AetherMeshRepository(private val context: Context) {
      * confidently show a possibly-stale cached firmware string until a fresh
      * Telemetry.firmware_version arrives (firmware already loopbacks post-auth).
      */
-    data class FirmwareFreshness(
-        val awaitingFreshTelemetry: Boolean = false,
-        val connectedNodeId: Long = 0L
-    )
     private val _firmwareFreshness = MutableStateFlow(FirmwareFreshness())
     val firmwareFreshness: StateFlow<FirmwareFreshness> = _firmwareFreshness.asStateFlow()
 
@@ -314,22 +242,42 @@ class AetherMeshRepository(private val context: Context) {
     val diagnosticLogs: StateFlow<List<String>> = _diagnosticLogs.asStateFlow()
 
     fun appendDiagnostic(message: String) {
-        val line = "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())} $message"
+        val next: List<String>
         synchronized(diagnosticRing) {
-            if (diagnosticRing.size >= 60) diagnosticRing.removeFirst()
-            diagnosticRing.addLast(line)
-            _diagnosticLogs.value = diagnosticRing.toList()
+            next = DiagnosticLogPolicy.nextRing(
+                diagnosticRing,
+                message,
+                System.currentTimeMillis()
+            )
+            diagnosticRing.clear()
+            diagnosticRing.addAll(next)
+            _diagnosticLogs.value = next
         }
         Log.d(TAG, message)
     }
-    private val otaStatusChannel =
-        kotlinx.coroutines.channels.Channel<com.silentwolf75.aethermesh.proto.OtaStatus>(kotlinx.coroutines.channels.Channel.BUFFERED)
     private var otaJob: Job? = null
 
     // Single thread for the heavy DB reads in refreshData: keeps queries off the
     // main thread (jank/ANR with a large history) while preserving their order.
     private val dbDispatcher =
         java.util.concurrent.Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+
+    // Recovers messages stored before their key was saved. Decrypts on its own
+    // worker so a large backlog cannot stall incoming messages or refreshes.
+    private val decryptionRecovery = PendingDecryptionRecovery(
+        scope = repositoryScope,
+        dbDispatcher = dbDispatcher,
+        workDispatcher = Dispatchers.Default.limitedParallelism(1),
+        db = dbHelper,
+        journal = PrefsRecoveryJournal(context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)),
+        keyFor = { getChatKey(it) },
+        onBatchRecovered = { _, _ -> refreshData() },
+        // Chat identifiers stay out of diagnostics, which users export and share.
+        onError = { _, error ->
+            Log.e(TAG, "Decryption recovery failed", error)
+            appendDiagnostic("Message recovery failed: ${error.javaClass.simpleName}")
+        }
+    )
 
     // Fresh phone GPS for range test rows (position, speed, accuracy). The map
     // tab's overlay only updates location while that tab is visible, so the
@@ -393,6 +341,9 @@ class AetherMeshRepository(private val context: Context) {
                 Log.e(TAG, "Error purging invalid ID records: ${e.message}")
             }
         }
+        // Finish decryption recovery cut short when the app last closed, and pick
+        // up stored messages whose key arrived some other way (e.g. migration).
+        decryptionRecovery.resumeAtStartup(::logDecryptionRecovery)
 
 
         // Load initial data
@@ -403,6 +354,11 @@ class AetherMeshRepository(private val context: Context) {
         bleManager.onConnectionStateChanged = { connected ->
             Log.d(TAG, "BLE Connection changed: $connected")
             _isBleConnected.value = connected
+            trustedControlNodeId = 0L
+            privacySyncJob?.cancel()
+            privacySupported = null
+            reportedPrivacy = null
+            _channelPrivacyStatus.value = if (connected) ChannelPrivacyStatus.CHECKING else ChannelPrivacyStatus.DISCONNECTED
             if (connected) {
                 // New link: never inherit a pre-reboot "authenticated" flag.
                 authSessionGeneration += 1
@@ -439,11 +395,9 @@ class AetherMeshRepository(private val context: Context) {
                 // their own timeouts after BLE drops (device switch or link loss).
                 if (_traceRouteState.value.active) {
                     traceRouteJob?.cancel()
-                    _traceRouteState.value = _traceRouteState.value.copy(
-                        active = false,
-                        showDialog = true,
-                        error = "Disconnected",
-                        finishedAtMs = System.currentTimeMillis()
+                    _traceRouteState.value = TraceRoutePolicy.disconnected(
+                        _traceRouteState.value,
+                        System.currentTimeMillis()
                     )
                 }
                 refreshData()
@@ -468,54 +422,16 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    private fun normalizeMac(macAddress: String): String = macAddress.trim().uppercase()
-
-    private fun passwordPrefKeyForMac(macAddress: String): String =
-        "node_pwd_${normalizeMac(macAddress)}"
-
-    private fun passwordPrefKeyForNodeId(nodeId: Long): String =
-        "node_pwd_id_$nodeId"
-
-    private fun lookupSavedPassword(macAddress: String): String? {
-        val byMac = securePrefs.getString(passwordPrefKeyForMac(macAddress), null)
-        if (!byMac.isNullOrEmpty()) return byMac
-        // Legacy lowercase keys from earlier builds
-        val legacy = securePrefs.getString("node_pwd_$macAddress", null)
-        if (!legacy.isNullOrEmpty()) return legacy
-        val nodeId = bleManager.connectedNodeId
-        if (nodeId != 0L) {
-            val byId = securePrefs.getString(passwordPrefKeyForNodeId(nodeId), null)
-            if (!byId.isNullOrEmpty()) return byId
-        }
-        return null
-    }
+    private fun lookupSavedPassword(macAddress: String): String? =
+        SavedPasswordPolicy.lookup(securePrefs, macAddress, bleManager.connectedNodeId)
 
     private fun saveNodePassword(macAddress: String?, nodeId: Long, password: String) {
-        if (password.isEmpty()) return
-        val editor = securePrefs.edit()
-        if (!macAddress.isNullOrBlank()) {
-            editor.putString(passwordPrefKeyForMac(macAddress), password)
-        }
-        if (nodeId != 0L) {
-            editor.putString(passwordPrefKeyForNodeId(nodeId), password)
-        }
-        editor.apply()
-        // The v3 control key is derived from this password; drop the memoized one.
+        if (!SavedPasswordPolicy.save(securePrefs, macAddress, nodeId, password)) return
         ControlKeyDerivation.clearCache()
     }
 
     private fun clearSavedPassword(macAddress: String?, nodeId: Long = 0L) {
-        val editor = securePrefs.edit()
-        if (!macAddress.isNullOrBlank()) {
-            val mac = normalizeMac(macAddress)
-            editor.remove(passwordPrefKeyForMac(mac))
-            editor.remove("node_pwd_$macAddress")
-            editor.remove("node_pwd_$mac")
-        }
-        if (nodeId != 0L) {
-            editor.remove(passwordPrefKeyForNodeId(nodeId))
-        }
-        editor.apply()
+        SavedPasswordPolicy.clear(securePrefs, macAddress, nodeId)
         ControlKeyDerivation.clearCache()
     }
 
@@ -525,15 +441,15 @@ class AetherMeshRepository(private val context: Context) {
             // State machine: GATT ready (notify armed) → AuthRequest retries →
             // AuthResponse(success). Never treat writeCharacteristic alone as unlock.
             val postSettings = expectPostSettingsReconnect
-            val initialDelay = if (postSettings) 700L else 400L
-            delay(initialDelay)
+            delay(AutoAuthPolicy.initialDelayMs(postSettings))
             if (!isActive || session != authSessionGeneration) return@launch
-            if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
+            if (AutoAuthPolicy.shouldStop(bleManager.isConnected, _isDeviceAuthenticated.value)) return@launch
 
-            // Wait briefly for TX/RX handles after finalizeConnection.
             var readyWait = 0
-            while (isActive && readyWait < 12 && bleManager.isConnected && !bleManager.isGattReady) {
-                delay(100)
+            while (isActive && readyWait < AutoAuthPolicy.GATT_READY_POLLS &&
+                bleManager.isConnected && !bleManager.isGattReady
+            ) {
+                delay(AutoAuthPolicy.GATT_READY_POLL_MS)
                 readyWait++
             }
             if (!isActive || session != authSessionGeneration) return@launch
@@ -544,36 +460,26 @@ class AetherMeshRepository(private val context: Context) {
 
             val savedPass = lookupSavedPassword(macAddress)
             val password = savedPass.orEmpty()
-            val attempts = when {
-                password.isNotEmpty() && postSettings -> 8
-                password.isNotEmpty() -> 6
-                else -> 3
-            }
+            val attempts = AutoAuthPolicy.attemptCount(password.isNotEmpty(), postSettings)
             Log.d(
                 TAG,
                 if (password.isNotEmpty()) {
-                    "Found saved password for ${normalizeMac(macAddress)}. Auto-auth up to $attempts attempts (postSettings=$postSettings)..."
+                    "Found saved password for ${SavedPasswordPolicy.normalizeMac(macAddress)}. Auto-auth up to $attempts attempts (postSettings=$postSettings)..."
                 } else {
-                    "No saved password for ${normalizeMac(macAddress)}. Querying auth status..."
+                    "No saved password for ${SavedPasswordPolicy.normalizeMac(macAddress)}. Querying auth status..."
                 }
             )
 
             for (attempt in 1..attempts) {
                 if (!isActive || session != authSessionGeneration) return@launch
-                if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
+                if (AutoAuthPolicy.shouldStop(bleManager.isConnected, _isDeviceAuthenticated.value)) return@launch
                 if (!bleManager.isGattReady) {
-                    delay(200)
+                    delay(AutoAuthPolicy.GATT_GAP_MS)
                     continue
                 }
                 Log.d(TAG, "Auto-auth attempt $attempt/$attempts")
                 val wrote = sendAuthRequest(password)
-                // Wait for AuthResponse(success); longer after settings reboot.
-                val waitMs = when {
-                    !wrote -> 500L
-                    postSettings -> 1_200L
-                    else -> 900L
-                }
-                delay(waitMs)
+                delay(AutoAuthPolicy.responseWaitMs(wrote, postSettings))
                 if (_isDeviceAuthenticated.value) {
                     expectPostSettingsReconnect = false
                     return@launch
@@ -581,92 +487,80 @@ class AetherMeshRepository(private val context: Context) {
             }
 
             if (!isActive || session != authSessionGeneration) return@launch
-            if (bleManager.isConnected && !_isDeviceAuthenticated.value) {
-                // Zombie GATT after MCU reboot: Android still "connected" but the
-                // node never saw AuthRequest / never notified AuthResponse.
-                if (postSettings && !postReconnectAuthRefreshUsed) {
+            when (
+                AutoAuthPolicy.onExhausted(
+                    bleManager.isConnected,
+                    _isDeviceAuthenticated.value,
+                    postSettings,
+                    postReconnectAuthRefreshUsed
+                )
+            ) {
+                AutoAuthExhausted.ForceRefresh -> {
                     postReconnectAuthRefreshUsed = true
                     Log.w(TAG, "Post-settings auto-auth failed; forcing GATT refresh")
-                    bleManager.forceRefreshConnection(1_000L)
-                    return@launch
+                    bleManager.forceRefreshConnection(AutoAuthPolicy.FORCE_REFRESH_MS)
                 }
-                Log.w(TAG, "Auto-auth did not complete; prompting unlock UI")
-                expectPostSettingsReconnect = false
-                if (_authenticationRequired.value == null) {
-                    _authenticationRequired.value = true
+                AutoAuthExhausted.PromptUnlock -> {
+                    Log.w(TAG, "Auto-auth did not complete; prompting unlock UI")
+                    expectPostSettingsReconnect = false
+                    if (AutoAuthPolicy.shouldShowUnlockPrompt(_authenticationRequired.value)) {
+                        _authenticationRequired.value = true
+                    }
                 }
+                AutoAuthExhausted.Idle -> {}
             }
         }
     }
 
     /** Resubmit saved password when the node challenges after reboot/reconnect. */
     private fun resubmitSavedPasswordOnChallenge() {
-        if (!bleManager.isConnected || !bleManager.isGattReady) return
         val mac = bleManager.getConnectedDeviceAddress() ?: return
-        val saved = lookupSavedPassword(mac)
-        if (saved.isNullOrEmpty()) return
+        val password = lookupSavedPassword(mac) ?: return
         val now = System.currentTimeMillis()
-        if (now - lastAuthChallengeResubmitMs < 1_200L) return
+        if (!AutoAuthPolicy.shouldResubmitChallenge(
+                now,
+                lastAuthChallengeResubmitMs,
+                bleManager.isConnected,
+                bleManager.isGattReady,
+                password.isNotEmpty()
+            )
+        ) return
         lastAuthChallengeResubmitMs = now
         val session = authSessionGeneration
         Log.d(TAG, "Auth challenge received; resubmitting saved password")
         repositoryScope.launch {
-            delay(120)
+            delay(AutoAuthPolicy.CHALLENGE_DELAY_MS)
             if (session != authSessionGeneration) return@launch
-            if (!bleManager.isConnected || _isDeviceAuthenticated.value) return@launch
-            sendAuthRequest(saved)
+            if (AutoAuthPolicy.shouldStop(bleManager.isConnected, _isDeviceAuthenticated.value)) return@launch
+            sendAuthRequest(password)
         }
     }
 
     /** Force the unlock dialog when connected but auth prompt never appeared. */
     fun promptDeviceAuthentication() {
         if (_isDeviceAuthenticated.value) return
-        if (_authenticationRequired.value == null) {
+        if (AutoAuthPolicy.shouldShowUnlockPrompt(_authenticationRequired.value)) {
             _authenticationRequired.value = true
         }
     }
 
     fun sendAuthRequest(password: String): Boolean {
         if (!bleManager.isConnected || !bleManager.isGattReady) return false
-        val localNodeId = bleManager.connectedNodeId
-        
-        val authBuilder = com.silentwolf75.aethermesh.proto.AuthRequest.newBuilder()
-            .setPassword(password)
-            .setIsChangePassword(false)
-            
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(0) // Local auth
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(1)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setAuthRequest(authBuilder)
-            .build()
-            
+        val packet = AuthRequestApply.buildUnlock(
+            bleManager.connectedNodeId, PacketIdGenerator.next(), password
+        )
         pendingAuthPassword = password
         return bleManager.sendPacket(packet.toByteArray())
     }
 
     fun changeDevicePassword(currentPassword: String, newPassword: String): Boolean {
         if (!bleManager.isConnected) return false
-        val localNodeId = bleManager.connectedNodeId
-        
-        val authBuilder = com.silentwolf75.aethermesh.proto.AuthRequest.newBuilder()
-            .setPassword(currentPassword)
-            .setIsChangePassword(true)
-            .setNewPassword(newPassword)
-            
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(0)
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(1)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setAuthRequest(authBuilder)
-            .build()
-            
+        val packet = AuthRequestApply.buildChangePassword(
+            bleManager.connectedNodeId,
+            PacketIdGenerator.next(),
+            currentPassword,
+            newPassword
+        )
         pendingPasswordChange = true
         pendingAuthPassword = newPassword
         val sent = bleManager.sendPacket(packet.toByteArray())
@@ -677,125 +571,155 @@ class AetherMeshRepository(private val context: Context) {
         return sent
     }
 
-    private fun handleMeshPacket(packet: MeshPacket) {
-        val senderId = packet.senderId.toLong() and 0xFFFFFFFFL
-        val recipientId = packet.recipientId.toLong() and 0xFFFFFFFFL
-        val localNodeId = bleManager.connectedNodeId
-        
-        // Handle AuthResponse packet first
-        if (packet.payloadCase == MeshPacket.PayloadCase.AUTH_RESPONSE) {
-            val authResp = packet.authResponse
-            Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}")
-
-            // Password-change replies must not go through unlock/lock handling:
-            // a wrong current password would otherwise clear the session and wipe
-            // the remembered password while the firmware stays authenticated.
-            if (pendingPasswordChange) {
+    /**
+     * Password-change replies must not go through unlock/lock handling:
+     * a wrong current password would otherwise clear the session and wipe
+     * the remembered password while the firmware stays authenticated.
+     * Lock challenges always drop local auth so SENT bubbles cannot sit
+     * while the MCU drops unauthenticated text.
+     */
+    private fun applyAuthResponse(
+        senderId: Long,
+        success: Boolean,
+        passwordNotSet: Boolean,
+        message: String
+    ) {
+        val action = AuthResponsePolicy.decide(
+            pendingPasswordChange = pendingPasswordChange,
+            success = success,
+            passwordNotSet = passwordNotSet,
+            message = message,
+            hasPendingPassword = !pendingAuthPassword.isNullOrEmpty(),
+            oldNodeId = bleManager.connectedNodeId,
+            senderId = senderId
+        )
+        when (action) {
+            is AuthResponseAction.PasswordChanged -> {
                 pendingPasswordChange = false
-                if (authResp.success) {
-                    val mac = bleManager.getConnectedDeviceAddress()
+                if (action.savePendingPassword) {
                     val passwordToSave = pendingAuthPassword
                     if (!passwordToSave.isNullOrEmpty()) {
-                        saveNodePassword(mac, senderId, passwordToSave)
+                        saveNodePassword(bleManager.getConnectedDeviceAddress(), senderId, passwordToSave)
                     }
-                    pendingAuthPassword = null
-                    _passwordChangeResult.tryEmit(true)
-                } else {
-                    pendingAuthPassword = null
-                    _passwordChangeResult.tryEmit(false)
                 }
-                return
+                pendingAuthPassword = null
+                _passwordChangeResult.tryEmit(action.success)
             }
-
-            if (authResp.success) {
-                val oldNodeId = bleManager.connectedNodeId
-                // Correct the connectedNodeId in bleManager with the actual hardware node ID from the node
+            is AuthResponseAction.Unlocked -> {
+                pendingPasswordChange = false
                 bleManager.connectedNodeId = senderId
-                
-                // Preserve the placeholder record while moving it to the authenticated
-                // 32-bit hardware identity. This retains user names and history.
-                if (oldNodeId != 0L && oldNodeId != senderId) {
-                    dbHelper.migrateNodeIdentity(oldNodeId, senderId)
+                trustedControlNodeId = senderId
+                if (action.migrateFromNodeId != 0L) {
+                    dbHelper.migrateNodeIdentity(action.migrateFromNodeId, senderId)
                     Log.d(TAG, "Migrated BLE placeholder ID to hardware ID 0x${senderId.toString(16).uppercase()}")
                 }
-                
                 _isDeviceAuthenticated.value = true
                 _authenticationRequired.value = null
                 _authFailureTick.value = 0
                 expectPostSettingsReconnect = false
                 ChatThreadPrefs.recordBleController(context, senderId)
-                
-                // Remember this node so reconnect unlocks without retyping.
-                val mac = bleManager.getConnectedDeviceAddress()
-                val passwordToSave = pendingAuthPassword
-                if (!passwordToSave.isNullOrEmpty()) {
-                    saveNodePassword(mac, senderId, passwordToSave)
+                if (action.savePendingPassword) {
+                    val passwordToSave = pendingAuthPassword
+                    if (!passwordToSave.isNullOrEmpty()) {
+                        saveNodePassword(bleManager.getConnectedDeviceAddress(), senderId, passwordToSave)
+                    }
                 }
                 pendingAuthPassword = null
-                
-                // Update local node in SQLite database
-                val nodePrefs = context.getSharedPreferences("node_settings_$senderId", Context.MODE_PRIVATE)
-                val savedName = nodePrefs.getString("node_name", "")?.takeIf { it.isNotBlank() }
-                if (savedName != null) {
-                    val savedShortName = nodePrefs.getString("node_short_name", "")?.takeIf { it.isNotBlank() }
-                        ?: savedName.replace("AetherMesh-", "").replace("Node ", "")
-                            .replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
-                            .ifEmpty { String.format("%04X", (senderId and 0xFFFFL).toInt()) }
-                    dbHelper.updateNodeNameAndShortName(senderId, savedName, savedShortName)
+                val nodePrefs = context.getSharedPreferences(NodeSettingsPrefs.prefsName(senderId), Context.MODE_PRIVATE)
+                NodeNamePolicy.pendingFromPrefs(
+                    nodePrefs.getString(NodeSettingsPrefs.KEY_NODE_NAME, null),
+                    nodePrefs.getString(NodeSettingsPrefs.KEY_NODE_SHORT, null),
+                    senderId
+                )?.let { pending ->
+                    dbHelper.updateNodeNameAndShortName(senderId, pending.longName, pending.shortName)
                     nodePrefs.edit()
-                        .remove("node_name")
-                        .remove("node_short_name")
+                        .remove(NodeSettingsPrefs.KEY_NODE_NAME)
+                        .remove(NodeSettingsPrefs.KEY_NODE_SHORT)
                         .apply()
                 }
-
-                // Firmware already pushes BLE telemetry loopback post-auth (1.3.0+).
-                // Mark Installed UI as checking until that packet (or later telemetry) arrives.
                 markAwaitingFirmwareTelemetry(senderId)
                 refreshData()
-            } else {
-                // Firmware emits AuthResponse(false, "Authentication required") on BLE
-                // connect and when non-auth traffic arrives while locked. Do not wipe a
-                // saved password — but ALWAYS clear local auth. The prior fix left
-                // isDeviceAuthenticated=true across challenges, so the composer allowed
-                // SENT bubbles while the MCU dropped every text as unauthenticated.
-                val msg = authResp.message.orEmpty()
+                // Config report usually follows unlock; kick sync so CHECKING
+                // resolves even if the report was already applied or is delayed.
+                syncChannelPrivacy()
+            }
+            is AuthResponseAction.Challenge -> {
+                // Drop any in-flight password-change wait so a later unlock is
+                // not treated as PasswordChanged(success).
+                pendingPasswordChange = false
+                pendingAuthPassword = null
                 val wasAuthenticated = _isDeviceAuthenticated.value
                 _isDeviceAuthenticated.value = false
+                privacySyncJob?.cancel()
+                privacySupported = null
+                reportedPrivacy = null
+                _channelPrivacyStatus.value = ChannelPrivacyStatus.DISCONNECTED
                 _needsRegionSetup.value = false
-
-                if (msg.contains("Authentication required", ignoreCase = true) ||
-                    msg.contains("Password required", ignoreCase = true)
-                ) {
-                    if (authResp.passwordNotSet) {
-                        _authenticationRequired.value = false // Needs initial password
-                    } else {
-                        if (wasAuthenticated) {
-                            Log.w(TAG, "Node re-challenged after local auth; session desync cleared")
-                        }
-                        resubmitSavedPasswordOnChallenge()
-                    }
-                    return
-                }
-
-                if (authResp.passwordNotSet) {
-                    _authenticationRequired.value = false // Needs to set initial password
+                if (action.needsInitialPassword) {
+                    _authenticationRequired.value = false
                 } else {
-                    _authenticationRequired.value = true // Incorrect password / prompt user
-                    // Only forget a stored password when the node says it was wrong.
-                    if (msg.contains("Incorrect", ignoreCase = true)) {
-                        val mac = bleManager.getConnectedDeviceAddress()
-                        clearSavedPassword(mac, senderId)
+                    if (wasAuthenticated) {
+                        Log.w(TAG, "Node re-challenged after local auth; session desync cleared")
+                    }
+                    resubmitSavedPasswordOnChallenge()
+                }
+            }
+            is AuthResponseAction.Rejected -> {
+                _isDeviceAuthenticated.value = false
+                privacySyncJob?.cancel()
+                privacySupported = null
+                reportedPrivacy = null
+                _channelPrivacyStatus.value = ChannelPrivacyStatus.DISCONNECTED
+                _needsRegionSetup.value = false
+                if (action.needsInitialPassword) {
+                    _authenticationRequired.value = false
+                } else {
+                    _authenticationRequired.value = true
+                    if (action.forgetSavedPassword) {
+                        clearSavedPassword(bleManager.getConnectedDeviceAddress(), senderId)
                     }
                     _authFailureTick.value = _authFailureTick.value + 1
                 }
                 pendingAuthPassword = null
             }
+        }
+    }
+
+    private fun handleMeshPacket(packet: MeshPacket) {
+        if (!IncomingPacketPolicy.acceptControl(packet, trustedControlNodeId, _isDeviceAuthenticated.value)) {
+            Log.w(TAG, "Ignoring control response outside the authenticated local session")
+            return
+        }
+        val senderId = IncomingPacketPolicy.unsignedNodeId(packet.senderId)
+        val recipientId = IncomingPacketPolicy.unsignedNodeId(packet.recipientId)
+        val localNodeId = bleManager.connectedNodeId
+
+        // Handle AuthResponse packet first
+        if (packet.payloadCase == MeshPacket.PayloadCase.AUTH_RESPONSE) {
+            val authResp = packet.authResponse
+            Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}")
+            applyAuthResponse(
+                senderId = senderId,
+                success = authResp.success,
+                passwordNotSet = authResp.passwordNotSet,
+                message = authResp.message.orEmpty()
+            )
             return
         }
 
         // Device → phone config snapshot (after auth / remote report). Hydrate
         // local prefs and notify Remote Config UI when it is a live read-back.
         if (packet.payloadCase == MeshPacket.PayloadCase.CONFIG && packet.config.reportOnly) {
+            if (recipientId == 0L && senderId == trustedControlNodeId) {
+                privacySupported = packet.config.positionPrivacySupported
+                reportedPrivacy = ChannelPrivacy.fromReport(packet.config)
+                if (reportedPrivacy == ChannelPrivacy.fromChannels(dbHelper.getChannelsList())) {
+                    privacySyncJob?.cancel()
+                    syncChannelPrivacy()
+                } else if (privacySyncJob?.isActive != true) {
+                    syncChannelPrivacy()
+                }
+            }
             hydrateNodeSettingsFromDevice(senderId, packet.config)
             _remoteConfigReport.tryEmit(RemoteConfigReport(senderId, packet.config))
             return
@@ -817,11 +741,12 @@ class AetherMeshRepository(private val context: Context) {
 
         if (packet.payloadCase == MeshPacket.PayloadCase.DELIVERY_STATUS) {
             val delivery = packet.deliveryStatus
-            when (delivery.state) {
-                DeliveryStatus.State.HEARD -> {
-                    val fromId = delivery.fromNodeId.toLong() and 0xFFFFFFFFL
-                    val count = if (fromId != 0L) {
-                        dbHelper.recordChannelHearing(delivery.packetId, fromId, delivery.heardCount)
+            val fromId = DeliveryStatusPolicy.fromNodeId(delivery.fromNodeId)
+            when (val action = DeliveryStatusPolicy.decide(delivery.state, fromId)) {
+                DeliveryStatusAction.Ignore -> Unit
+                is DeliveryStatusAction.Heard -> {
+                    val count = if (action.recordHearer) {
+                        dbHelper.recordChannelHearing(delivery.packetId, action.fromNodeId, delivery.heardCount)
                     } else {
                         dbHelper.setMessageHeardCount(delivery.packetId, delivery.heardCount)
                         delivery.heardCount
@@ -829,29 +754,16 @@ class AetherMeshRepository(private val context: Context) {
                     Log.d(TAG, "Channel HEARD for packet ${delivery.packetId}: count=$count from=0x${fromId.toString(16)}")
                     refreshData()
                 }
-                DeliveryStatus.State.DELIVERED -> {
+                DeliveryStatusAction.DeliveredIfDirect -> {
                     if (!dbHelper.isChannelMessage(delivery.packetId)) {
-                        dbHelper.updateMessageStatus(delivery.packetId, "DELIVERED")
+                        dbHelper.updateMessageStatus(delivery.packetId, DeliveryStatusPolicy.DELIVERED)
                         refreshData()
                     }
                 }
-                DeliveryStatus.State.FAILED -> {
-                    dbHelper.updateMessageStatus(delivery.packetId, "FAILED")
+                is DeliveryStatusAction.SetStatus -> {
+                    dbHelper.updateMessageStatus(delivery.packetId, action.status)
                     refreshData()
                 }
-                DeliveryStatus.State.RETRYING -> {
-                    dbHelper.updateMessageStatus(delivery.packetId, "PENDING")
-                    refreshData()
-                }
-                DeliveryStatus.State.QUEUED, DeliveryStatus.State.STORED -> {
-                    dbHelper.updateMessageStatus(delivery.packetId, "QUEUED")
-                    refreshData()
-                }
-                DeliveryStatus.State.EXPIRED -> {
-                    dbHelper.updateMessageStatus(delivery.packetId, "EXPIRED")
-                    refreshData()
-                }
-                else -> Unit
             }
             Log.d(
                 TAG,
@@ -865,71 +777,37 @@ class AetherMeshRepository(private val context: Context) {
         // (recipient_id = 0), so they must be handled before the invalid-recipient
         // guard below - the same as AuthResponse and DeliveryStatus above.
         if (packet.payloadCase == MeshPacket.PayloadCase.OTA_STATUS) {
-            otaStatusChannel.trySend(packet.otaStatus)
+            if (_otaState.value.active) otaInbox.offer(packet.otaStatus)
             return
         }
 
         if (packet.payloadCase == MeshPacket.PayloadCase.DIAGNOSTICS) {
-            val value = packet.diagnostics
-            val snapshot = MeshDiagnosticsSnapshot(
-                txPackets = value.txPackets.toLong(),
-                txFailures = value.txFailures.toLong(),
-                rxPackets = value.rxPackets.toLong(),
-                relayedPackets = value.relayedPackets.toLong(),
-                retries = value.retries.toLong(),
-                ackedPackets = value.ackedPackets.toLong(),
-                ackTimeouts = value.ackTimeouts.toLong(),
-                duplicatePackets = value.duplicatePackets.toLong(),
-                cadBusyEvents = value.cadBusyEvents.toLong(),
-                queueDrops = value.queueDrops.toLong(),
-                routeChanges = value.routeChanges.toLong(),
-                activeRoutes = value.activeRoutes,
-                rebroadcastQueueDepth = value.rebroadcastQueueDepth,
-                pendingAckDepth = value.pendingAckDepth,
-                airtimeMs = value.airtimeMs.toLong(),
-                uptimeSeconds = value.uptimeSeconds.toLong(),
-                protocolVersion = value.protocolVersion,
-                rangePingsRx = value.rangePingsRx.toLong(),
-                rangePongsQueued = value.rangePongsQueued.toLong(),
-                rangePongsSent = value.rangePongsSent.toLong(),
-                rangePongTxFailures = value.rangePongTxFailures.toLong(),
-                quietMode = value.quietMode,
-                directedRelays = value.directedRelays.toLong(),
-                suppressRelays = value.suppressRelays.toLong(),
-                floodUnicasts = value.floodUnicasts.toLong(),
-                rreqSent = value.rreqSent.toLong(),
-                earlyRepairs = value.earlyRepairs.toLong()
-            )
+            val snapshot = IncomingDiagnosticsPolicy.fromProto(packet.diagnostics)
             dbHelper.insertMeshDiagnostics(snapshot)
             _meshDiagnostics.value = snapshot
             return
         }
 
         // Range-test PONGs are scored even if recipient_id is unexpectedly 0.
-        val isRangePong = packet.payloadCase == MeshPacket.PayloadCase.TEXT &&
-            packet.text.content.startsWith("PONG_")
-        if ((senderId == 0L || recipientId == 0L) && !isRangePong) {
+        val isRangePong = IncomingPacketPolicy.isRangePong(
+            packet.payloadCase == MeshPacket.PayloadCase.TEXT,
+            packet.text.content
+        )
+        if (IncomingPacketPolicy.shouldDropZeroIds(senderId, recipientId, isRangePong)) {
             Log.w(TAG, "Ignoring packet with invalid sender/recipient: sender=0x${senderId.toString(16)}, recipient=0x${recipientId.toString(16)}")
             return
         }
 
         Log.d(TAG, "Received mesh packet from 0x${senderId.toString(16).uppercase()}")
 
-        // Update routing diagnostics map. Only for frames that carry a real
-        // over-the-air reading (rxRssi != 0) - a relayed/loopback frame with
-        // rx_rssi 0 must not overwrite a node's known-good signal with a blank.
-        val prevHopId = packet.prevHopId.toLong() and 0xFFFFFFFFL
-        if (prevHopId != 0L && packet.rxRssi != 0f) {
-            val hopsCount = if (senderId == prevHopId) 1 else 2
+        IncomingPacketPolicy.observeRoute(
+            senderId = senderId,
+            prevHopId = IncomingPacketPolicy.unsignedNodeId(packet.prevHopId),
+            rxRssi = packet.rxRssi,
+            rxSnr = packet.rxSnr,
+            nowMs = System.currentTimeMillis()
+        )?.let { observation ->
             val currentMap = _observedRoutes.value.toMutableMap()
-            val observation = RouteHopInfo(
-                targetId = senderId,
-                nextHopId = prevHopId,
-                hops = hopsCount,
-                lastRssi = packet.rxRssi,
-                lastSnr = packet.rxSnr,
-                timestamp = System.currentTimeMillis()
-            )
             currentMap[senderId] = observation
             dbHelper.upsertRouteObservation(observation)
             _observedRoutes.value = currentMap
@@ -945,133 +823,112 @@ class AetherMeshRepository(private val context: Context) {
                 // Range-test control traffic never belongs in chat history.
                 // A PONG scores the outstanding ping (packet.rxRssi/Snr = how our
                 // node heard the PONG over the air).
-                if (contentReceived.startsWith("PONG_")) {
-                    // New direct-range replies are PONG_<id>_<target RSSI>_<target SNR x4>_D.
-                    // The shorter legacy PONG_<id> form remains accepted during firmware rollouts.
-                    val fields = contentReceived.removePrefix("PONG_").split('_')
-                    val pongId = fields.getOrNull(0)?.toIntOrNull()
-                    val targetRssi = fields.getOrNull(1)?.toFloatOrNull()
-                    val targetSnr = fields.getOrNull(2)?.toFloatOrNull()?.div(4f)
+                if (RangeTestPolicy.isPongContent(contentReceived)) {
+                    val parsed = RangeTestPolicy.parsePong(contentReceived)
+                    val pongId = parsed?.pingId
                     val pending = pongId?.let { pendingRangePings[it] }
-                    if (!_isRangeTestActive.value) {
-                        Log.d(TAG, "Ignoring PONG while range test inactive: $contentReceived")
-                        return
-                    }
-                    if (pongId == null || pending == null) {
-                        Log.w(
-                            TAG,
-                            "Range-test PONG not matched (id=$pongId pending=${pending != null}): $contentReceived " +
-                                "from 0x${senderId.toString(16)} outstanding=${pendingRangePings.keys}"
+                    when (
+                        val decision = RangeTestPolicy.decidePong(
+                            _isRangeTestActive.value, contentReceived, pending, senderId
                         )
-                        return
-                    }
-                    // Ping-id is authoritative. Sender may differ by 16-bit vs 32-bit form.
-                    if (!sameMeshNodeId(pending.targetId, senderId)) {
-                        Log.w(
-                            TAG,
-                            "PONG sender 0x${senderId.toString(16)} != target " +
-                                "0x${pending.targetId.toString(16)} for ping $pongId — scoring anyway"
-                        )
-                    }
-                    if (pendingRangePings.remove(pongId, pending)) {
-                        Log.d(TAG, "Direct range-test PONG matched ping $pongId")
-                        logRangeTestResult(
-                            pending = pending,
-                            success = true,
-                            rssi = packet.rxRssi,
-                            snr = packet.rxSnr,
-                            remoteRssi = targetRssi,
-                            remoteSnr = targetSnr
-                        )
+                    ) {
+                        RangeScoreDecision.IgnoreInactive -> {
+                            Log.d(TAG, "Ignoring PONG while range test inactive: $contentReceived")
+                        }
+                        RangeScoreDecision.Unmatched, RangeScoreDecision.Ignore -> {
+                            Log.w(
+                                TAG,
+                                "Range-test PONG not matched (id=$pongId pending=${pending != null}): $contentReceived " +
+                                    "from 0x${senderId.toString(16)} outstanding=${pendingRangePings.keys}"
+                            )
+                        }
+                        is RangeScoreDecision.Score -> {
+                            if (decision.senderMismatch) {
+                                Log.w(
+                                    TAG,
+                                    "PONG sender 0x${senderId.toString(16)} != target " +
+                                        "0x${decision.pending.targetId.toString(16)} for ping ${decision.packetId} — scoring anyway"
+                                )
+                            }
+                            if (pendingRangePings.remove(decision.packetId, decision.pending)) {
+                                Log.d(TAG, "Direct range-test PONG matched ping ${decision.packetId}")
+                                logRangeTestResult(
+                                    pending = decision.pending,
+                                    success = true,
+                                    rssi = packet.rxRssi,
+                                    snr = packet.rxSnr,
+                                    remoteRssi = decision.remoteRssi,
+                                    remoteSnr = decision.remoteSnr
+                                )
+                            }
+                        }
                     }
                     return
                 }
-                if (contentReceived.startsWith("PING_")) {
+                when (val kind = IncomingChatPolicy.classify(contentReceived, senderId, recipientId, targetChan, localNodeId)) {
+                    IncomingTextKind.IgnorePing,
+                    IncomingTextKind.IgnoreUnaddressed -> return
+                    is IncomingTextKind.Chat -> {
+                        // Packets arrive on the main looper. Decryption runs a
+                        // 120k-iteration PBKDF2 and storing touches SQLite, so
+                        // hand off to the single-threaded dbDispatcher, which
+                        // keeps arrival order and serializes the duplicate check.
+                        val packetId = packet.packetId
+                        repositoryScope.launch(dbDispatcher) {
+                            storeIncomingChat(
+                                senderId = senderId,
+                                recipientId = recipientId,
+                                content = contentReceived,
+                                isEncrypted = isEncrypted,
+                                packetId = packetId,
+                                plan = kind.plan
+                            )
+                        }
+                    }
+                }
+            }
+            MeshPacket.PayloadCase.NODE_IDENTITY -> {
+                // Our own radio verified the signature and decided what this
+                // announcement means; the phone records that verdict and the
+                // fingerprint a person can compare out loud.
+                val identity = packet.nodeIdentity
+                val edKey = identity.ed25519Public.toByteArray()
+                val state = NodeIdentityPolicy.stateOf(identity.trust)
+                val fingerprint = NodeIdentityPolicy.fingerprint(edKey)
+                if (fingerprint.isEmpty() || state == NodeIdentityPolicy.State.UNKNOWN) {
+                    Log.w(TAG, "Ignoring identity for 0x${senderId.toString(16)}: unusable key or verdict")
                     return
                 }
-
-                val chatIdentifier = if (recipientId == 0xFFFFFFFFL || targetChan.isNotEmpty()) {
-                    "CHANNEL_${targetChan.ifEmpty { "General" }}"
-                } else {
-                    "DM_$senderId"
-                }
-                // Catch-up unicasts keep the channel name but restamp recipient;
-                // decrypt with the original channel AAD, not a DM pair.
-                val cryptoRecipient =
-                    if (recipientId == 0xFFFFFFFFL || targetChan.isNotEmpty()) 0xFFFFFFFFL
-                    else recipientId
-                val cryptoContext = ChatContext.authenticatedLabel(
-                    senderId,
-                    cryptoRecipient,
-                    targetChan.ifEmpty { "General" }
-                )
-                
-                val finalContent = if (isEncrypted) {
-                    val passcode = getChatKey(chatIdentifier)
-                    if (!passcode.isNullOrEmpty()) {
-                        decryptAES(contentReceived, passcode, cryptoContext)
-                    } else {
-                        "[Encrypted Message - No Key Configured]"
+                repositoryScope.launch(dbDispatcher) {
+                    dbHelper.recordNodeIdentity(senderId, fingerprint, state.name, identity.keyEpoch)
+                    if (NodeIdentityPolicy.needsAttention(state)) {
+                        Log.w(TAG, "Identity ${state.name} for 0x${senderId.toString(16)}: $fingerprint")
                     }
-                } else {
-                    contentReceived
+                    refreshData()
                 }
-
-                val channelForRow = when {
-                    recipientId == 0xFFFFFFFFL -> targetChan.ifEmpty { "General" }
-                    targetChan.isNotEmpty() -> targetChan // Phase D catch-up unicast
-                    else -> ""
-                }
-                dbHelper.insertMessage(
-                    senderId = senderId,
-                    recipientId = recipientId,
-                    content = finalContent,
-                    channel = channelForRow,
-                    packetId = packet.packetId,
-                    status = "SENT",
-                    isEncrypted = isEncrypted
-                ).also { rowId ->
-                    if (rowId < 0L) {
-                        Log.d(TAG, "Skipping duplicate message sender=0x${senderId.toString(16)} packetId=${packet.packetId}")
-                        return
-                    }
-                }
-                refreshData()
-                notifyIncomingMessage(
-                    senderId = senderId,
-                    chatIdentifier = chatIdentifier,
-                    channel = channelForRow,
-                    content = finalContent,
-                    isBroadcast = channelForRow.isNotEmpty() || recipientId == 0xFFFFFFFFL
-                )
+                return
             }
             MeshPacket.PayloadCase.TELEMETRY -> {
                 val telemetry = packet.telemetry
-                var lat = telemetry.latitude
-                var lon = telemetry.longitude
-                
-                // Retrieve the primary channel to check for location fuzzer privacy settings
-                val primaryChan = getChannelsList().firstOrNull { it.isPrimary }
-                if (primaryChan != null && !primaryChan.preciseLocation && primaryChan.precisionMiles > 0f) {
-                    val milesToDegreesLat = primaryChan.precisionMiles / 69.0f
-                    val cosLat = Math.cos(Math.toRadians(lat.toDouble()))
-                    val milesToDegreesLon = primaryChan.precisionMiles / (69.0f * (if (cosLat > 0.0) cosLat else 1.0).toFloat())
-                    
-                    val stableOffsetLat = (((senderId.hashCode() and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
-                    val stableOffsetLon = ((((senderId.hashCode() ushr 16) and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
-
-                    lat += (stableOffsetLat * milesToDegreesLat).toFloat()
-                    lon += (stableOffsetLon * milesToDegreesLon).toFloat()
-                    Log.d(TAG, "Location fuzzer applied for primary channel: stable offset by ±${primaryChan.precisionMiles} miles")
+                val channels = getChannelsList()
+                val privacy = PhoneLocationShare.privacyOf(channels)
+                val coords = IncomingTelemetryPolicy.displayCoords(
+                    telemetry.latitude,
+                    telemetry.longitude,
+                    senderId,
+                    channels
+                )
+                if (coords.fuzzed) {
+                    Log.d(TAG, "Location fuzzer applied: channel privacy floor ±${privacy.radiusM} m")
                 }
 
                 dbHelper.updateNode(
                     nodeId = senderId,
                     battery = telemetry.batteryLevel,
-                    lat = lat,
-                    lon = lon,
+                    lat = coords.latitude,
+                    lon = coords.longitude,
                     model = telemetry.nodeModel,
-                    uptimeSeconds = telemetry.uptimeSeconds.toLong() and 0xFFFFFFFFL,
+                    uptimeSeconds = IncomingTelemetryPolicy.unsigned32(telemetry.uptimeSeconds),
                     firmwareVersion = telemetry.firmwareVersion,
                     isCharging = telemetry.isCharging,
                     rssi = packet.rxRssi,
@@ -1079,11 +936,17 @@ class AetherMeshRepository(private val context: Context) {
                     voltage = telemetry.batteryVoltage,
                     positionPrecision = telemetry.positionPrecision,
                     advertisedName = telemetry.nodeName,
-                    protocolVersion = packet.protocolVersion.coerceAtLeast(1),
+                    protocolVersion = IncomingTelemetryPolicy.trustedProtocolVersion(packet.protocolVersion),
                     loraSf = telemetry.loraSf,
-                    // Proto3 defaults region to 0 (US915). Only trust it when SF was
-                    // also present — older firmware omits both fields.
-                    region = if (telemetry.loraSf in 7..12) telemetry.region else -1
+                    region = IncomingTelemetryPolicy.trustedRegion(telemetry.loraSf, telemetry.region),
+                    gps = TelemetryGps(
+                        state = telemetry.gpsStateValue,
+                        positionSource = telemetry.positionSourceValue,
+                        satellitesUsed = telemetry.gpsSatellitesUsed,
+                        satellitesInView = telemetry.gpsSatellitesInView,
+                        hdopX10 = telemetry.gpsHdopX10,
+                        fixAgeSecs = telemetry.gpsFixAgeSecs
+                    )
                 )
                 // Append to telemetry history for battery/voltage graphs.
                 dbHelper.insertTelemetrySample(senderId, telemetry.batteryLevel, telemetry.batteryVoltage, telemetry.isCharging)
@@ -1095,50 +958,18 @@ class AetherMeshRepository(private val context: Context) {
                 refreshData()
             }
             MeshPacket.PayloadCase.TRACE_ROUTE -> {
-                val trace = packet.traceRoute
                 val current = _traceRouteState.value
-                if (trace.type == TraceRoute.Type.RESPONSE && trace.traceId == current.traceId &&
-                    trace.originId.toLong().and(0xFFFFFFFFL) == localNodeId
-                ) {
-                    val forward = trace.forwardNodeIdsList.mapIndexed { index, id ->
-                        TraceHop(
-                            nodeId = id.toLong() and 0xFFFFFFFFL,
-                            rssi = trace.forwardRssiList.getOrElse(index) { 0 },
-                            snr = trace.forwardSnrQuarterDbList.getOrElse(index) { 0 } / 4f
-                        )
-                    }
-                    val returning = trace.returnNodeIdsList.mapIndexed { index, id ->
-                        TraceHop(
-                            nodeId = id.toLong() and 0xFFFFFFFFL,
-                            rssi = trace.returnRssiList.getOrElse(index) { 0 },
-                            snr = trace.returnSnrQuarterDbList.getOrElse(index) { 0 } / 4f
-                        )
-                    }.toMutableList()
-                    if (returning.lastOrNull()?.nodeId != localNodeId) {
-                        returning += TraceHop(localNodeId, packet.rxRssi.toInt(), packet.rxSnr)
-                    }
-
+                val applied = TraceRoutePolicy.applyResponse(
+                    current, packet, localNodeId, System.currentTimeMillis()
+                )
+                if (applied != null) {
                     traceRouteJob?.cancel()
-                    _traceRouteState.value = current.copy(
-                        active = false,
-                        showDialog = true,
-                        forward = forward,
-                        returning = returning,
-                        forwardTruncated = trace.forwardTruncated,
-                        returnTruncated = trace.returnTruncated,
-                        error = null,
-                        finishedAtMs = System.currentTimeMillis()
+                    _traceRouteState.value = applied
+                    val observation = IncomingPacketPolicy.observeTracePath(
+                        current.targetId, applied.forward, System.currentTimeMillis()
                     )
-
-                    if (forward.isNotEmpty()) {
+                    if (observation != null) {
                         val routes = _observedRoutes.value.toMutableMap()
-                        val observation = RouteHopInfo(
-                            targetId = current.targetId,
-                            nextHopId = forward.first().nodeId,
-                            hops = forward.size,
-                            lastRssi = forward.last().rssi.toFloat(),
-                            lastSnr = forward.last().snr
-                        )
                         routes[current.targetId] = observation
                         dbHelper.upsertRouteObservation(observation)
                         _observedRoutes.value = routes
@@ -1146,26 +977,48 @@ class AetherMeshRepository(private val context: Context) {
                 }
             }
             MeshPacket.PayloadCase.ACK -> {
+                if (localNodeId != 0L && !MeshNodeId.same(recipientId, localNodeId)) {
+                    Log.d(TAG, "Ignoring ACK addressed to 0x${recipientId.toString(16)} (localNodeId=0x${localNodeId.toString(16)})")
+                    return
+                }
                 val ackedId = packet.ack.ackedPacketId
                 Log.d(TAG, "ACK received for packet: $ackedId from 0x${senderId.toString(16)}")
-                if (dbHelper.isChannelMessage(ackedId)) {
-                    dbHelper.recordChannelHearing(ackedId, senderId)
-                } else {
-                    dbHelper.updateMessageStatus(ackedId, "DELIVERED")
+                when (val action = DeliveryStatusPolicy.onMeshAck(dbHelper.isChannelMessage(ackedId), senderId)) {
+                    is DeliveryStatusAction.Heard -> {
+                        if (action.recordHearer) {
+                            dbHelper.recordChannelHearing(ackedId, action.fromNodeId)
+                        }
+                    }
+                    DeliveryStatusAction.DeliveredIfDirect -> {
+                        dbHelper.updateMessageStatus(ackedId, DeliveryStatusPolicy.DELIVERED)
+                    }
+                    else -> Unit
                 }
                 val pending = pendingRangePings[ackedId]
-                if (_isRangeTestActive.value && pending != null && pending.targetId == senderId &&
-                    pendingRangePings.remove(ackedId, pending)
-                ) {
-                    Log.d(TAG, "Range test ACK matched packet $ackedId")
-                    logRangeTestResult(
-                        pending = pending,
-                        success = true,
-                        rssi = packet.rxRssi,
-                        snr = packet.rxSnr,
-                        remoteRssi = packet.ack.ackedRxRssi.takeIf { it != 0f },
-                        remoteSnr = packet.ack.ackedRxSnr.takeIf { it != 0f }
+                when (
+                    val decision = RangeTestPolicy.decideAck(
+                        _isRangeTestActive.value,
+                        ackedId,
+                        pending,
+                        senderId,
+                        packet.ack.ackedRxRssi,
+                        packet.ack.ackedRxSnr
                     )
+                ) {
+                    is RangeScoreDecision.Score -> {
+                        if (pendingRangePings.remove(decision.packetId, decision.pending)) {
+                            Log.d(TAG, "Range test ACK matched packet $ackedId")
+                            logRangeTestResult(
+                                pending = decision.pending,
+                                success = true,
+                                rssi = packet.rxRssi,
+                                snr = packet.rxSnr,
+                                remoteRssi = decision.remoteRssi,
+                                remoteSnr = decision.remoteSnr
+                            )
+                        }
+                    }
+                    else -> Unit
                 }
                 refreshData()
             }
@@ -1175,41 +1028,89 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
-    private fun secureChatKeyName(chatIdentifier: String): String {
-        val kind = if (chatIdentifier.startsWith("CHANNEL_")) "channel" else "dm"
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(chatIdentifier.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-        return "chat_key_${kind}_$digest"
-    }
-
     fun getChatKey(chatIdentifier: String): String? {
-        val prefKey = secureChatKeyName(chatIdentifier)
-        securePrefs.getString(prefKey, null)?.let { return it }
-
-        // One-time migration from the legacy plaintext SQLite key table.
-        val legacy = dbHelper.getChatKey(chatIdentifier)
-        if (!legacy.isNullOrEmpty()) {
-            check(securePrefs.edit().putString(prefKey, legacy).commit()) { "Could not migrate chat key" }
-            dbHelper.deleteChatKey(chatIdentifier)
-            return legacy
+        val found = ChatKeyStorePolicy.lookup(securePrefs, chatIdentifier) {
+            dbHelper.getChatKey(chatIdentifier)
         }
-        return null
+        if (found.migrated) dbHelper.deleteChatKey(chatIdentifier)
+        return found.value
     }
 
     fun saveChatKey(chatIdentifier: String, key: String) {
-        val prefKey = secureChatKeyName(chatIdentifier)
-        if (key.isBlank()) {
-            securePrefs.edit().remove(prefKey).apply()
-        } else {
-            securePrefs.edit().putString(prefKey, key).apply()
+        val storeKey = {
+            ChatKeyStorePolicy.save(securePrefs, chatIdentifier, key)
+            dbHelper.deleteChatKey(chatIdentifier)
         }
-        dbHelper.deleteChatKey(chatIdentifier)
+        if (key.isBlank()) {
+            storeKey()
+        } else {
+            // Journals the chat before the key is stored, then recovers messages
+            // that were waiting for it.
+            decryptionRecovery.saveKeyAndRecover(chatIdentifier, storeKey, ::logDecryptionRecovery)
+        }
         _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
 
+    // Runs on dbDispatcher.
+    private fun storeIncomingChat(
+        senderId: Long,
+        recipientId: Long,
+        content: String,
+        isEncrypted: Boolean,
+        packetId: Int,
+        plan: IncomingChatPlan
+    ) {
+        // Mesh relays deliver the same frame repeatedly; reject copies before
+        // paying for key derivation. insertMessage re-checks as a backstop.
+        if (dbHelper.hasMessage(senderId, packetId)) {
+            Log.d(TAG, "Skipping duplicate message sender=0x${senderId.toString(16)} packetId=$packetId")
+            return
+        }
+        val passcode = if (isEncrypted) getChatKey(plan.chatIdentifier) else null
+        val decrypted = if (!passcode.isNullOrEmpty()) {
+            decryptAES(content, passcode, plan.cryptoContext)
+        } else {
+            ""
+        }
+        val resolved = IncomingChatPolicy.resolveContent(
+            encrypted = isEncrypted,
+            hasKey = !passcode.isNullOrEmpty(),
+            raw = content,
+            decrypted = decrypted
+        )
+        val rowId = dbHelper.insertMessage(
+            senderId = senderId,
+            recipientId = recipientId,
+            content = resolved.content,
+            channel = plan.channelForRow,
+            packetId = packetId,
+            status = "SENT",
+            isEncrypted = isEncrypted,
+            pendingCipher = resolved.pendingCipherText?.let {
+                PendingCipher(it, plan.chatIdentifier, plan.cryptoContext)
+            }
+        )
+        if (rowId < 0L) {
+            Log.d(TAG, "Skipping duplicate message sender=0x${senderId.toString(16)} packetId=$packetId")
+            return
+        }
+        refreshData()
+        notifyIncomingMessage(
+            senderId = senderId,
+            chatIdentifier = plan.chatIdentifier,
+            channel = plan.channelForRow,
+            content = resolved.content,
+            isBroadcast = plan.isBroadcast
+        )
+    }
+
+    private fun logDecryptionRecovery(result: PendingDecryptionRecovery.Result) {
+        if (result.scanned == 0) return
+        appendDiagnostic("Recovered ${result.recovered} of ${result.scanned} stored encrypted messages")
+    }
+
     private fun deleteChatKey(chatIdentifier: String) {
-        securePrefs.edit().remove(secureChatKeyName(chatIdentifier)).apply()
+        ChatKeyStorePolicy.delete(securePrefs, chatIdentifier)
         dbHelper.deleteChatKey(chatIdentifier)
         _chatKeysRevision.value = _chatKeysRevision.value + 1
     }
@@ -1225,49 +1126,38 @@ class AetherMeshRepository(private val context: Context) {
         if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
             return SendMessageResult.NotReady
         }
-        val boundedChannel = channel.take(MAX_CHANNEL_LENGTH)
         val generatedPacketId = existingMessage?.packetId?.takeIf { it != 0 } ?: PacketIdGenerator.next()
         val localNodeId = bleManager.connectedNodeId
-
-        val chatIdentifier = if (recipientId == 0xFFFFFFFFL) "CHANNEL_$boundedChannel" else "DM_$recipientId"
-        val cryptoContext = ChatContext.authenticatedLabel(localNodeId, recipientId, boundedChannel)
+        val chatIdentifier = ChatSendPolicy.chatIdentifier(recipientId, channel)
         val passcode = getChatKey(chatIdentifier)
-        val isEncrypted = !passcode.isNullOrEmpty()
-        if (existingMessage?.isEncrypted == true && !isEncrypted) return SendMessageResult.EncryptFailed
-        val boundedContent = content.takeUtf8Bytes(
-            if (isEncrypted) MAX_ENCRYPTED_CONTENT_LENGTH else MAX_TEXT_CONTENT_LENGTH
-        )
+        val plan = ChatSendPolicy.plan(
+            localNodeId,
+            recipientId,
+            content,
+            channel,
+            hasPasscode = !passcode.isNullOrEmpty(),
+            existingWasEncrypted = existingMessage?.isEncrypted == true
+        ) ?: return SendMessageResult.EncryptFailed
 
         // Encrypt FIRST and refuse to send on failure — never fall back to
         // transmitting plaintext on a chat the user believes is encrypted.
-        val contentToSend = if (isEncrypted) {
-            encryptAES(boundedContent, passcode, cryptoContext) ?: run {
+        val contentToSend = if (plan.isEncrypted) {
+            encryptAES(plan.boundedContent, passcode ?: return SendMessageResult.EncryptFailed, plan.cryptoContext) ?: run {
                 Log.e(TAG, "Encryption failed; message NOT sent.")
                 return SendMessageResult.EncryptFailed
             }
         } else {
-            boundedContent
+            plan.boundedContent
         }
 
-        // Build the wire packet before mutating local chat history.
-        val textBuilder = TextMessage.newBuilder()
-            .setContent(contentToSend)
-            .setChannel(if (recipientId == 0xFFFFFFFFL) boundedChannel else "")
-            .setIsEncrypted(isEncrypted)
-
-        // DMs: always want_ack (end-to-end DELIVERED). Channel: optional hearer
-        // receipts (Settings → channel_hearer_receipts); default off = flood-style.
-        val isChannelSend = recipientId == 0xFFFFFFFFL
-        val channelWantAck = !isChannelSend || prefs.getBoolean("channel_hearer_receipts", false)
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(recipientId.toInt())
-            .setPacketId(generatedPacketId)
-            .setHopLimit(4)
-            .setWantAck(channelWantAck)
-            .setPrevHopId(localNodeId.toInt())
-            .setText(textBuilder)
-            .build()
+        val packet = ChatSendPolicy.buildPacket(
+            localNodeId,
+            recipientId,
+            generatedPacketId,
+            contentToSend,
+            plan.boundedChannel,
+            plan.isEncrypted
+        )
 
         // Commit the local bubble only after Android accepted the BLE write.
         // Otherwise the composer retains the text and reports the failed handoff.
@@ -1276,22 +1166,28 @@ class AetherMeshRepository(private val context: Context) {
         val messageId = existingMessage?.id ?: dbHelper.insertMessage(
             senderId = localNodeId,
             recipientId = recipientId,
-            content = boundedContent,
-            channel = if (recipientId == 0xFFFFFFFFL) boundedChannel else "",
+            content = plan.boundedContent,
+            channel = plan.persistChannel,
             packetId = generatedPacketId,
-            status = if (recipientId == 0xFFFFFFFFL) "SENT" else "PENDING",
-            isEncrypted = isEncrypted
+            status = plan.localStatus,
+            isEncrypted = plan.isEncrypted
         )
-        if (existingMessage != null) dbHelper.updateMessageStatusById(messageId, "PENDING")
-        if (!isChannelSend) outboundDeliveryStore.track(messageId, packet.toByteArray(), System.currentTimeMillis())
+        if (existingMessage != null) dbHelper.updateMessageStatusById(messageId, DeliveryStatusPolicy.PENDING)
+        if (!plan.isChannelSend) outboundDeliveryStore.track(messageId, packet.toByteArray(), System.currentTimeMillis())
         refreshData()
         return SendMessageResult.Sent
     }
 
     fun retryMessage(message: ChatMessage): Boolean {
-        if (message.recipientId == 0xFFFFFFFFL || message.channel.isNotEmpty() ||
-            message.senderId != bleManager.connectedNodeId || _isRangeTestActive.value ||
-            message.status !in setOf("FAILED", "QUEUED", "EXPIRED")) return false
+        if (!ChatSendPolicy.canRetry(
+                message.recipientId,
+                message.channel,
+                message.senderId,
+                bleManager.connectedNodeId,
+                _isRangeTestActive.value,
+                message.status
+            )
+        ) return false
         val sent = if (outboundDeliveryStore.hasPayload(message.id)) {
             deliveryRetries.retry(message.id, manual = true)
         } else {
@@ -1307,17 +1203,25 @@ class AetherMeshRepository(private val context: Context) {
         repositoryScope.launch(dbDispatcher) {
             for (attempt in deliveryRetries.candidates(recipientId)) {
                 deliveryRetries.retry(attempt.messageId)
-                delay(2_000L)
+                delay(SettingsRebootPolicy.QUEUED_RETRY_STAGGER_MS)
             }
             refreshData()
         }
     }
 
+    private fun connectedLoraSf(): Int {
+        val nodeId = bleManager.connectedNodeId
+        if (nodeId == 0L) return NodeSettingsPrefs.DEFAULT_SF
+        return NodeSettingsPrefs.readLoraSf(
+            context.getSharedPreferences(NodeSettingsPrefs.prefsName(nodeId), Context.MODE_PRIVATE)
+        )
+    }
+
     private fun startPendingMessageTimeoutMonitor() {
         repositoryScope.launch(dbDispatcher) {
             while (true) {
-                delay(5_000L)
-                val cutoff = System.currentTimeMillis() - MESSAGE_ACK_TIMEOUT_MS
+                delay(MeshReplyPolicy.ACK_POLL_MS)
+                val cutoff = MeshReplyPolicy.ackCutoff(System.currentTimeMillis(), connectedLoraSf())
                 val changed = dbHelper.markTimedOutPendingMessages(cutoff) +
                     outboundDeliveryStore.expire(System.currentTimeMillis())
                 if (changed > 0) {
@@ -1351,78 +1255,60 @@ class AetherMeshRepository(private val context: Context) {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
 
         val localNodeId = bleManager.connectedNodeId
-        val hops = meshHopLimit.coerceIn(1, 8)
-        val txdelay = when {
-            rebroadcastTxdelayX100 <= 0 -> 100
-            else -> rebroadcastTxdelayX100.coerceIn(50, 200)
-        }
-        val dutySecs = when {
-            gpsDutyIntervalSecs <= 0 -> 900
-            else -> gpsDutyIntervalSecs.coerceIn(300, 3600)
-        }
+        val packet = LocalNodeConfigApply.build(
+            localNodeId,
+            PacketIdGenerator.next(),
+            LocalNodeConfigRequest(
+                name = name,
+                shortName = shortName,
+                sf = sf,
+                bw = bw,
+                txPower = txPower,
+                region = region,
+                role = role,
+                telemetryInterval = telemetryInterval,
+                screenTimeout = screenTimeout,
+                powerSaveMode = powerSaveMode,
+                positionPrecision = positionPrecision,
+                gpsMode = gpsMode,
+                gpsDutyIntervalSecs = gpsDutyIntervalSecs,
+                fixedPosition = fixedPosition,
+                fixedLatitude = fixedLatitude,
+                fixedLongitude = fixedLongitude,
+                fixedAltitude = fixedAltitude,
+                meshHopLimit = meshHopLimit,
+                rebroadcastTxdelayX100 = rebroadcastTxdelayX100,
+                maxHopLimit = NodeSettingsPrefs.readMaxHopLimit(
+                    context.getSharedPreferences(NodeSettingsPrefs.prefsName(localNodeId), Context.MODE_PRIVATE)
+                )
+            )
+        )
 
-        // Build NodeConfig message
-        val clippedShort = shortName.trim().take(4).uppercase()
-        val configBuilder = com.silentwolf75.aethermesh.proto.NodeConfig.newBuilder()
-            .setNodeName(name)
-            .setNodeShortName(clippedShort)
-            .setLoraSf(sf)
-            .setLoraBw(bw)
-            .setLoraTxPower(txPower)
-            .setRegion(region)
-            .setNodeRole(role)
-            .setTelemetryInterval(telemetryInterval)
-            .setScreenTimeoutSecs(screenTimeout)
-            .setPowerSaveMode(powerSaveMode)
-            .setPositionPrecision(positionPrecision)
-            .setGpsMode(gpsMode.coerceIn(0, 2))
-            .setGpsDutyIntervalSecs(dutySecs)
-            .setFixedPosition(fixedPosition)
-            .setFixedLatitude(fixedLatitude)
-            .setFixedLongitude(fixedLongitude)
-            .setFixedAltitude(fixedAltitude)
-            .setMeshHopLimit(hops)
-            .setRebroadcastTxdelayX100(txdelay)
-
-        // recipient_id=0 means "apply on the BLE-connected node". Do not address by
-        // connectedNodeId — a MAC/advertising placeholder mismatch would make the
-        // firmware forward the config over LoRa and never save/reboot locally.
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(0)
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(1)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setConfig(configBuilder)
-            .build()
-
-        // Write over BLE
         val success = bleManager.sendPacket(packet.toByteArray())
         if (success) {
-            // Update node name and short name locally in our DB so it matches right away
+            val clippedShort = packet.config.nodeShortName
             dbHelper.updateNodeNameAndShortName(localNodeId, name, clippedShort)
             if (localNodeId != 0L) {
-                context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
+                context.getSharedPreferences(NodeSettingsPrefs.prefsName(localNodeId), Context.MODE_PRIVATE)
                     .edit()
-                    .putString("node_name", name)
-                    .putString("node_short_name", clippedShort)
-                    .putBoolean("power_save_mode", powerSaveMode)
+                    .putString(NodeSettingsPrefs.KEY_NODE_NAME, name)
+                    .putString(NodeSettingsPrefs.KEY_NODE_SHORT, clippedShort)
+                    .putBoolean(NodeSettingsPrefs.KEY_POWER_SAVE, powerSaveMode)
                     .apply()
             }
-            context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+            context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean("last_connected_power_save", powerSaveMode)
+                .putBoolean(AppUiPrefs.LAST_POWER_SAVE, powerSaveMode)
                 .apply()
             refreshData()
-            // Full local Settings apply always reboots the MCU (~1.5s). Drop auth
-            // immediately and proactively refresh GATT so we never keep a zombie
-            // "LINK UP / authenticated" session across the reset.
             expectPostSettingsReconnect = true
             _isDeviceAuthenticated.value = false
             _authenticationRequired.value = null
             Log.d(TAG, "Settings applied — scheduling post-reboot BLE refresh")
-            bleManager.prepareForNodeReboot(closeAfterMs = 1_200L, reconnectAfterMs = 5_000L)
+            bleManager.prepareForNodeReboot(
+                closeAfterMs = SettingsRebootPolicy.CLOSE_AFTER_MS,
+                reconnectAfterMs = SettingsRebootPolicy.RECONNECT_AFTER_MS
+            )
         }
         return success
     }
@@ -1430,65 +1316,29 @@ class AetherMeshRepository(private val context: Context) {
     /** Persist on-device settings into phone prefs and trigger Settings UI reload. */
     private fun hydrateNodeSettingsFromDevice(nodeId: Long, config: NodeConfig) {
         if (nodeId == 0L) return
-        val prefs = context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("node_name", config.nodeName)
-            .apply {
-                val short = config.nodeShortName.trim().take(4).uppercase()
-                if (short.isNotEmpty()) putString("node_short_name", short)
-            }
-            .putInt("lora_sf", if (config.loraSf in 7..12) config.loraSf else 11)
-            .putFloat("lora_bw", if (config.loraBw > 0f) config.loraBw else 125f)
-            .putInt("lora_tx_power", if (config.loraTxPower != 0) config.loraTxPower else 22)
-            .putInt("region", config.region)
-            .putInt("node_role", config.nodeRole)
-            .putInt("telemetry_interval", if (config.telemetryInterval > 0) config.telemetryInterval else 60)
-            .putInt("screen_timeout", config.screenTimeoutSecs)
-            .putBoolean("power_save_mode", config.powerSaveMode)
-            .putInt("position_precision", config.positionPrecision)
-            .putInt("gps_mode", config.gpsMode.coerceIn(0, 2))
-            .putInt(
-                "gps_duty_interval_secs",
-                when {
-                    config.gpsDutyIntervalSecs <= 0 -> 900
-                    else -> config.gpsDutyIntervalSecs.coerceIn(300, 3600)
-                }
-            )
-            .putBoolean("fixed_position", config.fixedPosition)
-            .putFloat("fixed_latitude", config.fixedLatitude)
-            .putFloat("fixed_longitude", config.fixedLongitude)
-            .putInt("fixed_altitude", config.fixedAltitude)
-            .putBoolean("region_configured", config.regionConfigured)
-            .putInt("mesh_hop_limit", if (config.meshHopLimit in 1..8) config.meshHopLimit else 4)
-            .putInt(
-                "rebroadcast_txdelay_x100",
-                when {
-                    config.rebroadcastTxdelayX100 <= 0 -> 100
-                    else -> config.rebroadcastTxdelayX100.coerceIn(50, 200)
-                }
-            )
-            .putBoolean("device_synced", true)
-            .apply()
+        val prefs = context.getSharedPreferences(NodeSettingsPrefs.prefsName(nodeId), Context.MODE_PRIVATE)
+        NodeSettingsStore.writeFromDevice(prefs, config)
 
-        context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
+        context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean("last_connected_power_save", config.powerSaveMode)
+            .putBoolean(AppUiPrefs.LAST_POWER_SAVE, config.powerSaveMode)
             .apply()
 
-        if (config.nodeName.isNotBlank() || config.nodeShortName.isNotBlank()) {
-            val prefsShort = prefs.getString("node_short_name", null)?.takeIf { it.isNotBlank() }
-            val deviceShort = config.nodeShortName.trim().take(4).uppercase().takeIf { it.isNotBlank() }
-            val existing = dbHelper.getNodes().firstOrNull { sameMeshNodeId(it.nodeId, nodeId) }
-            val short = deviceShort
-                ?: prefsShort
-                ?: existing?.shortName?.takeIf { it.isNotBlank() }
-                ?: deriveShortName(config.nodeName.ifBlank { existing?.name.orEmpty() }, nodeId)
-            if (deviceShort != null) {
-                prefs.edit().putString("node_short_name", deviceShort).apply()
+        if (NodeNamePolicy.shouldHydrateNames(config.nodeName, config.nodeShortName)) {
+            val existing = dbHelper.getNodes().firstOrNull { MeshNodeId.same(it.nodeId, nodeId) }
+            val names = NodeNamePolicy.namesFromDevice(
+                nodeId = nodeId,
+                deviceLongName = config.nodeName,
+                deviceShortName = config.nodeShortName,
+                prefsShort = prefs.getString(NodeSettingsPrefs.KEY_NODE_SHORT, null),
+                existingName = existing?.name.orEmpty(),
+                existingShort = existing?.shortName.orEmpty()
+            )
+            if (names.persistDeviceShort) {
+                prefs.edit().putString(NodeSettingsPrefs.KEY_NODE_SHORT, names.shortName).apply()
             }
-            val longName = config.nodeName.ifBlank { existing?.name.orEmpty() }
-            if (longName.isNotBlank()) {
-                dbHelper.updateNodeNameAndShortName(nodeId, longName, short)
+            if (names.writeDb) {
+                dbHelper.updateNodeNameAndShortName(nodeId, names.longName, names.shortName)
             }
         }
 
@@ -1507,13 +1357,13 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun updateNodeNameAndShortName(nodeId: Long, name: String, shortName: String) {
-        val short = shortName.trim().take(4).uppercase()
+        val short = NodeNamePolicy.clipShort(shortName)
         dbHelper.updateNodeNameAndShortName(nodeId, name, short)
         if (nodeId != 0L) {
-            context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
+            context.getSharedPreferences(NodeSettingsPrefs.prefsName(nodeId), Context.MODE_PRIVATE)
                 .edit()
-                .putString("node_name", name)
-                .putString("node_short_name", short)
+                .putString(NodeSettingsPrefs.KEY_NODE_NAME, name)
+                .putString(NodeSettingsPrefs.KEY_NODE_SHORT, short)
                 .apply()
         }
         refreshData()
@@ -1521,14 +1371,14 @@ class AetherMeshRepository(private val context: Context) {
         // (survives a fresh app install). Remote nodes need Remote Config +
         // admin password — phone-only renames are temporary until then.
         if (bleManager.isConnected && _isDeviceAuthenticated.value &&
-            sameMeshNodeId(nodeId, bleManager.connectedNodeId)
+            MeshNodeId.same(nodeId, bleManager.connectedNodeId)
         ) {
             sendNameOnlyConfig(nodeId, name, shortName = short)
         }
     }
 
     private fun remoteControlAuthProtocol(nodeId: Long): Int {
-        val peerVersion = _nodes.value.firstOrNull { it.nodeId == nodeId }?.protocolVersion ?: 1
+        val peerVersion = _nodes.value.firstOrNull { MeshNodeId.same(it.nodeId, nodeId) }?.protocolVersion ?: 1
         return RemoteControlAuthPolicy.authProtocolForPeer(peerVersion)
     }
 
@@ -1544,112 +1394,52 @@ class AetherMeshRepository(private val context: Context) {
     ): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
         val localNodeId = bleManager.connectedNodeId
-        val clipped = name.trim().take(16)
-        val clippedShort = shortName.trim().take(4).uppercase().ifEmpty {
-            deriveShortName(clipped, nodeId)
-        }
-        val isLocal = sameMeshNodeId(nodeId, localNodeId)
-        if (!isLocal && adminPassword.isBlank()) return false
+        val isLocal = MeshNodeId.same(nodeId, localNodeId)
+        val packet = NameOnlyConfigApply.build(
+            localNodeId = localNodeId,
+            nodeId = nodeId,
+            name = name,
+            shortName = shortName,
+            adminPassword = adminPassword,
+            authProtocol = remoteControlAuthProtocol(nodeId),
+            packetId = PacketIdGenerator.next(),
+            isLocal = isLocal
+        ) ?: return false
 
-        val authProtocol = remoteControlAuthProtocol(nodeId)
-        val configBuilder = com.silentwolf75.aethermesh.proto.NodeConfig.newBuilder()
-            .setNodeName(clipped)
-            .setNodeShortName(clippedShort)
-            .setApplyNameOnly(true)
-        if (!isLocal && authProtocol == 0) {
-            configBuilder.setConfigPassword(adminPassword)
-        }
-        val config = configBuilder.build()
-
-        val packetBuilder = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            // Local BLE rename must use recipient 0 (same reason as sendNodeConfig).
-            .setRecipientId(if (isLocal) 0 else nodeId.toInt())
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(if (isLocal) 1 else 4)
-            .setWantAck(!isLocal)
-            .setPrevHopId(localNodeId.toInt())
-            .setConfig(config)
-
-        if (!isLocal && authProtocol >= 2) {
-            val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(
-                localNodeId, nodeId, identity, config, adminPassword,
-                authProtocol = authProtocol
-            )
-            packetBuilder
-                .setProtocolVersion(authProtocol)
-                .setSessionId(identity.sessionId)
-                .setAuthCounter(identity.counter)
-                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
-        }
-
-        val success = bleManager.sendPacket(packetBuilder.build().toByteArray())
+        val success = bleManager.sendPacket(packet.toByteArray())
         if (success) {
-            dbHelper.updateNodeNameAndShortName(nodeId, clipped, clippedShort)
-            context.getSharedPreferences("node_settings_$nodeId", Context.MODE_PRIVATE)
+            dbHelper.updateNodeNameAndShortName(
+                nodeId, packet.config.nodeName, packet.config.nodeShortName
+            )
+            context.getSharedPreferences(NodeSettingsPrefs.prefsName(nodeId), Context.MODE_PRIVATE)
                 .edit()
-                .putString("node_name", clipped)
-                .putString("node_short_name", clippedShort)
+                .putString(NodeSettingsPrefs.KEY_NODE_NAME, packet.config.nodeName)
+                .putString(NodeSettingsPrefs.KEY_NODE_SHORT, packet.config.nodeShortName)
                 .apply()
             refreshData()
         }
         return success
     }
 
-    private fun deriveShortName(longName: String, nodeId: Long): String {
-        return longName.replace("AetherMesh-", "").replace("Node ", "")
-            .replace(Regex("[^a-zA-Z0-9]"), "")
-            .take(4)
-            .uppercase()
-            .ifEmpty { String.format("%04X", (nodeId and 0xFFFFL).toInt()) }
-    }
-
     fun startTraceRoute(targetId: Long): Boolean {
         val localNodeId = bleManager.connectedNodeId
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value || localNodeId == 0L ||
-            targetId == 0L || targetId == localNodeId
+        if (!TraceRoutePolicy.canStart(
+                bleManager.isConnected, _isDeviceAuthenticated.value, localNodeId, targetId
+            )
         ) return false
 
         val traceId = PacketIdGenerator.next()
-        val trace = TraceRoute.newBuilder()
-            .setType(TraceRoute.Type.REQUEST)
-            .setTraceId(traceId)
-            .setOriginId(localNodeId.toInt())
-            .setTargetId(targetId.toInt())
-            .build()
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(targetId.toInt())
-            .setPacketId(traceId)
-            .setHopLimit(7)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setTraceRoute(trace)
-            .build()
-
+        val packet = TraceRoutePolicy.buildRequest(localNodeId, targetId, traceId)
         if (!bleManager.sendPacket(packet.toByteArray())) return false
 
+        val sf = connectedLoraSf()
         traceRouteJob?.cancel()
-        _traceRouteState.value = TraceRouteState(
-            visible = true,
-            showDialog = true,
-            active = true,
-            targetId = targetId,
-            traceId = traceId,
-            startedAtMs = System.currentTimeMillis()
-        )
+        _traceRouteState.value = TraceRoutePolicy.starting(targetId, traceId, System.currentTimeMillis())
         traceRouteJob = repositoryScope.launch {
-            delay(TRACE_ROUTE_TIMEOUT_MS)
-            val pending = _traceRouteState.value
-            if (pending.active && pending.traceId == traceId) {
-                _traceRouteState.value = pending.copy(
-                    active = false,
-                    showDialog = true,
-                    error = "No route response received",
-                    finishedAtMs = System.currentTimeMillis()
-                )
-            }
+            delay(TraceRoutePolicy.timeoutMs(sf))
+            TraceRoutePolicy.timedOut(
+                _traceRouteState.value, traceId, System.currentTimeMillis()
+            )?.let { _traceRouteState.value = it }
         }
         return true
     }
@@ -1660,15 +1450,10 @@ class AetherMeshRepository(private val context: Context) {
 
     /** Stop an in-flight traceroute and surface a cancelled result in the dialog. */
     fun cancelTraceRoute() {
-        val pending = _traceRouteState.value
-        if (!pending.active) return
+        val updated = TraceRoutePolicy.cancelled(_traceRouteState.value, System.currentTimeMillis())
+            ?: return
         traceRouteJob?.cancel()
-        _traceRouteState.value = pending.copy(
-            active = false,
-            showDialog = true,
-            error = "Cancelled",
-            finishedAtMs = System.currentTimeMillis()
-        )
+        _traceRouteState.value = updated
     }
 
     fun clearTraceRouteResult() {
@@ -1685,36 +1470,16 @@ class AetherMeshRepository(private val context: Context) {
      */
     fun requestRemoteConfigReport(nodeId: Long, password: String): Int? {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return null
-        if (password.isBlank()) return null
         val localNodeId = bleManager.connectedNodeId
-        val authProtocol = remoteControlAuthProtocol(nodeId)
-        val config = NodeConfig.newBuilder()
-            .setRequestReport(true)
-            .setConfigPassword(if (authProtocol >= 2) "" else password)
-            .setApplyMask(0)
-            .build()
         val packetId = PacketIdGenerator.next()
-        val packetBuilder = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(nodeId.toInt())
-            .setPacketId(packetId)
-            .setHopLimit(4)
-            .setWantAck(true)
-            .setPrevHopId(localNodeId.toInt())
-            .setConfig(config)
-        if (authProtocol >= 2) {
-            val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(
-                localNodeId, nodeId, identity, config, password,
-                authProtocol = authProtocol
-            )
-            packetBuilder
-                .setProtocolVersion(authProtocol)
-                .setSessionId(identity.sessionId)
-                .setAuthCounter(identity.counter)
-                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
-        }
-        return if (bleManager.sendPacket(packetBuilder.build().toByteArray())) packetId else null
+        val packet = RemoteConfigApply.buildReportRequest(
+            localNodeId = localNodeId,
+            nodeId = nodeId,
+            password = password,
+            authProtocol = remoteControlAuthProtocol(nodeId),
+            packetId = packetId
+        ) ?: return null
+        return if (bleManager.sendPacket(packet.toByteArray())) packetId else null
     }
 
     /**
@@ -1745,290 +1510,74 @@ class AetherMeshRepository(private val context: Context) {
         applyMask: Int
     ): Int? {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return null
-        if (password.isBlank() || applyMask == 0) return null
-
         val localNodeId = bleManager.connectedNodeId
-
-        val authProtocol = remoteControlAuthProtocol(nodeId)
-        val hops = when {
-            meshHopLimit <= 0 -> 0
-            else -> meshHopLimit.coerceIn(1, 8)
-        }
-        val txdelay = when {
-            rebroadcastTxdelayX100 <= 0 -> 0
-            else -> rebroadcastTxdelayX100.coerceIn(50, 200)
-        }
-        val dutySecs = when {
-            gpsDutyIntervalSecs <= 0 -> 900
-            else -> gpsDutyIntervalSecs.coerceIn(300, 3600)
-        }
-        val config = NodeConfig.newBuilder()
-            .setNodeName(name)
-            .setConfigPassword(if (authProtocol >= 2) "" else password)
-            .setLoraSf(sf)
-            .setLoraBw(bw)
-            .setLoraTxPower(txPower)
-            .setRegion(region)
-            .setNodeRole(role)
-            .setTelemetryInterval(telemetryInterval)
-            .setScreenTimeoutSecs(screenTimeout)
-            .setPowerSaveMode(powerSaveMode)
-            .setPositionPrecision(positionPrecision)
-            .setGpsMode(gpsMode.coerceIn(0, 2))
-            .setGpsDutyIntervalSecs(dutySecs)
-            .setFixedPosition(fixedPosition)
-            .setFixedLatitude(fixedLatitude)
-            .setFixedLongitude(fixedLongitude)
-            .setFixedAltitude(fixedAltitude)
-            .setMeshHopLimit(hops)
-            .setRebroadcastTxdelayX100(txdelay)
-            .setRequestReport(false)
-            .setApplyMask(applyMask)
-            .build()
-
         val packetId = PacketIdGenerator.next()
-        val packetBuilder = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(nodeId.toInt())
-            .setPacketId(packetId)
-            .setHopLimit(4)
-            .setWantAck(true)
-            .setPrevHopId(localNodeId.toInt())
-            .setConfig(config)
-
-        if (authProtocol >= 2) {
-            val identity = ControlAuthSession.next()
-            val tag = ControlAuth.sign(
-                localNodeId, nodeId, identity, config, password,
-                authProtocol = authProtocol
-            )
-            packetBuilder
-                .setProtocolVersion(authProtocol)
-                .setSessionId(identity.sessionId)
-                .setAuthCounter(identity.counter)
-                .setAuthTag(com.google.protobuf.ByteString.copyFrom(tag))
-        }
-
-        return if (bleManager.sendPacket(packetBuilder.build().toByteArray())) packetId else null
-    }
-
-    // --- BLE firmware update (OTA) sender ---
-    // Heltec ESP32 drops WRITE_TYPE_NO_RESPONSE bursts under flash-write load
-    // ("Offset gap at N"). Use confirmed ATT writes, conservative chunk size
-    // (fits legacy 256B RX slots), and keep the phone window matched to the
-    // node's IN_PROGRESS cadence (8 on READY>=224 firmware, 4 on legacy).
-    private val OTA_CHUNK_FAST_CAP = 224
-    private val OTA_CHUNK_RELIABLE = 128   // safe under 256B node RX + ATT MTU
-    private val OTA_WINDOW_FAST = 8        // must match shipping firmware OTA_WINDOW
-    private val OTA_CHUNK_LEGACY = 128
-    private val OTA_WINDOW_LEGACY = 4
-    private val OTA_PROTO_OVERHEAD = 56
-    // Was 80ms, added alongside the inline-delivery change that made the node
-    // panic on the first chunk; it paced around instability rather than fixing
-    // it. At 128-byte chunks that is ~8500 chunks and ~11 minutes of a 14-minute
-    // transfer spent deliberately idle.
-    //
-    // Flow control is already covered twice over: OTA writes are confirmed
-    // (withResponse), so each one waits for its GATT callback, and a window is
-    // 8 chunks against a 16-slot node RX ring with an IN_PROGRESS ack per
-    // window. At most 8 chunks are ever outstanding, so the ring cannot
-    // overflow. Raise this only if a node actually reports gaps.
-    private val OTA_INTER_CHUNK_MS = 0L
-
-    private fun otaChunkSizeForLink(nodeHint: Int): Int {
-        val attMax = (bleManager.negotiatedMtu - 3).coerceAtLeast(20)
-        val linkCap = (attMax - OTA_PROTO_OVERHEAD).coerceAtLeast(64)
-        // A node that advertises its max chunk in READY.next_offset is running
-        // firmware with the 512-byte RX ring, so the real ceiling is simply what
-        // one ATT write carries. Pinning this to 128 regardless cost ~35% of
-        // throughput on links that measured 197. Unknown or legacy nodes keep
-        // the conservative size and the 256-byte RX-slot assumption.
-        val wanted = if (nodeHint >= OTA_CHUNK_FAST_CAP) {
-            nodeHint.coerceAtMost(linkCap)
-        } else {
-            OTA_CHUNK_RELIABLE.coerceAtMost(
-                linkCap.coerceAtMost(256 - OTA_PROTO_OVERHEAD)
-            )
-        }
-        return wanted.coerceAtLeast(64).also {
-            Log.d(TAG, "OTA chunk $it (node advertised $nodeHint, link carries $linkCap)")
-        }
-    }
-
-    private fun otaWindowForNode(nodeHint: Int): Int {
-        return if (nodeHint >= OTA_CHUNK_FAST_CAP) OTA_WINDOW_FAST else OTA_WINDOW_LEGACY
+        val packet = RemoteConfigApply.buildApply(
+            localNodeId = localNodeId,
+            request = RemoteConfigApplyRequest(
+                nodeId = nodeId,
+                name = name,
+                password = password,
+                sf = sf,
+                bw = bw,
+                txPower = txPower,
+                region = region,
+                role = role,
+                telemetryInterval = telemetryInterval,
+                screenTimeout = screenTimeout,
+                powerSaveMode = powerSaveMode,
+                positionPrecision = positionPrecision,
+                gpsMode = gpsMode,
+                gpsDutyIntervalSecs = gpsDutyIntervalSecs,
+                fixedPosition = fixedPosition,
+                fixedLatitude = fixedLatitude,
+                fixedLongitude = fixedLongitude,
+                fixedAltitude = fixedAltitude,
+                meshHopLimit = meshHopLimit,
+                rebroadcastTxdelayX100 = rebroadcastTxdelayX100,
+                applyMask = applyMask,
+                maxHopLimit = NodeSettingsPrefs.readMaxHopLimit(
+                    context.getSharedPreferences(NodeSettingsPrefs.prefsName(nodeId), Context.MODE_PRIVATE)
+                )
+            ),
+            authProtocol = remoteControlAuthProtocol(nodeId),
+            packetId = packetId
+        ) ?: return null
+        return if (bleManager.sendPacket(packet.toByteArray())) packetId else null
     }
 
     fun startFirmwareUpdate(firmware: ByteArray) {
-        if (_otaState.value.active) return
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
-            _otaState.value = OtaState(error = true, status = "Not connected/authenticated")
-            return
-        }
-        val nodeId = bleManager.connectedNodeId
-        otaTargetNodeId = nodeId
-        captureOtaPreFlashVersion(nodeId)
-        // Expected label may have been set by [rememberOtaExpectedFirmware] from catalog.
-
-        otaJob = repositoryScope.launch(Dispatchers.IO) {
-            bleManager.otaExclusive = true
-            try {
-                val expected = otaExpectedFirmwareVersion
-                _otaState.value = OtaState(
-                    active = true,
-                    status = "Preparing...",
-                    expectedVersion = expected
-                )
-                bleManager.requestHighConnectionPriority()
-
-                val md5 = MessageDigest.getInstance("MD5").digest(firmware)
-                    .joinToString("") { "%02x".format(it) }
-                val sha256 = MessageDigest.getInstance("SHA-256").digest(firmware)
-                    .joinToString("") { "%02x".format(it) }
-
-                while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
-
-                var chunkHint = -1
-                for (attempt in 1..2) {
-                    sendOtaControl(nodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.BEGIN, firmware.size, md5, sha256)
+        when (
+            val start = OtaStartPolicy.begin(
+                _otaState.value.active, bleManager.isConnected, _isDeviceAuthenticated.value
+            )
+        ) {
+            OtaStartDecision.AlreadyActive -> return
+            is OtaStartDecision.Blocked -> {
+                _otaState.value = start.state
+                return
+            }
+            OtaStartDecision.Run -> {
+                val nodeId = bleManager.connectedNodeId
+                otaTargetNodeId = nodeId
+                captureOtaPreFlashVersion(nodeId)
+                otaJob = repositoryScope.launch(Dispatchers.IO) {
+                    bleManager.otaExclusive = true
                     try {
-                        chunkHint = awaitOtaState(com.silentwolf75.aethermesh.proto.OtaStatus.State.READY, 25_000, "start acknowledgment")
-                        break
-                    } catch (e: Exception) {
-                        if (attempt == 2) throw e
-                        _otaState.value = OtaState(
-                            active = true,
-                            status = "Retrying start...",
-                            expectedVersion = expected
+                        esp32OtaSender.upload(
+                            firmware = firmware,
+                            nodeId = nodeId,
+                            expectedVersion = otaExpectedFirmwareVersion,
+                            onState = { _otaState.value = it },
+                            onSuccess = { markOtaFirmwareCacheUpdated() },
+                            onDiagnostic = { appendDiagnostic(it) },
+                            requestHighPriority = { bleManager.requestHighConnectionPriority() },
+                            resumeAfter = { bleManager.resumeAfterDfu() }
                         )
-                        delay(1500)
-                        while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
+                    } finally {
+                        bleManager.otaExclusive = false
                     }
                 }
-                if (chunkHint < 0) throw Exception("Node never became ready")
-
-                val chunkSize = otaChunkSizeForLink(chunkHint)
-                val window = otaWindowForNode(chunkHint)
-                Log.d(TAG, "OTA profile: chunk=$chunkSize window=$window exclusive+unconfirmed (hint $chunkHint, mtu=${bleManager.negotiatedMtu})")
-
-                _otaState.value = OtaState(
-                    active = true,
-                    status = "Uploading...",
-                    expectedVersion = expected
-                )
-                var offset = 0
-                while (offset < firmware.size) {
-                    var windowEndOffset = offset
-                    for (w in 0 until window) {
-                        if (windowEndOffset >= firmware.size) break
-                        val len = minOf(chunkSize, firmware.size - windowEndOffset)
-                        val chunk = com.silentwolf75.aethermesh.proto.OtaData.newBuilder()
-                            .setOffset(windowEndOffset)
-                            .setData(com.google.protobuf.ByteString.copyFrom(firmware, windowEndOffset, len))
-                        val pkt = MeshPacket.newBuilder()
-                            .setSenderId(nodeId.toInt())
-                            .setRecipientId(nodeId.toInt())
-                            .setHopLimit(1)
-                            .setOtaData(chunk)
-                            .build()
-                            .toByteArray()
-                        var tries = 0
-                        // Unconfirmed writes. A confirmed write costs a full round
-                        // trip per chunk -- one write per connection event -- which
-                        // was the floor at ~35ms/chunk. Unconfirmed lets the
-                        // controller queue several per event.
-                        //
-                        // The ATT layer is not what protects this transfer: a window
-                        // is 8 chunks against the node's 16-slot RX ring with an
-                        // IN_PROGRESS ack per window, and any chunk that goes missing
-                        // surfaces as an offset gap the node asks to resume from. Eight
-                        // outstanding chunks cannot overflow sixteen slots.
-                        while (!bleManager.sendPacket(pkt, timeoutMs = 3000, withResponse = false, otaStream = true)) {
-                            if (++tries > com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.MAX_ATTEMPTS) {
-                                throw Exception("BLE write failed repeatedly")
-                            }
-                            delay(com.silentwolf75.aethermesh.ble.OtaWriteRetryPolicy.delayMs(tries))
-                        }
-                        windowEndOffset += len
-                        if (w < window - 1 && windowEndOffset < firmware.size) {
-                            delay(OTA_INTER_CHUNK_MS)
-                        }
-                    }
-
-                    // Wait until the node has flashed through this window. If it
-                    // reports an earlier offset (resume hint), rewind and resend.
-                    var acked = awaitOtaProgress(30_000)
-                    if (acked < offset) {
-                        Log.w(TAG, "OTA node behind ($acked < $offset); resyncing")
-                        offset = acked
-                        continue
-                    }
-                    while (acked < windowEndOffset) {
-                        acked = awaitOtaProgress(30_000)
-                        if (acked < offset) {
-                            offset = acked
-                            break
-                        }
-                        if (acked > windowEndOffset) {
-                            throw Exception("Node acked $acked past window end $windowEndOffset")
-                        }
-                    }
-                    if (acked < windowEndOffset) continue
-                    offset = windowEndOffset
-                    _otaState.value = OtaState(
-                        active = true,
-                        progress = (offset.toLong() * 100 / firmware.size).toInt(),
-                        status = "Uploading... ${offset / 1024} / ${firmware.size / 1024} kB",
-                        expectedVersion = expected
-                    )
-                }
-
-                _otaState.value = OtaState(
-                    active = true,
-                    progress = 100,
-                    status = "Verifying...",
-                    expectedVersion = expected
-                )
-                sendOtaControl(nodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.END, 0, "")
-                awaitOtaState(com.silentwolf75.aethermesh.proto.OtaStatus.State.SUCCESS, 20_000, "verification")
-
-                markOtaFirmwareCacheUpdated()
-                _otaState.value = otaSuccessState(
-                    expected = expected,
-                    status = otaSuccessStatus(expected, dfu = false)
-                )
-                delay(4_000)
-                try {
-                    bleManager.resumeAfterDfu()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Post-OTA reconnect schedule failed: ${e.message}")
-                }
-                _otaState.value = otaSuccessState(
-                    expected = expected,
-                    status = otaReconnectingStatus(expected, dfu = false)
-                )
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                try {
-                    sendOtaControl(bleManager.connectedNodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.ABORT, 0, "")
-                } catch (_: Exception) {}
-                _otaState.value = OtaState(error = true, status = "Update cancelled")
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "OTA failed: ${e.message}")
-                appendDiagnostic("OTA failed: ${e.message}")
-                try {
-                    sendOtaControl(bleManager.connectedNodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.ABORT, 0, "")
-                } catch (_: Exception) {}
-                val bleLost = !bleManager.isConnected
-                _otaState.value = OtaState(
-                    error = true,
-                    status = if (bleLost)
-                        "Update interrupted — Bluetooth dropped. Reconnect and retry the update."
-                    else
-                        "Update failed: ${e.message}"
-                )
-            } finally {
-                bleManager.otaExclusive = false
             }
         }
     }
@@ -2058,7 +1607,7 @@ class AetherMeshRepository(private val context: Context) {
             dfuSawActivity = true
             _otaState.value = OtaState(
                 active = true,
-                status = "DFU: connecting to bootloader...",
+                status = DfuSessionPolicy.STATUS_CONNECTING,
                 expectedVersion = otaExpectedFirmwareVersion
             )
         }
@@ -2067,7 +1616,7 @@ class AetherMeshRepository(private val context: Context) {
             dfuSawActivity = true
             _otaState.value = OtaState(
                 active = true,
-                status = "DFU: starting transfer...",
+                status = DfuSessionPolicy.STATUS_PROCESS_STARTING,
                 expectedVersion = otaExpectedFirmwareVersion
             )
         }
@@ -2077,7 +1626,7 @@ class AetherMeshRepository(private val context: Context) {
             _otaState.value = OtaState(
                 active = true,
                 progress = 100,
-                status = "DFU: validating firmware...",
+                status = DfuSessionPolicy.STATUS_VALIDATING,
                 expectedVersion = otaExpectedFirmwareVersion
             )
         }
@@ -2095,7 +1644,7 @@ class AetherMeshRepository(private val context: Context) {
             _otaState.value = OtaState(
                 active = true,
                 progress = percent,
-                status = "DFU uploading... $percent%$partHint",
+                status = DfuSessionPolicy.uploadingStatus(percent, partHint),
                 expectedVersion = otaExpectedFirmwareVersion
             )
         }
@@ -2103,9 +1652,9 @@ class AetherMeshRepository(private val context: Context) {
         override fun onDfuCompleted(deviceAddress: String) {
             val expected = otaExpectedFirmwareVersion
             markOtaFirmwareCacheUpdated()
-            _otaState.value = otaSuccessState(
+            _otaState.value = OtaTransferPolicy.successState(
                 expected = expected,
-                status = otaSuccessStatus(expected, dfu = true)
+                status = OtaTransferPolicy.successStatus(expected, dfu = true)
             )
             dfuController = null
             bleManager.resumeAfterDfu()
@@ -2113,22 +1662,25 @@ class AetherMeshRepository(private val context: Context) {
             repositoryScope.launch {
                 delay(1_500)
                 if (_otaState.value.done && !_otaState.value.suspectRollback) {
-                    _otaState.value = otaSuccessState(
+                    _otaState.value = OtaTransferPolicy.successState(
                         expected = expected,
-                        status = otaReconnectingStatus(expected, dfu = true)
+                        status = OtaTransferPolicy.reconnectingStatus(expected, dfu = true)
                     )
                 }
             }
         }
 
         override fun onDfuAborted(deviceAddress: String) {
-            _otaState.value = OtaState(error = true, status = "DFU cancelled")
+            _otaState.value = OtaState(error = true, status = DfuSessionPolicy.STATUS_CANCELLED)
             dfuController = null
             bleManager.resumeAfterDfu()
         }
 
         override fun onError(deviceAddress: String, error: Int, errorType: Int, message: String?) {
-            _otaState.value = OtaState(error = true, status = "DFU failed: ${message ?: "error $error"}")
+            _otaState.value = OtaState(
+                error = true,
+                status = DfuSessionPolicy.failedStatus(error, message)
+            )
             dfuController = null
             bleManager.resumeAfterDfu()
         }
@@ -2144,8 +1696,8 @@ class AetherMeshRepository(private val context: Context) {
         val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
         val scanner = btManager?.adapter?.bluetoothLeScanner ?: return null
 
-        val legacyDfu = android.os.ParcelUuid.fromString("00001530-1212-EFDE-1523-785FEABCD123")
-        val secureDfu = android.os.ParcelUuid.fromString("0000FE59-0000-1000-8000-00805F9B34FB")
+        val legacyDfu = android.os.ParcelUuid.fromString(DfuSessionPolicy.LEGACY_SERVICE_UUID)
+        val secureDfu = android.os.ParcelUuid.fromString(DfuSessionPolicy.SECURE_SERVICE_UUID)
         val filters = listOf(
             android.bluetooth.le.ScanFilter.Builder().setServiceUuid(legacyDfu).build(),
             android.bluetooth.le.ScanFilter.Builder().setServiceUuid(secureDfu).build()
@@ -2182,15 +1734,25 @@ class AetherMeshRepository(private val context: Context) {
     }
 
     fun startRakDfuUpdate(zipUri: android.net.Uri) {
-        if (_otaState.value.active) return
-        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
-            _otaState.value = OtaState(error = true, status = "Not connected/authenticated")
-            return
+        when (
+            val start = OtaStartPolicy.begin(
+                _otaState.value.active, bleManager.isConnected, _isDeviceAuthenticated.value
+            )
+        ) {
+            OtaStartDecision.AlreadyActive -> return
+            is OtaStartDecision.Blocked -> {
+                _otaState.value = start.state
+                return
+            }
+            OtaStartDecision.Run -> { }
         }
         val mac = bleManager.getConnectedDeviceAddress()
-        if (mac == null) {
-            _otaState.value = OtaState(error = true, status = "No device address")
-            return
+        when (val addr = OtaStartPolicy.requireAddress(mac)) {
+            is OtaStartDecision.Blocked -> {
+                _otaState.value = addr.state
+                return
+            }
+            else -> { }
         }
         val deviceName = bleManager.connectedDeviceName ?: "AetherMesh"
         val nodeId = bleManager.connectedNodeId
@@ -2206,35 +1768,39 @@ class AetherMeshRepository(private val context: Context) {
 
                 _otaState.value = OtaState(
                     active = true,
-                    status = "Rebooting node into DFU bootloader...",
+                    status = DfuSessionPolicy.STATUS_REBOOTING,
                     expectedVersion = expected
                 )
-                while (otaStatusChannel.tryReceive().isSuccess) { /* drain */ }
+                otaInbox.drain()
 
-                sendOtaControl(nodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.ENTER_DFU, 0, "")
-                awaitOtaState(com.silentwolf75.aethermesh.proto.OtaStatus.State.READY, 10_000, "DFU mode acknowledgment")
+                esp32OtaSender.sendControl(nodeId, com.silentwolf75.aethermesh.proto.OtaControl.Op.ENTER_DFU, 0, "")
+                otaInbox.awaitState(
+                    com.silentwolf75.aethermesh.proto.OtaStatus.State.READY,
+                    DfuSessionPolicy.ENTER_ACK_TIMEOUT_MS,
+                    "DFU mode acknowledgment"
+                )
 
                 // The node is rebooting into its bootloader; release our GATT and
                 // pause auto-reconnect so the DFU library owns the connection.
                 bleManager.detachForDfu()
-                delay(3000) // bootloader boot + advertising settle
+                delay(DfuSessionPolicy.BOOTLOADER_SETTLE_MS) // bootloader boot + advertising settle
 
                 // Nordic-family bootloaders often advertise on a DIFFERENT
                 // address (MAC+1) and name in DFU mode, so scan for the DFU
                 // service instead of assuming the application's address.
                 _otaState.value = OtaState(
                     active = true,
-                    status = "Searching for DFU bootloader...",
+                    status = DfuSessionPolicy.STATUS_SEARCHING,
                     expectedVersion = expected
                 )
-                val dfuMac = findDfuDevice(15_000)
-                    ?: throw Exception("DFU bootloader not advertising (node may need a newer bootloader)")
+                val dfuMac = findDfuDevice(DfuSessionPolicy.SCAN_TIMEOUT_MS)
+                    ?: throw Exception(DfuSessionPolicy.ERR_NOT_ADVERTISING)
                 Log.d(TAG, "DFU bootloader found at $dfuMac (app was at $mac)")
 
                 dfuSawActivity = false
                 _otaState.value = OtaState(
                     active = true,
-                    status = "Starting DFU transfer...",
+                    status = DfuSessionPolicy.STATUS_STARTING_TRANSFER,
                     expectedVersion = expected
                 )
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
@@ -2252,10 +1818,10 @@ class AetherMeshRepository(private val context: Context) {
 
                 // Watchdog: if the DFU service shows no life at all, surface an
                 // error instead of leaving the bar stuck forever.
-                delay(45_000)
+                delay(DfuSessionPolicy.SERVICE_ENGAGE_WATCHDOG_MS)
                 if (!dfuSawActivity && _otaState.value.active) {
                     dfuController?.abort()
-                    throw Exception("DFU service never engaged the bootloader")
+                    throw Exception(DfuSessionPolicy.ERR_NEVER_ENGAGED)
                 }
                 // From here the DfuProgressListener drives otaState.
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2263,13 +1829,16 @@ class AetherMeshRepository(private val context: Context) {
                 if (_otaState.value.active &&
                     !_otaState.value.status.contains("cancel", ignoreCase = true)
                 ) {
-                    _otaState.value = OtaState(error = true, status = "DFU cancelled")
+                    _otaState.value = OtaState(error = true, status = DfuSessionPolicy.STATUS_CANCELLED)
                     bleManager.resumeAfterDfu()
                 }
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "DFU start failed: ${e.message}")
-                _otaState.value = OtaState(error = true, status = "DFU failed: ${e.message}")
+                _otaState.value = OtaState(
+                    error = true,
+                    status = DfuSessionPolicy.failedStatus(e.message)
+                )
                 bleManager.resumeAfterDfu()
             }
         }
@@ -2277,14 +1846,11 @@ class AetherMeshRepository(private val context: Context) {
 
     /** Copy a DFU zip into cacheDir so the Nordic DFU service can open it. */
     private fun copyZipForDfuService(zipUri: android.net.Uri): android.net.Uri {
-        val bytes = context.contentResolver.openInputStream(zipUri)?.use { it.readBytes() }
-            ?: throw Exception("Could not read DFU zip")
-        if (bytes.isEmpty()) throw Exception("DFU zip is empty")
-        val dir = java.io.File(context.cacheDir, "firmware").apply { mkdirs() }
-        val nameHint = zipUri.lastPathSegment?.substringAfterLast('/') ?: "firmware.zip"
-        val safeName = nameHint.ifBlank { "firmware.zip" }.let {
-            if (it.lowercase().endsWith(".zip")) it else "$it.zip"
-        }
+        val bytes = DfuZipPolicy.requireBytes(
+            context.contentResolver.openInputStream(zipUri)?.use { it.readBytes() }
+        )
+        val dir = java.io.File(context.cacheDir, DfuZipPolicy.CACHE_SUBDIR).apply { mkdirs() }
+        val safeName = DfuZipPolicy.safeFileName(zipUri.lastPathSegment)
         val file = java.io.File(dir, safeName)
         file.writeBytes(bytes)
         return androidx.core.content.FileProvider.getUriForFile(
@@ -2302,125 +1868,50 @@ class AetherMeshRepository(private val context: Context) {
      * keep showing the pre-flash firmware until telemetry arrives.
      */
     fun rememberOtaExpectedFirmware(versionLabel: String?) {
-        otaExpectedFirmwareVersion = versionLabel?.trim().orEmpty()
+        otaExpectedFirmwareVersion = FirmwareFreshnessPolicy.expectedLabel(versionLabel)
     }
 
     private fun captureOtaPreFlashVersion(nodeId: Long) {
-        if (nodeId == 0L) {
-            otaPreFlashFirmwareVersion = ""
-            return
-        }
-        otaPreFlashFirmwareVersion = _nodes.value
-            .firstOrNull { it.nodeId == nodeId }
-            ?.firmwareVersion
-            ?.trim()
-            .orEmpty()
-        if (otaPreFlashFirmwareVersion.isEmpty()) {
-            otaPreFlashFirmwareVersion = dbHelper.getNodes()
-                .firstOrNull { it.nodeId == nodeId }
-                ?.firmwareVersion
-                ?.trim()
-                .orEmpty()
-        }
-    }
-
-    private fun otaSuccessStatus(expected: String, dfu: Boolean): String {
-        val label = expected.ifBlank { "new firmware" }
-        return if (dfu) {
-            "DFU success — installed $label. Node rebooting / reconnecting…"
+        val memory = _nodes.value.firstOrNull { MeshNodeId.same(it.nodeId, nodeId) }?.firmwareVersion
+        val needDb = nodeId != 0L && FirmwareFreshnessPolicy.expectedLabel(memory).isEmpty()
+        val db = if (needDb) {
+            dbHelper.getNodes().firstOrNull { MeshNodeId.same(it.nodeId, nodeId) }?.firmwareVersion
         } else {
-            "OTA success — installed $label. Node rebooting / reconnecting…"
+            null
         }
+        otaPreFlashFirmwareVersion = FirmwareFreshnessPolicy.pickPreFlashVersion(nodeId, memory, db)
     }
-
-    private fun otaReconnectingStatus(expected: String, dfu: Boolean): String {
-        val label = expected.ifBlank { "new firmware" }
-        val kind = if (dfu) "DFU" else "OTA"
-        return "$kind success — expected $label. Rebooting / reconnecting… (confirming version)"
-    }
-
-    private fun otaSuccessState(expected: String, status: String) = OtaState(
-        progress = 100,
-        done = true,
-        status = status,
-        expectedVersion = expected
-    )
 
     private fun markAwaitingFirmwareTelemetry(nodeId: Long) {
-        if (nodeId == 0L) return
-        _firmwareFreshness.value = FirmwareFreshness(
-            awaitingFreshTelemetry = true,
-            connectedNodeId = nodeId
-        )
+        FirmwareFreshnessPolicy.awaiting(nodeId)?.let { _firmwareFreshness.value = it }
     }
 
     private fun onFreshFirmwareTelemetry(nodeId: Long, reported: String) {
+        if (!FirmwareFreshnessPolicy.acceptReported(reported)) return
         val fresh = reported.trim()
-        if (fresh.isEmpty()) return
-        val awaiting = _firmwareFreshness.value
-        if (awaiting.awaitingFreshTelemetry &&
-            (awaiting.connectedNodeId == 0L || awaiting.connectedNodeId == nodeId)
-        ) {
-            _firmwareFreshness.value = FirmwareFreshness(
-                awaitingFreshTelemetry = false,
-                connectedNodeId = nodeId
-            )
-        }
+        _firmwareFreshness.value = FirmwareFreshnessPolicy.onReported(
+            _firmwareFreshness.value, nodeId, fresh
+        )
         maybeConfirmOtaApplied(nodeId, fresh)
     }
 
     private fun maybeConfirmOtaApplied(nodeId: Long, reported: String) {
-        if (otaVerifyNodeId == 0L || nodeId != otaVerifyNodeId) return
-        val expected = otaVerifyExpected
-        val pre = otaVerifyPre
-        val stillOnPre = pre.isNotBlank() &&
-            reported.equals(pre, ignoreCase = true)
-        val matchesExpected = expected.isNotBlank() && firmwareVersionsLookCompatible(reported, expected)
-        when {
-            stillOnPre && (expected.isBlank() || !matchesExpected) -> {
-                val msg = "Update may not have applied — still on $reported"
-                Log.w(TAG, msg)
-                _otaState.value = OtaState(
-                    progress = 100,
-                    done = true,
-                    error = true,
-                    suspectRollback = true,
-                    expectedVersion = expected,
-                    status = msg
-                )
+        when (
+            val decision = OtaVerifyPolicy.decide(
+                otaVerifyNodeId, nodeId, otaVerifyExpected, otaVerifyPre, reported
+            )
+        ) {
+            OtaVerifyDecision.Ignore, OtaVerifyDecision.Wait -> return
+            is OtaVerifyDecision.Finish -> {
+                if (decision.state.suspectRollback) {
+                    Log.w(TAG, decision.state.status)
+                }
+                _otaState.value = decision.state
                 otaVerifyNodeId = 0L
                 otaVerifyExpected = ""
                 otaVerifyPre = ""
-            }
-            matchesExpected || (pre.isNotBlank() && !stillOnPre) -> {
-                val label = expected.ifBlank { reported }
-                _otaState.value = OtaState(
-                    progress = 100,
-                    done = true,
-                    expectedVersion = expected,
-                    status = "Update confirmed — now running $reported" +
-                        if (expected.isNotBlank() && reported != expected) " (expected $label)" else ""
-                )
-                otaVerifyNodeId = 0L
-                otaVerifyExpected = ""
-                otaVerifyPre = ""
-            }
-            else -> {
-                // Telemetry arrived but we cannot yet decide; keep waiting.
             }
         }
-    }
-
-    /** Loose match: exact, or reported contains expected semver/base, or vice versa. */
-    private fun firmwareVersionsLookCompatible(reported: String, expected: String): Boolean {
-        val a = reported.trim().lowercase()
-        val b = expected.trim().lowercase()
-        if (a.isEmpty() || b.isEmpty()) return false
-        if (a == b) return true
-        if (a.contains(b) || b.contains(a)) return true
-        val aBase = a.substringBefore('-').substringBefore('+')
-        val bBase = b.substringBefore('-').substringBefore('+')
-        return aBase.isNotEmpty() && aBase == bBase
     }
 
     private fun markOtaFirmwareCacheUpdated() {
@@ -2442,181 +1933,90 @@ class AetherMeshRepository(private val context: Context) {
         Log.d(TAG, "Post-OTA firmware cache for 0x${nodeId.toString(16)} -> '${label.ifEmpty { "(cleared)" }}' (pre='$pre')")
     }
 
-    private fun sendOtaControl(
-        nodeId: Long,
-        op: com.silentwolf75.aethermesh.proto.OtaControl.Op,
-        size: Int,
-        md5: String,
-        sha256: String = ""
-    ) {
-        val ctl = com.silentwolf75.aethermesh.proto.OtaControl.newBuilder()
-            .setOp(op)
-            .setTotalSize(size)
-            .setMd5(md5)
-            .setSha256(sha256)
-        val pkt = MeshPacket.newBuilder()
-            .setSenderId(nodeId.toInt())
-            .setRecipientId(nodeId.toInt())
-            .setHopLimit(1)
-            .setOtaControl(ctl)
-            .build()
-            .toByteArray()
-        if (!bleManager.sendPacket(pkt, otaStream = true)) {
-            throw Exception("BLE write failed (${op.name})")
-        }
-    }
-
-    // Wait for a specific state and return its next_offset (READY uses it as a
-    // capability hint). ERROR from the node always throws.
-    private fun otaNodeErrorMessage(raw: String): String {
-        val msg = raw.ifEmpty { "node reported error" }
-        return if (msg.contains("Offset gap", ignoreCase = true)) {
-            "$msg — this Heltec build needs one USB flash from the web flasher, then BLE OTA will work."
-        } else {
-            msg
-        }
-    }
-
-    private suspend fun awaitOtaState(
-        wanted: com.silentwolf75.aethermesh.proto.OtaStatus.State,
-        timeoutMs: Long,
-        what: String
-    ): Int {
-        val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-            var value = -1
-            var got = false
-            while (!got) {
-                val st = otaStatusChannel.receive()
-                when (st.state) {
-                    wanted -> { value = st.nextOffset; got = true }
-                    com.silentwolf75.aethermesh.proto.OtaStatus.State.ERROR ->
-                        throw Exception(otaNodeErrorMessage(st.message))
-                    else -> { /* keep waiting */ }
-                }
-            }
-            value
-        }
-        return result ?: throw Exception("Timed out waiting for $what")
-    }
-
-    // Wait for the next IN_PROGRESS ack and return the node's flashed offset.
-    private suspend fun awaitOtaProgress(timeoutMs: Long): Int {
-        val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-            var acked = -1
-            while (acked < 0) {
-                val st = otaStatusChannel.receive()
-                when (st.state) {
-                    com.silentwolf75.aethermesh.proto.OtaStatus.State.IN_PROGRESS -> acked = st.nextOffset
-                    com.silentwolf75.aethermesh.proto.OtaStatus.State.ERROR ->
-                        throw Exception(otaNodeErrorMessage(st.message))
-                    else -> { /* keep waiting */ }
-                }
-            }
-            acked
-        }
-        return result ?: throw Exception("Timed out waiting for chunk ack")
-    }
-
     // Per-node battery-alert state: the lowest threshold we've already warned
     // about (0 = none). Cleared when a node recharges above RECOVER, so a
     // charge/drain cycle re-arms the alerts. Prevents re-notifying every 60s
     // telemetry while a node sits below a threshold.
     private val batteryAlertLevel = mutableMapOf<Long, Int>()
-    private val BATT_ALERT_CRITICAL = 10
-    private val BATT_ALERT_LOW = 20
-    private val BATT_ALERT_RECOVER = 25
 
     private fun notifyLowBattery(nodeId: Long, level: Int, isCharging: Boolean) {
-        if (nodeId == 0L) return
-        // A charging node, or one that has recovered, re-arms future alerts
-        if (isCharging || level >= BATT_ALERT_RECOVER) {
-            batteryAlertLevel.remove(nodeId)
-            return
-        }
-        val already = batteryAlertLevel[nodeId] ?: 0
-        val threshold = when {
-            level <= BATT_ALERT_CRITICAL -> BATT_ALERT_CRITICAL
-            level <= BATT_ALERT_LOW -> BATT_ALERT_LOW
-            else -> return
-        }
-        // Only alert on first crossing of each threshold (already tracks the
-        // lowest threshold hit; a smaller threshold number = more severe)
-        if (already != 0 && threshold >= already) return
-        batteryAlertLevel[nodeId] = threshold
+        when (
+            val action = BatteryAlertPolicy.decide(
+                nodeId, level, isCharging, batteryAlertLevel[nodeId] ?: 0
+            )
+        ) {
+            BatteryAlertAction.Ignore -> return
+            BatteryAlertAction.Rearm -> {
+                batteryAlertLevel.remove(nodeId)
+                return
+            }
+            is BatteryAlertAction.Notify -> {
+                batteryAlertLevel[nodeId] = action.threshold
+                val prefs = context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
+                val notifGranted = android.os.Build.VERSION.SDK_INT < NotificationGatePolicy.POST_NOTIFICATIONS_SDK ||
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.POST_NOTIFICATIONS
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (!NotificationGatePolicy.mayNotifyBattery(
+                        prefs.getBoolean(AppUiPrefs.BG_ALERTS, true),
+                        android.os.Build.VERSION.SDK_INT,
+                        notifGranted
+                    )
+                ) return
 
-        val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
-        if (!prefs.getBoolean("bg_alerts_enabled", true)) return
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            androidx.core.content.ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.POST_NOTIFICATIONS
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return
-
-        val spanish = prefs.getString("app_language", "English") == "Spanish"
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        val chanId = "aethermesh_battery"
-        if (android.os.Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(
-                android.app.NotificationChannel(
-                    chanId,
-                    if (spanish) "Alertas de batería" else "Battery Alerts",
-                    android.app.NotificationManager.IMPORTANCE_HIGH
-                ).apply {
-                    description = if (spanish)
-                        "Avisa cuando la batería de un nodo de la malla está baja"
-                    else
-                        "Warns when a mesh node's battery runs low"
+                val spanish = AppUiPrefs.isSpanish(prefs.getString(AppUiPrefs.LANGUAGE, AppUiPrefs.LANG_ENGLISH))
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                val chanId = BatteryAlertPolicy.CHANNEL_ID
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    nm.createNotificationChannel(
+                        android.app.NotificationChannel(
+                            chanId,
+                            BatteryAlertPolicy.channelName(spanish),
+                            android.app.NotificationManager.IMPORTANCE_HIGH
+                        ).apply {
+                            description = BatteryAlertPolicy.channelDescription(spanish)
+                        }
+                    )
                 }
-            )
-        }
-        val name = dbHelper.getNodes().find { it.nodeId == nodeId }?.name
-            ?: (if (spanish) "Nodo %04X" else "Node %04X").format(nodeId and 0xFFFF)
-        val critical = threshold == BATT_ALERT_CRITICAL
-        val title = when {
-            critical && spanish -> "⚠ $name batería crítica"
-            critical -> "⚠ $name battery critical"
-            spanish -> "$name batería baja"
-            else -> "$name battery low"
-        }
-        val body = when {
-            critical && spanish -> "$level% restante — cárgalo ahora"
-            critical -> "$level% remaining — charge it now"
-            spanish -> "$level% restante"
-            else -> "$level% remaining"
-        }
+                val name = dbHelper.getNodes().find { MeshNodeId.same(it.nodeId, nodeId) }?.name
+                    ?: BatteryAlertPolicy.fallbackName(nodeId, spanish)
+                val title = BatteryAlertPolicy.title(name, action.critical, spanish)
+                val body = BatteryAlertPolicy.body(level, action.critical, spanish)
 
-        val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
-            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
-        }
-        val pi = android.app.PendingIntent.getActivity(
-            context, "batt$nodeId".hashCode(), tapIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif = androidx.core.app.NotificationCompat.Builder(context, chanId)
-            .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setAutoCancel(true)
-            .setContentIntent(pi)
-            .setGroup("aethermesh_battery")
-            .build()
-        // Stable per-node id so a critical alert replaces the earlier low one
-        nm.notify("batt$nodeId".hashCode(), notif)
+                val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
+                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
+                }
+                val notifyId = BatteryAlertPolicy.notifyId(nodeId)
+                val pi = android.app.PendingIntent.getActivity(
+                    context, notifyId, tapIntent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                )
+                val notif = androidx.core.app.NotificationCompat.Builder(context, chanId)
+                    .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setAutoCancel(true)
+                    .setContentIntent(pi)
+                    .setGroup(BatteryAlertPolicy.GROUP)
+                    .build()
+                nm.notify(notifyId, notif)
 
-        val summary = androidx.core.app.NotificationCompat.Builder(context, chanId)
-            .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
-            .setContentTitle(if (spanish) "Alertas de batería" else "Battery alerts")
-            .setContentText(if (spanish) "Alertas de nodos de la malla" else "Mesh node battery alerts")
-            .setStyle(
-                androidx.core.app.NotificationCompat.InboxStyle()
-                    .setSummaryText(if (spanish) "Batería de la malla" else "Mesh battery")
-            )
-            .setGroup("aethermesh_battery")
-            .setGroupSummary(true)
-            .setAutoCancel(true)
-            .build()
-        nm.notify("aethermesh_battery_summary".hashCode(), summary)
+                val summary = androidx.core.app.NotificationCompat.Builder(context, chanId)
+                    .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
+                    .setContentTitle(BatteryAlertPolicy.summaryTitle(spanish))
+                    .setContentText(BatteryAlertPolicy.summaryText(spanish))
+                    .setStyle(
+                        androidx.core.app.NotificationCompat.InboxStyle()
+                            .setSummaryText(BatteryAlertPolicy.inboxSummary(spanish))
+                    )
+                    .setGroup(BatteryAlertPolicy.GROUP)
+                    .setGroupSummary(true)
+                    .setAutoCancel(true)
+                    .build()
+                nm.notify(BatteryAlertPolicy.summaryNotifyId(), summary)
+            }
+        }
     }
 
     // Post a system notification for an incoming chat message, Meshtastic-style:
@@ -2630,39 +2030,40 @@ class AetherMeshRepository(private val context: Context) {
         content: String,
         isBroadcast: Boolean
     ) {
-        val prefs = context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
-        if (!prefs.getBoolean("bg_alerts_enabled", true)) return
-        // Mute still stores the message; only the system notification is skipped.
-        if (ChatThreadPrefs.isMuted(prefs, chatIdentifier)) return
+        val prefs = context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
         val app = context.applicationContext as? com.silentwolf75.aethermesh.AetherMeshApplication
-        if (app?.isActivityVisible == true) return
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+        val notifGranted = android.os.Build.VERSION.SDK_INT < NotificationGatePolicy.POST_NOTIFICATIONS_SDK ||
             androidx.core.content.ContextCompat.checkSelfPermission(
                 context, android.Manifest.permission.POST_NOTIFICATIONS
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!NotificationGatePolicy.mayNotifyMessage(
+                prefs.getBoolean(AppUiPrefs.BG_ALERTS, true),
+                ChatThreadPrefs.isMuted(prefs, chatIdentifier),
+                app?.isActivityVisible == true,
+                android.os.Build.VERSION.SDK_INT,
+                notifGranted
+            )
         ) return
 
-        val spanish = prefs.getString("app_language", "English") == "Spanish"
-        val notifChannelId = "aethermesh_messages"
+        val spanish = AppUiPrefs.isSpanish(prefs.getString(AppUiPrefs.LANGUAGE, AppUiPrefs.LANG_ENGLISH))
+        val notifChannelId = IncomingMessageAlertPolicy.CHANNEL_ID
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
                     notifChannelId,
-                    if (spanish) "Mensajes" else "Messages",
+                    IncomingMessageAlertPolicy.channelName(spanish),
                     android.app.NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = if (spanish)
-                        "Mensajes entrantes de la malla"
-                    else
-                        "Incoming mesh chat messages"
+                    description = IncomingMessageAlertPolicy.channelDescription(spanish)
                 }
             )
         }
 
-        val senderName = dbHelper.getNodes().find { it.nodeId == senderId }?.name
-            ?: (if (spanish) "Nodo %04X" else "Node %04X").format(senderId and 0xFFFF)
-        val title = if (isBroadcast) "$senderName @ $channel" else senderName
+        val senderName = dbHelper.getNodes().find { MeshNodeId.same(it.nodeId, senderId) }?.name
+            ?: IncomingMessageAlertPolicy.fallbackName(senderId, spanish)
+        val title = IncomingMessageAlertPolicy.title(senderName, channel, isBroadcast)
+        val notifyId = IncomingMessageAlertPolicy.notifyId(chatIdentifier)
 
         val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
             flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -2673,11 +2074,11 @@ class AetherMeshRepository(private val context: Context) {
             }
         }
         val pendingIntent = android.app.PendingIntent.getActivity(
-            context, chatIdentifier.hashCode(), tapIntent,
+            context, notifyId, tapIntent,
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
 
-        val groupKey = "aethermesh_messages"
+        val groupKey = IncomingMessageAlertPolicy.GROUP
         val notification = androidx.core.app.NotificationCompat.Builder(context, notifChannelId)
             .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
             .setContentTitle(title)
@@ -2688,21 +2089,21 @@ class AetherMeshRepository(private val context: Context) {
             .setGroup(groupKey)
             .setCategory(androidx.core.app.NotificationCompat.CATEGORY_MESSAGE)
             .build()
-        nm.notify(chatIdentifier.hashCode(), notification)
+        nm.notify(notifyId, notification)
 
         val summary = androidx.core.app.NotificationCompat.Builder(context, notifChannelId)
             .setSmallIcon(com.silentwolf75.aethermesh.R.drawable.ic_notification)
-            .setContentTitle(if (spanish) "Mensajes de AetherMesh" else "AetherMesh messages")
-            .setContentText(if (spanish) "Nuevos mensajes de la malla" else "New mesh messages")
+            .setContentTitle(IncomingMessageAlertPolicy.summaryTitle(spanish))
+            .setContentText(IncomingMessageAlertPolicy.summaryText(spanish))
             .setStyle(
                 androidx.core.app.NotificationCompat.InboxStyle()
-                    .setSummaryText(if (spanish) "Chat de la malla" else "Mesh chat")
+                    .setSummaryText(IncomingMessageAlertPolicy.inboxSummary(spanish))
             )
             .setGroup(groupKey)
             .setGroupSummary(true)
             .setAutoCancel(true)
             .build()
-        nm.notify("aethermesh_messages_summary".hashCode(), summary)
+        nm.notify(IncomingMessageAlertPolicy.summaryNotifyId(), summary)
     }
 
     fun refreshData() {
@@ -2720,15 +2121,17 @@ class AetherMeshRepository(private val context: Context) {
             _nodes.value = dbHelper.getNodes()
 
             // Keep the channel list in sync
-            val merged = (listOf(DEFAULT_CHANNEL) + dbHelper.getChannels() + _channels.value + _selectedChannel.value)
-                .distinct()
-            _channels.value = merged
+            _channels.value = ChannelPersistPolicy.mergeInboxNames(
+                dbNames = dbHelper.getChannels(),
+                current = _channels.value,
+                selected = _selectedChannel.value
+            )
         }
     }
 
     // Switch the channel shown in the Chats view.
     fun selectChannel(channel: String) {
-        if (channel.isBlank()) return
+        if (!ChannelPersistPolicy.canSelect(channel)) return
         _selectedChannel.value = channel
         _activeChatId.value = null
         if (!_channels.value.contains(channel)) {
@@ -2745,11 +2148,17 @@ class AetherMeshRepository(private val context: Context) {
 
     // Create (and switch to) a new empty channel. Returns false if it already exists.
     fun createChannel(channel: String): Boolean {
-        val name = channel.trim()
-        if (name.isEmpty()) return false
-        val exists = _channels.value.any { it.equals(name, ignoreCase = true) }
-        selectChannel(name)
-        return !exists
+        return when (val plan = ChannelPersistPolicy.planCreate(_channels.value, channel)) {
+            ChannelCreateResult.Invalid -> false
+            is ChannelCreateResult.AlreadyExists -> {
+                selectChannel(plan.name)
+                false
+            }
+            is ChannelCreateResult.Created -> {
+                selectChannel(plan.name)
+                true
+            }
+        }
     }
 
     // Retrieve specific direct chat messages
@@ -2760,7 +2169,7 @@ class AetherMeshRepository(private val context: Context) {
     fun clearAllMessages() {
         dbHelper.clearAllMessages()
         val editor = securePrefs.edit()
-        securePrefs.all.keys.filter { it.startsWith("chat_key_dm_") }.forEach(editor::remove)
+        ChatKeyStorePolicy.dmPrefKeys(securePrefs.all.keys).forEach(editor::remove)
         editor.apply()
         refreshData()
     }
@@ -2775,147 +2184,78 @@ class AetherMeshRepository(private val context: Context) {
         refreshData()
     }
 
-    // Legacy key derivation retained only to read v1/ECB messages.
-    private fun deriveLegacyKey(passcode: String): SecretKeySpec {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val bytes = digest.digest(passcode.toByteArray(Charsets.UTF_8))
-        return SecretKeySpec(bytes, "AES")
-    }
-
-    // AES-256-GCM with a random 12-byte IV prepended to the ciphertext.
-    // Returns null on failure — callers must refuse to send, never fall back
-    // to plaintext.
+    // AES-256-GCM v2; decrypt also accepts v1 GCM and legacy ECB.
+    // Returns null on encrypt failure — callers must refuse to send, never
+    // fall back to plaintext.
     fun encryptAES(plainText: String, passcode: String, chatIdentifier: String = ""): String? {
-        return try {
-            val salt = ByteArray(16)
-            java.security.SecureRandom().nextBytes(salt)
-            val keySpec = ChatKeyDerivation.derive(passcode, salt)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val iv = ByteArray(12)
-            java.security.SecureRandom().nextBytes(iv)
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, iv))
-            if (chatIdentifier.isNotEmpty()) {
-                cipher.updateAAD(chatIdentifier.toByteArray(Charsets.UTF_8))
-            }
-            val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            "v2:" + Base64.encodeToString(salt + iv + encryptedBytes, Base64.NO_WRAP)
-        } catch (e: Exception) {
-            Log.e(TAG, "Encryption failed: ${e.message}")
-            null
-        }
+        val cipher = ChatCrypto.encrypt(plainText, passcode, chatIdentifier)
+        if (cipher == null) Log.e(TAG, "Encryption failed")
+        return cipher
     }
 
     fun decryptAES(cipherText: String, passcode: String, chatIdentifier: String = ""): String {
-        if (cipherText.startsWith("v2:")) {
-            try {
-                val decoded = Base64.decode(cipherText.removePrefix("v2:"), Base64.NO_WRAP)
-                if (decoded.size <= 44) return "[Decryption Error - Invalid Message]"
-                val salt = decoded.copyOfRange(0, 16)
-                val iv = decoded.copyOfRange(16, 28)
-                val keySpec = ChatKeyDerivation.derive(passcode, salt)
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, iv))
-                if (chatIdentifier.isNotEmpty()) {
-                    cipher.updateAAD(chatIdentifier.toByteArray(Charsets.UTF_8))
-                }
-                return String(cipher.doFinal(decoded, 28, decoded.size - 28), Charsets.UTF_8)
-            } catch (e: Exception) {
-                Log.e(TAG, "v2 decryption failed: ${e.message}")
-                return "[Decryption Error - Bad Key or Context]"
-            }
+        val plain = ChatCrypto.decrypt(cipherText, passcode, chatIdentifier)
+        if (plain.startsWith("[Decryption Error")) {
+            Log.e(TAG, "Decryption failed: $plain")
         }
-
-        val keySpec = deriveLegacyKey(passcode)
-        // Current format: base64(IV[12] + ciphertext + GCM tag[16])
-        try {
-            val decoded = Base64.decode(cipherText, Base64.NO_WRAP)
-            if (decoded.size > 28) {
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.GCMParameterSpec(128, decoded, 0, 12))
-                return String(cipher.doFinal(decoded, 12, decoded.size - 12), Charsets.UTF_8)
-            }
-        } catch (e: Exception) {
-            // fall through to the legacy format
-        }
-        // Legacy format from older builds: AES/ECB (no IV, no integrity)
-        return try {
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec)
-            String(cipher.doFinal(Base64.decode(cipherText, Base64.NO_WRAP)), Charsets.UTF_8)
-        } catch (e: Exception) {
-            Log.e(TAG, "Decryption failed: ${e.message}")
-            "[Decryption Error - Bad Key]"
-        }
-    }
-
-    /** Full 32-bit or BLE-name 16-bit suffix — same node behind either form. */
-    private fun sameMeshNodeId(a: Long, b: Long): Boolean {
-        if (a == 0L || b == 0L) return false
-        val a32 = a and 0xFFFFFFFFL
-        val b32 = b and 0xFFFFFFFFL
-        if (a32 == b32) return true
-        return (a32 and 0xFFFFL) == (b32 and 0xFFFFL)
+        return plain
     }
 
     // Range Test Engine Methods
     fun startRangeTest(targetId: Long, intervalSeconds: Int) {
         val localNodeId = bleManager.connectedNodeId
-        if (sameMeshNodeId(localNodeId, targetId)) {
-            Log.w(
-                TAG,
-                "Refusing range test: target 0x${targetId.toString(16).uppercase()} is the " +
-                    "BLE-connected node 0x${localNodeId.toString(16).uppercase()} " +
-                    "(half-duplex radio cannot ping itself)."
-            )
-            return
-        }
-        // SF11+ PONG bursts need ~6–8s of clear air after each PING.
-        val sf = try {
-            context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
-                .getInt("lora_sf", 11)
-        } catch (_: Exception) {
-            11
-        }
-        val minInterval = when {
-            sf >= 11 -> 10
-            sf >= 10 -> 8
-            else -> 5
-        }
-        val intervalSecondsClamped = intervalSeconds.coerceIn(minInterval, 30)
-        if (intervalSecondsClamped != intervalSeconds) {
-            Log.w(TAG, "Range test interval clamped $intervalSeconds → ${intervalSecondsClamped}s (SF$sf)")
-        }
-        if (rangeTestJob != null) stopRangeTest()
-        rangeTestTargetId = targetId
-        _rangeTestSessionStartMs.value = System.currentTimeMillis()
-        rangeTestRxBaseline = _meshDiagnostics.value?.rxPackets ?: -1L
-        _isRangeTestActive.value = true
-        _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
-        startRangeTestLocationUpdates()
-        pendingRangePings.clear()
-        sendRangeTestControl(RangeTestControl.Op.START)
-
-        rangeTestJob = repositoryScope.launch {
-            while (_isRangeTestActive.value) {
-                expirePendingRangePings()
-                sendRangePing(targetId)
-                val nextPingAt = System.currentTimeMillis() + intervalSecondsClamped * 1000L
-                while (_isRangeTestActive.value && System.currentTimeMillis() < nextPingAt) {
-                    val remaining = (nextPingAt - System.currentTimeMillis()).coerceAtLeast(1L)
-                    delay(minOf(1000L, remaining))
-                    expirePendingRangePings()
+        val sf = NodeSettingsPrefs.readLoraSf(
+            context.getSharedPreferences(NodeSettingsPrefs.prefsName(localNodeId), Context.MODE_PRIVATE)
+        )
+        when (val start = RangeTestPolicy.begin(localNodeId, targetId, intervalSeconds, sf)) {
+            RangeTestStart.SelfTarget -> {
+                Log.w(
+                    TAG,
+                    "Refusing range test: target 0x${targetId.toString(16).uppercase()} is the " +
+                        "BLE-connected node 0x${localNodeId.toString(16).uppercase()} " +
+                        "(half-duplex radio cannot ping itself)."
+                )
+                return
+            }
+            is RangeTestStart.Run -> {
+                val intervalSecondsClamped = start.intervalSeconds
+                if (intervalSecondsClamped != intervalSeconds) {
+                    Log.w(TAG, "Range test interval clamped $intervalSeconds → ${intervalSecondsClamped}s (SF$sf)")
                 }
+                if (rangeTestJob != null) stopRangeTest()
+                rangeTestTargetId = targetId
+                rangeTestSf = sf
+                _rangeTestSessionStartMs.value = System.currentTimeMillis()
+                rangeTestRxBaseline = _meshDiagnostics.value?.rxPackets ?: -1L
+                _isRangeTestActive.value = true
+                _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
+                startRangeTestLocationUpdates()
+                pendingRangePings.clear()
+                sendRangeTestControl(RangeTestControl.Op.START)
+
+                rangeTestJob = repositoryScope.launch {
+                    while (_isRangeTestActive.value) {
+                        expirePendingRangePings()
+                        sendRangePing(targetId)
+                        val nextPingAt = System.currentTimeMillis() + intervalSecondsClamped * 1000L
+                        while (_isRangeTestActive.value && System.currentTimeMillis() < nextPingAt) {
+                            val remaining = (nextPingAt - System.currentTimeMillis()).coerceAtLeast(1L)
+                            delay(minOf(1000L, remaining))
+                            expirePendingRangePings()
+                        }
+                    }
+                }
+                Log.d(TAG, "Direct range test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSecondsClamped}s.")
             }
         }
-        Log.d(TAG, "Direct range test started targeting node 0x${targetId.toString(16).uppercase()} every ${intervalSecondsClamped}s.")
     }
 
     fun loadRangeTestLogs(targetId: Long) {
         // Never retarget a live test — the banner / reopen / stop path keys off
         // rangeTestTargetId, and dialogs for other nodes only need historical logs.
-        if (!_isRangeTestActive.value) {
-            rangeTestTargetId = targetId
-        }
+        rangeTestTargetId = RangeTestPolicy.sessionTargetAfterLoad(
+            _isRangeTestActive.value, rangeTestTargetId, targetId
+        )
         _rangeTestLogs.value = dbHelper.getRangeTestLogs(targetId)
     }
 
@@ -2924,16 +2264,14 @@ class AetherMeshRepository(private val context: Context) {
         rangeTestJob = null
         _isRangeTestActive.value = false
         // Score outstanding pings as stopped rather than silent drops.
-        pendingRangePings.entries.toList().forEach { entry ->
-            if (pendingRangePings.remove(entry.key, entry.value)) {
-                logRangeTestResult(
-                    pending = entry.value,
-                    success = false,
-                    rssi = -140f,
-                    snr = -20f,
-                    failureReason = "test_stopped"
-                )
-            }
+        pendingRangePings.drainAll().forEach { pending ->
+            logRangeTestResult(
+                pending = pending,
+                success = false,
+                rssi = RangeTestPolicy.FAIL_RSSI,
+                snr = RangeTestPolicy.FAIL_SNR,
+                failureReason = RangeTestPolicy.FAIL_STOPPED
+            )
         }
         stopRangeTestLocationUpdates()
         sendRangeTestControl(RangeTestControl.Op.STOP)
@@ -2942,16 +2280,9 @@ class AetherMeshRepository(private val context: Context) {
 
     private fun sendRangeTestControl(op: RangeTestControl.Op) {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return
-        val control = RangeTestControl.newBuilder().setOp(op).build()
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(bleManager.connectedNodeId.toInt())
-            .setRecipientId(bleManager.connectedNodeId.toInt())
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(0)
-            .setWantAck(false)
-            .setPrevHopId(bleManager.connectedNodeId.toInt())
-            .setRangeTestControl(control)
-            .build()
+        val packet = RangeTestPolicy.buildControl(
+            bleManager.connectedNodeId, PacketIdGenerator.next(), op
+        )
         if (!bleManager.sendPacket(packet.toByteArray())) {
             Log.w(TAG, "Failed to send range-test control $op (quiet mode may be unavailable on older firmware).")
         }
@@ -2971,15 +2302,15 @@ class AetherMeshRepository(private val context: Context) {
                     position = captureRangeTestPosition()
                 ),
                 success = false,
-                rssi = -140f,
-                snr = -20f,
-                failureReason = "auth_blocked"
+                rssi = RangeTestPolicy.FAIL_RSSI,
+                snr = RangeTestPolicy.FAIL_SNR,
+                failureReason = RangeTestPolicy.FAIL_AUTH
             )
             return
         }
 
         val localNodeId = bleManager.connectedNodeId
-        if (sameMeshNodeId(localNodeId, targetId)) {
+        if (MeshNodeId.same(localNodeId, targetId)) {
             Log.w(TAG, "Range test ping skipped: target is the BLE-connected node.")
             logRangeTestResult(
                 pending = PendingRangePing(
@@ -2988,45 +2319,24 @@ class AetherMeshRepository(private val context: Context) {
                     position = captureRangeTestPosition()
                 ),
                 success = false,
-                rssi = -140f,
-                snr = -20f,
-                failureReason = "self_target"
+                rssi = RangeTestPolicy.FAIL_RSSI,
+                snr = RangeTestPolicy.FAIL_SNR,
+                failureReason = RangeTestPolicy.FAIL_SELF
             )
             stopRangeTest()
             return
         }
 
-        // Keep range-test IDs in 1..9999999 so the decimal form fits the
-        // firmware PONG parser used by already-flashed nodes during rollout.
-        var generatedPacketId: Int
-        do {
-            generatedPacketId = (PacketIdGenerator.next() % 9_999_999) + 1
-        } while (pendingRangePings.containsKey(generatedPacketId))
+        val generatedPacketId = pendingRangePings.allocatePingId { PacketIdGenerator.next() }
 
         val pending = PendingRangePing(
             targetId = targetId,
             sentAtMs = System.currentTimeMillis(),
             position = captureRangeTestPosition()
         )
-        pendingRangePings[generatedPacketId] = pending
+        pendingRangePings.put(generatedPacketId, pending)
 
-        val textBuilder = TextMessage.newBuilder()
-            .setContent("PING_${generatedPacketId}_D")
-            .setChannel("")
-            .setIsEncrypted(false)
-
-        // want_ack = false by design: pings are scored via the target's PONG reply
-        // (which the target retries itself). ACK-tracking a ping would make the
-        // connected node retransmit it, colliding with the inbound PONGs.
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(targetId.toInt())
-            .setPacketId(generatedPacketId)
-            .setHopLimit(1)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setText(textBuilder)
-            .build()
+        val packet = RangeTestPolicy.buildPing(localNodeId, targetId, generatedPacketId)
 
         if (bleManager.sendPacket(packet.toByteArray())) {
             Log.d(TAG, "Range test ping sent: packetId=$generatedPacketId")
@@ -3036,52 +2346,43 @@ class AetherMeshRepository(private val context: Context) {
                 logRangeTestResult(
                     pending = pending,
                     success = false,
-                    rssi = -140f,
-                    snr = -20f,
-                    failureReason = "ble_send_fail"
+                    rssi = RangeTestPolicy.FAIL_RSSI,
+                    snr = RangeTestPolicy.FAIL_SNR,
+                    failureReason = RangeTestPolicy.FAIL_BLE
                 )
             }
         }
     }
 
     private fun captureRangeTestPosition(): RangeTestPosition {
-        var lat = 0.0
-        var lon = 0.0
-        var speedMps: Float? = null
-        var gpsAccuracyM: Float? = null
-
         val phoneLoc = lastPhoneLocation
-        if (phoneLoc != null && System.currentTimeMillis() - phoneLoc.time < 30000) {
-            lat = phoneLoc.latitude
-            lon = phoneLoc.longitude
-            if (phoneLoc.hasSpeed()) speedMps = phoneLoc.speed
-            if (phoneLoc.hasAccuracy()) gpsAccuracyM = phoneLoc.accuracy
-        } else {
-            val localNodeId = bleManager.connectedNodeId
-            val localNode = dbHelper.getNodes().firstOrNull { it.nodeId == localNodeId }
-            if (localNode != null) {
-                lat = localNode.latitude.toDouble()
-                lon = localNode.longitude.toDouble()
-            }
-        }
-        return RangeTestPosition(lat, lon, speedMps, gpsAccuracyM)
+        val localNodeId = bleManager.connectedNodeId
+        val localNode = dbHelper.getNodes().firstOrNull { MeshNodeId.same(it.nodeId, localNodeId) }
+        return RangeTestPolicy.pickPosition(
+            phoneLat = phoneLoc?.latitude,
+            phoneLon = phoneLoc?.longitude,
+            phoneTimeMs = phoneLoc?.time ?: 0L,
+            phoneSpeed = phoneLoc?.takeIf { it.hasSpeed() }?.speed,
+            phoneAccuracy = phoneLoc?.takeIf { it.hasAccuracy() }?.accuracy,
+            nowMs = System.currentTimeMillis(),
+            nodeLat = localNode?.latitude?.toDouble() ?: 0.0,
+            nodeLon = localNode?.longitude?.toDouble() ?: 0.0
+        )
     }
 
     private fun expirePendingRangePings() {
-        val cutoff = System.currentTimeMillis() - RANGE_PING_TIMEOUT_MS
-        pendingRangePings.entries
-            .filter { it.value.sentAtMs <= cutoff }
-            .forEach { entry ->
-                if (pendingRangePings.remove(entry.key, entry.value)) {
-                    logRangeTestResult(
-                        pending = entry.value,
-                        success = false,
-                        rssi = -140f,
-                        snr = -20f,
-                        failureReason = "timeout"
-                    )
-                }
-            }
+        pendingRangePings.expire(
+            System.currentTimeMillis(),
+            RangeTestPolicy.pingTimeoutMs(rangeTestSf)
+        ).forEach { pending ->
+            logRangeTestResult(
+                pending = pending,
+                success = false,
+                rssi = RangeTestPolicy.FAIL_RSSI,
+                snr = RangeTestPolicy.FAIL_SNR,
+                failureReason = RangeTestPolicy.FAIL_TIMEOUT
+            )
+        }
     }
 
     private fun logRangeTestResult(
@@ -3108,7 +2409,7 @@ class AetherMeshRepository(private val context: Context) {
             pending.sentAtMs,
             failureReason = if (success) null else failureReason
         )
-        if (sameMeshNodeId(pending.targetId, rangeTestTargetId)) {
+        if (MeshNodeId.same(pending.targetId, rangeTestTargetId)) {
             _rangeTestLogs.value = dbHelper.getRangeTestLogs(pending.targetId)
         }
     }
@@ -3116,9 +2417,7 @@ class AetherMeshRepository(private val context: Context) {
     fun clearRangeTestLogs(targetId: Long) {
         dbHelper.clearRangeTestLogs(targetId)
         _rangeTestLogs.value = emptyList()
-        pendingRangePings.entries
-            .filter { it.value.targetId == targetId }
-            .forEach { pendingRangePings.remove(it.key, it.value) }
+        pendingRangePings.removeForTarget(targetId)
     }
 
     fun getAllRangeTestLogs(): List<RangeTestLog> {
@@ -3141,103 +2440,60 @@ class AetherMeshRepository(private val context: Context) {
      * (when hearer receipts are on) plus RX packet delta from diagnostics.
      */
     fun startMeshSelfTest(pingCount: Int = 5) {
-        if (!bleManager.isConnected || !bleManager.isGattReady || !_isDeviceAuthenticated.value) {
-            _meshSelfTest.value = MeshSelfTestResult(
-                finished = true,
-                errorEn = "Connect and unlock the node first.",
-                errorEs = "Conecta y desbloquea el nodo primero."
-            )
-            return
-        }
-        if (_isRangeTestActive.value) {
-            _meshSelfTest.value = MeshSelfTestResult(
-                finished = true,
-                errorEn = "Stop the range test before running mesh self-test.",
-                errorEs = "Detén la prueba de rango antes de la auto-prueba de malla."
-            )
-            return
-        }
-        stopMeshSelfTest()
-        val planned = pingCount.coerceIn(3, 10)
         val localNodeId = bleManager.connectedNodeId
-        val sf = try {
-            context.getSharedPreferences("node_settings_$localNodeId", Context.MODE_PRIVATE)
-                .getInt("lora_sf", 11)
-        } catch (_: Exception) {
-            11
-        }
-        val settleMs = when {
-            sf >= 11 -> 8_000L
-            sf >= 10 -> 6_000L
-            else -> 4_000L
-        }
-        val channel = _selectedChannel.value.ifBlank { DEFAULT_CHANNEL }
-        val rxBaseline = _meshDiagnostics.value?.rxPackets ?: 0L
-        val packetIds = mutableListOf<Int>()
-        _meshSelfTest.value = MeshSelfTestResult(
-            active = true,
-            pingsPlanned = planned,
-            statusLineEn = "Sending $planned channel pings…",
-            statusLineEs = "Enviando $planned pings de canal…"
+        val sf = NodeSettingsPrefs.readLoraSf(
+            context.getSharedPreferences(NodeSettingsPrefs.prefsName(localNodeId), Context.MODE_PRIVATE)
         )
-        meshSelfTestJob = repositoryScope.launch {
-            try {
-                for (i in 1..planned) {
-                    if (!isActive) return@launch
-                    val content = "MESHTEST_${System.currentTimeMillis() % 100_000}_${i}"
-                    val result = sendMessage(0xFFFFFFFFL, content, channel)
-                    if (result != SendMessageResult.Sent) {
-                        _meshSelfTest.value = _meshSelfTest.value.copy(
-                            active = false,
-                            finished = true,
-                            errorEn = "Could not send self-test ping ($result).",
-                            errorEs = "No se pudo enviar ping de auto-prueba ($result)."
+        when (
+            val start = MeshSelfTestPolicy.begin(
+                pingCount,
+                bleManager.isConnected,
+                bleManager.isGattReady,
+                _isDeviceAuthenticated.value,
+                _isRangeTestActive.value,
+                sf
+            )
+        ) {
+            is MeshSelfTestStart.Refused -> {
+                _meshSelfTest.value = start.result
+                return
+            }
+            is MeshSelfTestStart.Run -> {
+                stopMeshSelfTest()
+                val planned = start.planned
+                val settleMs = start.settleMs
+                val channel = _selectedChannel.value.ifBlank { DEFAULT_CHANNEL }
+                val rxBaseline = _meshDiagnostics.value?.rxPackets ?: 0L
+                val packetIds = mutableListOf<Int>()
+                _meshSelfTest.value = MeshSelfTestPolicy.starting(planned)
+                meshSelfTestJob = repositoryScope.launch {
+                    try {
+                        for (i in 1..planned) {
+                            if (!isActive) return@launch
+                            val content = MeshSelfTestPolicy.pingContent(System.currentTimeMillis(), i)
+                            val result = sendMessage(MeshSelfTestPolicy.BROADCAST_RECIPIENT, content, channel)
+                            if (result != SendMessageResult.Sent) {
+                                _meshSelfTest.value = MeshSelfTestPolicy.sendFailed(_meshSelfTest.value, result)
+                                return@launch
+                            }
+                            val newId = lastOutboundPacketId
+                            if (newId != 0) packetIds += newId
+                            _meshSelfTest.value = MeshSelfTestPolicy.progress(_meshSelfTest.value, i, planned)
+                            delay(settleMs)
+                        }
+                        delay(MeshSelfTestPolicy.TAIL_WAIT_MS)
+                        val heardPings = packetIds.count { dbHelper.getMessageHeardCount(it) > 0 }
+                        val hearers = dbHelper.collectUniqueHearers(packetIds)
+                        val rxNow = _meshDiagnostics.value?.rxPackets ?: rxBaseline
+                        val rxDelta = (rxNow - rxBaseline).coerceAtLeast(0L)
+                        _meshSelfTest.value = MeshSelfTestPolicy.finished(
+                            planned, heardPings, hearers.size, rxDelta
                         )
-                        return@launch
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Mesh self-test failed: ${e.message}")
+                        _meshSelfTest.value = MeshSelfTestPolicy.failed(e.message)
                     }
-                    val newId = lastOutboundPacketId
-                    if (newId != 0) packetIds += newId
-                    _meshSelfTest.value = _meshSelfTest.value.copy(
-                        pingsSent = i,
-                        statusLineEn = "Sent $i / $planned — waiting for hearers…",
-                        statusLineEs = "Enviados $i / $planned — esperando oyentes…"
-                    )
-                    delay(settleMs)
                 }
-                delay(2_000L)
-                val heardPings = packetIds.count { dbHelper.getMessageHeardCount(it) > 0 }
-                val hearers = dbHelper.collectUniqueHearers(packetIds)
-                val rxNow = _meshDiagnostics.value?.rxPackets ?: rxBaseline
-                val rxDelta = (rxNow - rxBaseline).coerceAtLeast(0L)
-                val score = when {
-                    planned <= 0 -> 0
-                    heardPings > 0 -> (heardPings * 100) / planned
-                    rxDelta > 0 -> minOf(40, (rxDelta * 10).toInt())
-                    else -> 0
-                }
-                val en =
-                    "Heard $heardPings/$planned · ${hearers.size} unique hearers · RX Δ$rxDelta · score $score%"
-                val es =
-                    "Oídos $heardPings/$planned · ${hearers.size} oyentes · RX Δ$rxDelta · puntuación $score%"
-                _meshSelfTest.value = MeshSelfTestResult(
-                    active = false,
-                    pingsSent = planned,
-                    pingsPlanned = planned,
-                    pingsHeard = heardPings,
-                    uniqueHearers = hearers.size,
-                    rxDelta = rxDelta,
-                    scorePercent = score,
-                    statusLineEn = en,
-                    statusLineEs = es,
-                    finished = true
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "Mesh self-test failed: ${e.message}")
-                _meshSelfTest.value = MeshSelfTestResult(
-                    finished = true,
-                    errorEn = "Self-test failed: ${e.message}",
-                    errorEs = "Auto-prueba falló: ${e.message}"
-                )
             }
         }
     }
@@ -3246,12 +2502,7 @@ class AetherMeshRepository(private val context: Context) {
         meshSelfTestJob?.cancel()
         meshSelfTestJob = null
         if (_meshSelfTest.value.active) {
-            _meshSelfTest.value = _meshSelfTest.value.copy(
-                active = false,
-                finished = true,
-                statusLineEn = "Self-test stopped.",
-                statusLineEs = "Auto-prueba detenida."
-            )
+            _meshSelfTest.value = MeshSelfTestPolicy.stopped(_meshSelfTest.value)
         }
     }
 
@@ -3279,191 +2530,162 @@ class AetherMeshRepository(private val context: Context) {
 
     fun getChannelsList(): List<ChannelConfig> {
         return dbHelper.getChannelsList().map { channel ->
-            val identifier = "CHANNEL_${channel.name}"
-            var secret = getChatKey(identifier)
-            if (secret.isNullOrEmpty() && channel.psk.isNotEmpty()) {
-                secret = channel.psk
-                saveChatKey(identifier, secret)
-            }
-            if (channel.psk.isNotEmpty()) {
-                dbHelper.clearChannelPsk(channel.id)
-            }
-            channel.copy(psk = secret ?: "")
+            val identifier = ChatSendPolicy.channelKey(channel.name)
+            val hydrate = ChannelPskPolicy.hydrateFromStore(getChatKey(identifier), channel.psk)
+            if (hydrate.persistKeyring) saveChatKey(identifier, hydrate.secret)
+            if (hydrate.clearSqlitePsk) dbHelper.clearChannelPsk(channel.id)
+            channel.copy(psk = hydrate.secret)
         }
     }
 
     fun insertChannel(channel: ChannelConfig): Long {
-        // CONFLICT_REPLACE on unique name would delete the existing row — joining a
-        // link that matches the primary channel must not demote/destroy it.
-        val existing = dbHelper.getChannelsList()
-            .firstOrNull { it.name.equals(channel.name, ignoreCase = true) }
-        if (existing != null) {
-            updateChannel(
-                channel.copy(
-                    id = existing.id,
-                    isPrimary = existing.isPrimary
-                )
-            )
-            return existing.id
+        when (val plan = ChannelPersistPolicy.planInsert(dbHelper.getChannelsList(), channel)) {
+            is ChannelInsertAction.UpdateExisting -> {
+                updateChannel(plan.config)
+                return plan.config.id
+            }
+            is ChannelInsertAction.InsertNew -> {
+                saveChatKey(ChatSendPolicy.channelKey(plan.config.name), plan.config.psk)
+                val id = dbHelper.insertChannel(ChannelPersistPolicy.sqliteRow(plan.config))
+                refreshChannelsList()
+                return id
+            }
         }
-        saveChatKey("CHANNEL_${channel.name}", channel.psk)
-        val id = dbHelper.insertChannel(channel.copy(psk = ""))
-        refreshChannelsList()
-        return id
     }
 
     fun updateChannel(channel: ChannelConfig) {
         val previous = getChannelsList().firstOrNull { it.id == channel.id }
-        if (previous != null && previous.name != channel.name) {
-            deleteChatKey("CHANNEL_${previous.name}")
+        ChannelPersistPolicy.previousNameIfRenamed(previous, channel)?.let { oldName ->
+            deleteChatKey(ChatSendPolicy.channelKey(oldName))
         }
-        saveChatKey("CHANNEL_${channel.name}", channel.psk)
-        dbHelper.updateChannel(channel.copy(psk = ""))
+        saveChatKey(ChatSendPolicy.channelKey(channel.name), channel.psk)
+        dbHelper.updateChannel(ChannelPersistPolicy.sqliteRow(channel))
         refreshChannelsList()
     }
 
     fun deleteChannel(id: Long) {
         getChannelsList().firstOrNull { it.id == id }?.let {
-            deleteChatKey("CHANNEL_${it.name}")
+            deleteChatKey(ChatSendPolicy.channelKey(it.name))
         }
         dbHelper.deleteChannel(id)
         refreshChannelsList()
     }
 
-    fun generateRandomPsk(): String {
-        val bytes = ByteArray(16)
-        java.security.SecureRandom().nextBytes(bytes)
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
-    }
+    fun generateRandomPsk(): String = ChannelPskPolicy.generate()
 
     private fun refreshChannelsList() {
         val list = getChannelsList().map { it.name }
-        _channels.value = if (list.isEmpty()) listOf(DEFAULT_CHANNEL) else list
+        _channels.value = ChannelPersistPolicy.visibleNames(list)
+        syncChannelPrivacy()
+    }
+
+    private fun syncChannelPrivacy() {
+        privacySyncJob?.cancel()
+        if (!bleManager.isConnected || !_isDeviceAuthenticated.value) {
+            _channelPrivacyStatus.value = ChannelPrivacyStatus.DISCONNECTED
+            return
+        }
+        if (privacySupported != true) {
+            _channelPrivacyStatus.value = if (privacySupported == false)
+                ChannelPrivacyStatus.UNSUPPORTED else ChannelPrivacyStatus.CHECKING
+            return
+        }
+        val desired = ChannelPrivacy.fromChannels(dbHelper.getChannelsList())
+        if (reportedPrivacy == desired) {
+            _channelPrivacyStatus.value = ChannelPrivacyStatus.CONFIRMED
+            return
+        }
+        if (_otaState.value.active) {
+            _channelPrivacyStatus.value = ChannelPrivacyStatus.OTA_BUSY
+            return
+        }
+        _channelPrivacyStatus.value = ChannelPrivacyStatus.APPLYING
+        val nodeId = trustedControlNodeId
+        privacySyncJob = repositoryScope.launch {
+            ChannelPrivacySync.apply(
+                desired = desired,
+                sessionCurrent = {
+                    nodeId == trustedControlNodeId && bleManager.isConnected &&
+                        _isDeviceAuthenticated.value
+                },
+                otaActive = { _otaState.value.active },
+                reported = { reportedPrivacy },
+                send = { bleManager.sendPacket(desired.packet(nodeId)) },
+                status = { _channelPrivacyStatus.value = it }
+            )
+        }
     }
 
     fun getOrCreateEcdhKeys(): Pair<String, String> {
-        val pubKey = prefs.getString("ecdh_public_key", null)
-        val privKey = securePrefs.getString("ecdh_private_key", null)
-        if (pubKey != null && privKey != null) {
-            return Pair(pubKey, privKey)
-        }
-        return regenerateEcdhKeys()
+        val pubKey = prefs.getString(EcdhKeyPolicy.PREF_PUBLIC, null)
+        val privKey = securePrefs.getString(EcdhKeyPolicy.PREF_PRIVATE, null)
+        return EcdhKeyPolicy.existingPair(pubKey, privKey) ?: regenerateEcdhKeys()
     }
 
     fun regenerateEcdhKeys(): Pair<String, String> {
-        return try {
-            val keyGen = java.security.KeyPairGenerator.getInstance("EC")
-            keyGen.initialize(256)
-            val pair = keyGen.generateKeyPair()
-            val pub = Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP)
-            val priv = Base64.encodeToString(pair.private.encoded, Base64.NO_WRAP)
-            prefs.edit().putString("ecdh_public_key", pub).apply()
-            securePrefs.edit().putString("ecdh_private_key", priv).apply()
-            Pair(pub, priv)
-        } catch (e: Exception) {
-            Log.e(TAG, "ECDH generation error: ${e.message}")
-            Pair("ErrorGeneratingPublicKey", "ErrorGeneratingPrivateKey")
+        val generated = EcdhKeyPolicy.generateOrError()
+        if (EcdhKeyPolicy.isError(generated)) {
+            Log.e(TAG, "ECDH generation error")
+            return generated.asPair()
         }
+        prefs.edit().putString(EcdhKeyPolicy.PREF_PUBLIC, generated.publicKey).apply()
+        securePrefs.edit().putString(EcdhKeyPolicy.PREF_PRIVATE, generated.privateKey).apply()
+        return generated.asPair()
     }
 
     private var lastPhoneLocationShareMs = 0L
-    private val PHONE_LOCATION_SHARE_MIN_INTERVAL_MS = 60_000L
 
     fun sendPhoneLocation(lat: Double, lon: Double): Boolean {
         if (!bleManager.isConnected || !_isDeviceAuthenticated.value) return false
-
-        // Reject a no-fix / invalid reading. A real GPS fix is never exactly
-        // (0,0); sending it caused the node to broadcast Null Island - and with
-        // location fuzzing on, an offset turned it into a fake ~0.017,-0.006
-        // position that looked "locked" in the app.
-        if ((lat == 0.0 && lon == 0.0) || lat.isNaN() || lon.isNaN() ||
-            kotlin.math.abs(lat) > 90.0 || kotlin.math.abs(lon) > 180.0) {
-            Log.d(TAG, "sendPhoneLocation: ignoring invalid/no-fix coords ($lat, $lon)")
-            return false
-        }
-
         val now = android.os.SystemClock.elapsedRealtime()
-        if (lastPhoneLocationShareMs != 0L &&
-            now - lastPhoneLocationShareMs < PHONE_LOCATION_SHARE_MIN_INTERVAL_MS
-        ) {
-            return false
-        }
-
         val localNodeId = bleManager.connectedNodeId
-
-        var fuzzedLat = lat
-        var fuzzedLon = lon
-
-        // Retrieve the primary channel to check for location fuzzer privacy settings
-        val primaryChan = getChannelsList().firstOrNull { it.isPrimary }
-        if (primaryChan != null) {
-            // If position sharing is disabled on the channel, do not send GPS coordinates
-            if (!primaryChan.positionEnabled) {
-                Log.d(TAG, "Position sharing is disabled on primary channel. Skipping GPS upload.")
+        val channels = getChannelsList()
+        val privacy = PhoneLocationShare.privacyOf(channels)
+        when (
+            val decision = PhoneLocationShare.decide(
+                lat, lon, localNodeId, channels, lastPhoneLocationShareMs, now
+            )
+        ) {
+            PhoneLocationDecision.SkipInvalid -> {
+                Log.d(TAG, "sendPhoneLocation: ignoring invalid/no-fix coords ($lat, $lon)")
                 return false
             }
-            
-            // If precise location is disabled, fuzz the transmitted GPS coordinates
-            if (!primaryChan.preciseLocation && primaryChan.precisionMiles > 0f) {
-                val milesToDegreesLat = primaryChan.precisionMiles / 69.0f
-                val cosLat = Math.cos(Math.toRadians(lat))
-                val milesToDegreesLon = primaryChan.precisionMiles / (69.0f * (if (cosLat > 0.0) cosLat else 1.0))
-                
-                val stableOffsetLat = (((localNodeId.hashCode() and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
-                val stableOffsetLon = ((((localNodeId.hashCode() ushr 16) and 0xFFFF).toDouble() / 65535.0) - 0.5) * 2.0
-
-                fuzzedLat += stableOffsetLat * milesToDegreesLat
-                fuzzedLon += stableOffsetLon * milesToDegreesLon
-                Log.d(TAG, "Location fuzzer applied for transmitted GPS: stable offset by ±${primaryChan.precisionMiles} miles")
+            PhoneLocationDecision.SkipThrottled -> return false
+            PhoneLocationDecision.SkipPositionDisabled -> {
+                Log.d(TAG, "Position sharing disabled by channel privacy. Skipping GPS upload.")
+                return false
+            }
+            is PhoneLocationDecision.Send -> {
+                if (decision.latitude != lat || decision.longitude != lon) {
+                    Log.d(
+                        TAG,
+                        "Location fuzzer applied for transmitted GPS: channel privacy floor ±${privacy.radiusM} m"
+                    )
+                }
+                val packet = PhoneLocationShare.buildPacket(
+                    localNodeId, PacketIdGenerator.next(), decision.latitude, decision.longitude
+                )
+                val sent = bleManager.sendPacket(packet.toByteArray())
+                if (sent) lastPhoneLocationShareMs = now
+                return sent
             }
         }
-
-        // Build Telemetry message containing phone's position
-        val telemetryBuilder = com.silentwolf75.aethermesh.proto.Telemetry.newBuilder()
-            .setLatitude(fuzzedLat.toFloat())
-            .setLongitude(fuzzedLon.toFloat())
-            .setBatteryLevel(100) // Dummy battery level
-            .setNodeModel("Phone Inherited")
-            .setUptimeSeconds(0)
-            .setFirmwareVersion("")
-
-        // Build MeshPacket wrapper
-        val packet = MeshPacket.newBuilder()
-            .setSenderId(localNodeId.toInt())
-            .setRecipientId(localNodeId.toInt()) // Set recipient to local node so it intercepts it
-            .setPacketId(PacketIdGenerator.next())
-            .setHopLimit(1)
-            .setWantAck(false)
-            .setPrevHopId(localNodeId.toInt())
-            .setTelemetry(telemetryBuilder)
-            .build()
-
-        // Write over BLE
-        val sent = bleManager.sendPacket(packet.toByteArray())
-        if (sent) lastPhoneLocationShareMs = android.os.SystemClock.elapsedRealtime()
-        return sent
     }
 
     fun exportChatKeysForMigration(): Map<String, String> = dbHelper.getAllChatKeys()
 
     fun exportSecureSecretsForMigration(): Map<String, String> =
-        securePrefs.all.mapNotNull { (key, value) ->
-            if (value is String) key to value else null
-        }.toMap()
+        AppMigrationExportPolicy.stringSecrets(securePrefs.all)
 
     fun exportAppPrefsForMigration(): Map<String, Any?> =
-        prefs.all.filterKeys { key ->
-            !key.startsWith("node_pwd_") && key != "ecdh_private_key"
-        }
+        AppMigrationExportPolicy.filterAppPrefs(prefs.all)
 
     fun exportNodeSettingsForMigration(): Map<String, Map<String, Any?>> {
         val out = linkedMapOf<String, Map<String, Any?>>()
         context.applicationInfo.dataDir?.let { dataDir ->
             java.io.File(dataDir, "shared_prefs").listFiles()?.forEach { file ->
-                val name = file.name.removeSuffix(".xml")
-                if (name.startsWith("node_settings_")) {
-                    out[name] = context.getSharedPreferences(name, Context.MODE_PRIVATE).all
-                }
+                val name = AppMigrationExportPolicy.nodeSettingsPrefName(file.name) ?: return@forEach
+                out[name] = context.getSharedPreferences(name, Context.MODE_PRIVATE).all
             }
         }
         return out
