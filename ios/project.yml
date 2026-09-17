@@ -1,0 +1,33 @@
+# XcodeGen spec for the AetherMesh iOS app. On a Mac:
+#   brew install xcodegen && cd ios && xcodegen generate && open AetherMesh.xcodeproj
+name: AetherMesh
+options:
+  bundleIdPrefix: com.silentwolf75
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  AetherMeshKit:
+    path: AetherMeshKit
+targets:
+  AetherMesh:
+    type: application
+    platform: iOS
+    sources:
+      - AetherMesh
+    dependencies:
+      - package: AetherMeshKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.silentwolf75.aethermesh.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "AetherMesh uses Bluetooth to connect to your LoRa mesh node."
+        # Set DEVELOPMENT_TEAM in Xcode (Signing & Capabilities) before running on a device.
+    info:
+      path: AetherMesh/Info.plist
+      properties:
+        UIBackgroundModes: [bluetooth-central]

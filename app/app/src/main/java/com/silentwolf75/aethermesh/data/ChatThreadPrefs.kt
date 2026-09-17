@@ -14,8 +14,8 @@ object ChatThreadPrefs {
     const val PREF_BLE_CONTROLLER_NICKNAME = "ble_controller_phone_nickname"
     const val PREF_BLE_CONTROLLER_NODE_ID = "ble_controller_node_id"
 
-    fun channelKey(channel: String): String = "CHANNEL_$channel"
-    fun dmKey(peerId: Long): String = "DM_$peerId"
+    fun channelKey(channel: String): String = ChatSendPolicy.channelKey(channel)
+    fun dmKey(peerId: Long): String = ChatSendPolicy.dmKey(peerId)
 
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

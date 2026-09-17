@@ -30,6 +30,7 @@ test result in the release notes.
 | RAK3401 1W | UF2/DFU, high-power TX limits, thermal and current draw |
 | RAK19026 | OLED, power management, UF2/DFU, attached WisBlock modules |
 | LILYGO T-Echo | E-paper refresh, frontlight timeout, touch/side buttons, BME280 |
+| SenseCAP T1000-E | UF2 DFU (T1000-E drive), LR1110 TX/RX, AG3335 GPS, button/LED/buzzer, battery |
 | LILYGO T-Deck | Keyboard map, trackball/buttons, sleep/wake, all five color pages |
 | CrowPanel 3.5 | Rotation, color order, touch wake, swipe navigation, all five pages |
 
@@ -46,7 +47,7 @@ validate it. A release is not hardware-qualified until every required row is
 `PASS`; compilation alone does not satisfy this gate.
 
 A blank checklist is in [docs/hardware-qualification-template.csv](hardware-qualification-template.csv)
-(64 rows: 8 boards × 8 checks). Copy it, fill `PASS` rows with the **full 40-char
+(72 rows: 9 boards × 8 checks). Copy it, fill `PASS` rows with the **full 40-char
 commit SHA** you actually flashed, then validate:
 
 ```bash
@@ -57,3 +58,18 @@ python tools/hardware_qualification.py release-hardware.csv
 
 Field-stable GitHub releases are drafted only via `.github/workflows/stable-release.yml`
 once every required row is `PASS` for that commit.
+
+## Privacy and Nordic update qualification
+
+For T-Echo and T1000-E, verify both USB UF2 recovery and Android Nordic DFU ZIP
+updates on physical boards. Check BLE reconnect after each update, GPS acquisition,
+battery reporting, and sleep/wake.
+
+For location privacy, disable position in one channel, confirm the radio's report,
+then power-cycle the radio without the phone connected. A second radio must see no
+coordinates. Repeat with the largest configured blur radius across channels.
+Interrupt BLE before confirmation and verify the app never claims confirmation;
+reconnect and verify the persisted setting is reported. Repeat after changing boards.
+
+Automated retry tests simulate missing reports, failed persistence reports, and
+reboots; they do not establish physical flash retention or over-the-air behavior.

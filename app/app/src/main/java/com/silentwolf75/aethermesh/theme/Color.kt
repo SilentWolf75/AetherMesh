@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import com.silentwolf75.aethermesh.data.SignalBand
 
 /**
  * Night-radar scheme: deep navy field, azure primary, lime success.
@@ -83,6 +84,14 @@ fun batteryLevelColor(level: Int): Color {
         level <= 50 -> AccentAmber
         else -> AccentMint
     }
+}
+
+fun signalBandColor(band: SignalBand): Color = when (band) {
+    SignalBand.STRONG -> AccentMint
+    SignalBand.GOOD -> AccentCyan
+    SignalBand.FAIR -> AccentAmber
+    SignalBand.WEAK -> AccentRed
+    SignalBand.NONE -> TextMuted
 }
 
 fun appBackgroundBrush(): Brush {

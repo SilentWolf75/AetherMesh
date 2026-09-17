@@ -20,6 +20,7 @@ struct SeenPacket {
     uint32_t senderId;
     uint32_t packetId;
     uint32_t retryCount;
+    uint32_t hopLimit;
     uint32_t timestamp;
 };
 
@@ -49,6 +50,7 @@ public:
             entries_[i].senderId = 0;
             entries_[i].packetId = 0;
             entries_[i].retryCount = 0;
+            entries_[i].hopLimit = 0;
             entries_[i].timestamp = 0;
         }
         index_ = 0;
@@ -70,12 +72,26 @@ public:
         return retryCount <= entry->retryCount;
     }
 
-    void markSeen(uint32_t now, uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
+    /**
+     * True when this observation rewound hop_limit on the same attempt.
+     * Used to drop flood-loop / mutated-TTL copies without re-relaying.
+     */
+    bool isHopInflation(uint32_t now, uint32_t senderId, uint32_t packetId,
+                        uint32_t hopLimit, uint32_t retryCount, uint32_t ttlMs) const {
+        const SeenPacket* entry = find(now, senderId, packetId, ttlMs);
+        if (entry == nullptr) return false;
+        return meshmath::isHopLimitInflation(entry->hopLimit, hopLimit,
+                                             entry->retryCount, retryCount);
+    }
+
+    void markSeen(uint32_t now, uint32_t senderId, uint32_t packetId,
+                  uint32_t retryCount, uint32_t hopLimit = 0) {
         // Match without a freshness check: a stale slot for this same packet is
         // reused rather than leaving a duplicate row behind.
         for (int i = 0; i < CAPACITY; i++) {
             if (entries_[i].senderId == senderId && entries_[i].packetId == packetId) {
                 entries_[i].retryCount = retryCount;
+                entries_[i].hopLimit = hopLimit;
                 entries_[i].timestamp = now;
                 return;
             }
@@ -83,8 +99,33 @@ public:
         entries_[index_].senderId = senderId;
         entries_[index_].packetId = packetId;
         entries_[index_].retryCount = retryCount;
+        entries_[index_].hopLimit = hopLimit;
         entries_[index_].timestamp = now;
         index_ = (uint8_t)((index_ + 1) % CAPACITY);
+    }
+
+    /**
+     * On a same-attempt duplicate, remember the highest remaining hop_limit
+     * (shortest path observed) without treating it as a new delivery.
+     */
+    void noteBestHop(uint32_t now, uint32_t senderId, uint32_t packetId,
+                     uint32_t retryCount, uint32_t hopLimit, uint32_t ttlMs) {
+        for (int i = 0; i < CAPACITY; i++) {
+            if (entries_[i].senderId != senderId || entries_[i].packetId != packetId) continue;
+            if (!meshmath::seenEntryIsFresh(now, entries_[i].timestamp, ttlMs)) continue;
+            if (retryCount == entries_[i].retryCount && hopLimit > entries_[i].hopLimit) {
+                entries_[i].hopLimit = hopLimit;
+            }
+            entries_[i].timestamp = now;
+            return;
+        }
+    }
+
+    /** Test/diag helper: current stored hop_limit, or 0 if absent. */
+    uint32_t storedHopLimit(uint32_t now, uint32_t senderId, uint32_t packetId,
+                            uint32_t ttlMs) const {
+        const SeenPacket* entry = find(now, senderId, packetId, ttlMs);
+        return entry ? entry->hopLimit : 0;
     }
 
     static int capacity() { return CAPACITY; }
@@ -182,6 +223,65 @@ inline int oldestRouteIndex(const RouteEntry* entries, int count, uint32_t now) 
     }
     return oldest;
 }
+
+/**
+ * Reply hop budget learned per sender from its most recent packet. Replies
+ * built later (queued pongs, config results verified after the control key is
+ * ready) no longer have the request in hand, so the budget is kept by node id.
+ * Unknown senders fall back to meshmath::replyHopLimit's legacy rule.
+ */
+class ReplyHopTable {
+public:
+    static constexpr int CAPACITY = 32;
+
+    ReplyHopTable() { clear(); }
+
+    void clear() {
+        for (int i = 0; i < CAPACITY; i++) entries_[i] = Entry{0, 0, 0};
+    }
+
+    void observe(uint32_t now, uint32_t nodeId, uint8_t replyHopLimit) {
+        if (nodeId == 0 || replyHopLimit == 0) return;
+        int slot = -1;
+        for (int i = 0; i < CAPACITY; i++) {
+            if (entries_[i].nodeId == nodeId) {
+                slot = i;
+                break;
+            }
+            if (slot < 0 && entries_[i].nodeId == 0) slot = i;
+        }
+        if (slot < 0) {
+            // Evict the least recently observed sender (rollover-safe ages).
+            uint32_t oldestAge = 0;
+            slot = 0;
+            for (int i = 0; i < CAPACITY; i++) {
+                const uint32_t age = (uint32_t)(now - entries_[i].timestamp);
+                if (age >= oldestAge) {
+                    oldestAge = age;
+                    slot = i;
+                }
+            }
+        }
+        entries_[slot] = Entry{nodeId, replyHopLimit, now};
+    }
+
+    /** Learned reply hop limit for nodeId, or 0 when never heard. */
+    uint8_t lookup(uint32_t nodeId) const {
+        if (nodeId == 0) return 0;
+        for (int i = 0; i < CAPACITY; i++) {
+            if (entries_[i].nodeId == nodeId) return entries_[i].replyHopLimit;
+        }
+        return 0;
+    }
+
+private:
+    struct Entry {
+        uint32_t nodeId;
+        uint8_t replyHopLimit;
+        uint32_t timestamp;
+    };
+    Entry entries_[CAPACITY];
+};
 
 } // namespace meshtables
 

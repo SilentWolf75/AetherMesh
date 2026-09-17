@@ -6,17 +6,13 @@ import configparser
 import re
 from pathlib import Path
 
+if __package__:
+    from .board_registry import BOARDS, generate
+else:
+    from board_registry import BOARDS, generate
+
 ROOT = Path(__file__).resolve().parents[1]
-UI_TARGETS = {
-    "heltec_v4": "heltec-v4",
-    "heltec_v3": "heltec-v3",
-    "rak4631": "rak4631",
-    "rak3401_1w": "rak3401-1w",
-    "rak19026": "rak19026",
-    "lilygo_t_echo": "lilygo-t-echo",
-    "lilygo_t_deck": "lilygo-t-deck",
-    "elecrow_crowpanel_35": "elecrow-crowpanel-35",
-}
+UI_TARGETS = {board["env"]: board["flasherId"] for board in BOARDS}
 
 
 def read_version_file() -> dict[str, str]:
@@ -34,6 +30,7 @@ def read_version_file() -> dict[str, str]:
 
 
 def main() -> None:
+    generate(check=True)
     config = configparser.ConfigParser()
     config.read(ROOT / "firmware" / "platformio.ini", encoding="utf-8")
     firmware = {section.removeprefix("env:") for section in config.sections() if section.startswith("env:")}

@@ -650,7 +650,15 @@ fun MapViewCompose(
                         node.shortName.ifEmpty { getShortName(node.name, node.nodeId) }
                 }
                 val isNodeActive = !isNodeStale(node.lastActive)
-                icon = createBadgeMarkerDrawable(context, nodeShortName, color, isActive = isNodeActive, isPingMarker = false)
+                val hops = observedRoutes[node.nodeId]?.hops?.takeIf { it > 0 } ?: 0
+                icon = createBadgeMarkerDrawable(
+                    context,
+                    nodeShortName,
+                    color,
+                    isActive = isNodeActive,
+                    isPingMarker = false,
+                    hops = hops
+                )
 
                 setOnMarkerClickListener { _, _ ->
                     selectedMapNode = node

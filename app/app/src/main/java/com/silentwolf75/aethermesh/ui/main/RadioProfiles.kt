@@ -179,11 +179,8 @@ val DEPLOY_PROFILES = listOf(
 fun radioProfileLabel(sf: Int): String =
     RADIO_PROFILES.firstOrNull { it.sf == sf }?.label ?: if (sf in 7..12) "SF$sf" else "Unknown"
 
-fun radioRegionLabel(region: Int): String = when (region) {
-    0 -> "US915"
-    1 -> "EU868"
-    else -> "Unknown"
-}
+fun radioRegionLabel(region: Int): String =
+    com.silentwolf75.aethermesh.data.RadioRegionPolicy.shortLabel(region)
 
 @Composable
 fun RadioProfileChips(currentSf: Int, currentBw: Float, onSelect: (RadioProfile) -> Unit) {

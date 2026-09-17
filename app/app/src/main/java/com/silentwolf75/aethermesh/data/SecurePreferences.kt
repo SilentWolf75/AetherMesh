@@ -23,7 +23,7 @@ object SecurePreferences {
         val destination = createEncrypted()
         migrate(context.getSharedPreferences(SecurePrefsNames.FALLBACK, Context.MODE_PRIVATE), destination) { true }
         migrate(context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE), destination) {
-            it.startsWith("node_pwd_") || it == "ecdh_private_key"
+            AppMigrationExportPolicy.isSecretPrefKey(it)
         }
         destination
     } catch (e: Exception) {

@@ -57,6 +57,7 @@ fun MeshRoutingDiagnosticsPanel(
     appLanguage: String = "English",
     onUnlockDevice: (() -> Unit)? = null,
     meshHopLimit: Int = 4,
+    maxHopLimit: Int = com.silentwolf75.aethermesh.data.HopRangePolicy.LEGACY_MAX,
     onMeshHopLimitChange: (Int) -> Unit = {},
     rebroadcastTxdelayX100: Int = 100,
     onRebroadcastTxdelayChange: (Int) -> Unit = {},
@@ -362,13 +363,27 @@ fun MeshRoutingDiagnosticsPanel(
                     )
                     Text("$meshHopLimit", color = AccentCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
+                val hopCeiling = maxHopLimit.coerceIn(
+                    com.silentwolf75.aethermesh.data.HopRangePolicy.LEGACY_MAX,
+                    com.silentwolf75.aethermesh.data.HopRangePolicy.EXTENDED_MAX
+                )
                 Slider(
-                    value = meshHopLimit.toFloat(),
-                    onValueChange = { onMeshHopLimitChange(it.toInt().coerceIn(1, 8)) },
-                    valueRange = 1f..8f,
-                    steps = 6,
+                    value = meshHopLimit.coerceIn(1, hopCeiling).toFloat(),
+                    onValueChange = { onMeshHopLimitChange(it.toInt().coerceIn(1, hopCeiling)) },
+                    valueRange = 1f..hopCeiling.toFloat(),
+                    steps = hopCeiling - 2,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (com.silentwolf75.aethermesh.data.HopRangePolicy.needsUpgradedMesh(meshHopLimit)) {
+                    Text(
+                        if (spanish)
+                            "Más de 8 saltos: todos los nodos que retransmiten deben tener firmware con alcance extendido; los anteriores descartan estos paquetes."
+                        else
+                            "Above 8 hops: every relaying node needs extended-range firmware. Older nodes drop these packets.",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),

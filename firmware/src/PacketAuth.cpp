@@ -4,6 +4,7 @@
 #if defined(AETHERMESH_NATIVE_CRYPTO)
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/sha.h>
 
 /** Host-side stand-in for Arduino Crypto SHA256 HMAC, same call shape as device builds. */
 class HmacSha256 {
@@ -38,9 +39,61 @@ private:
     HMAC_CTX* ctx_;
 };
 
+/** Host-side SHA-256 state after one absorbed HMAC pad block (see device PadState). */
+class PadState {
+public:
+    void absorbPad(const void* key, size_t keyLength, uint8_t pad) {
+        uint8_t block[64] = {};
+        if (keyLength > sizeof(block)) {
+            SHA256(static_cast<const unsigned char*>(key), keyLength, block);
+            keyLength = SHA256_DIGEST_LENGTH;
+        } else {
+            memcpy(block, key, keyLength);
+        }
+        for (size_t i = 0; i < sizeof(block); i++) block[i] ^= pad;
+        SHA256_Init(&ctx_);
+        SHA256_Update(&ctx_, block, sizeof(block));
+        memset(block, 0, sizeof(block));
+    }
+
+    void digestFrom(const uint8_t* data, size_t length, uint8_t* out32) const {
+        SHA256_CTX copy = ctx_;
+        SHA256_Update(&copy, data, length);
+        SHA256_Final(out32, &copy);
+        memset(&copy, 0, sizeof(copy));
+    }
+
+    void clear() { memset(&ctx_, 0, sizeof(ctx_)); }
+
+    ~PadState() { clear(); }
+
+private:
+    SHA256_CTX ctx_{};
+};
+
 #else
 #include <SHA256.h>
 using HmacSha256 = SHA256;
+
+/**
+ * SHA-256 state after absorbing one HMAC pad block (key XOR ipad/opad). Copying
+ * it replaces re-keying, so an HMAC over a short message costs two compressions
+ * instead of four. formatHMACKey()/processChunk() are protected in SHA256.
+ */
+class PadState : public SHA256 {
+public:
+    void absorbPad(const void* key, size_t keyLength, uint8_t pad) {
+        formatHMACKey(state.w, key, keyLength, pad); // resets, then writes the block
+        state.length += 64 * 8;
+        processChunk();
+    }
+
+    void digestFrom(const uint8_t* data, size_t length, uint8_t* out32) const {
+        PadState copy(*this);
+        copy.update(data, length);
+        copy.finalize(out32, HASH_SIZE);
+    }
+};
 #endif
 
 namespace {
@@ -50,6 +103,23 @@ static const uint8_t CONTROL_KEY_SALT[] = {'A', 'M', 'C', 'T', 'R', 'L', '1', 0}
 
 uint8_t gControlKey[HmacSha256::HASH_SIZE] = {};
 bool gControlKeyValid = false;
+// Password the cached key was derived from. saveSettings() re-sends the
+// password on every settings save; comparing here skips the 120k-iteration
+// PBKDF2 (seconds of stalled radio on nRF52) when it has not changed. The node
+// already keeps nodePassword in RAM, so this copy adds no exposure.
+char gControlKeyPassword[64] = {};
+uint32_t gControlKeyDerivations = 0;
+
+// In-progress PBKDF2, advanced by serviceControlKey() so boot and password
+// changes never stall the radio for the whole derivation.
+struct PendingDerivation {
+    PadState inner;
+    PadState outer;
+    uint8_t block[HmacSha256::HASH_SIZE];
+    uint8_t out[HmacSha256::HASH_SIZE];
+    uint32_t completedIterations;
+    bool active;
+} gDerivation = {};
 bool gRefuseLegacyControl = false;
 
 bool appendBytes(uint8_t*& cursor, size_t& remaining, const void* data, size_t size) {
@@ -78,30 +148,44 @@ bool appendFloat(uint8_t*& cursor, size_t& remaining, float value) {
     return appendU32(cursor, remaining, bits);
 }
 
-void deriveControlKey(const char* password, uint8_t* out32) {
+/** HMAC-SHA256(key, data) from pre-keyed pad states; out32 may alias data. */
+void hmacFromPads(const PadState& inner, const PadState& outer,
+                  const uint8_t* data, size_t length, uint8_t* out32) {
+    uint8_t innerDigest[HmacSha256::HASH_SIZE];
+    inner.digestFrom(data, length, innerDigest);
+    outer.digestFrom(innerDigest, sizeof(innerDigest), out32);
+    memset(innerDigest, 0, sizeof(innerDigest));
+}
+
+void wipeDerivation() {
+    gDerivation.inner.clear();
+    gDerivation.outer.clear();
+    memset(gDerivation.block, 0, sizeof(gDerivation.block));
+    memset(gDerivation.out, 0, sizeof(gDerivation.out));
+    gDerivation.completedIterations = 0;
+    gDerivation.active = false;
+}
+
+void startDerivation(const char* password) {
     // Match Android ControlKeyDerivation / ChatKeyDerivation (single PBKDF2 block).
-    // Reuses one HmacSha256 across all iterations — resetHMAC must fully reinit state.
-    HmacSha256 sha;
+    // The HMAC pad states depend only on the password, so absorb them once:
+    // each iteration is then two SHA-256 compressions instead of four.
+    // Re-keying every iteration cost 12.4 s of boot on an ESP32-S3.
+    size_t keyLength = strlen(password);
+    gDerivation.inner.absorbPad(password, keyLength, 0x36);
+    gDerivation.outer.absorbPad(password, keyLength, 0x5C);
+
     uint8_t firstInput[sizeof(CONTROL_KEY_SALT) + 4];
     memcpy(firstInput, CONTROL_KEY_SALT, sizeof(CONTROL_KEY_SALT));
     firstInput[sizeof(CONTROL_KEY_SALT) + 0] = 0;
     firstInput[sizeof(CONTROL_KEY_SALT) + 1] = 0;
     firstInput[sizeof(CONTROL_KEY_SALT) + 2] = 0;
     firstInput[sizeof(CONTROL_KEY_SALT) + 3] = 1;
-    size_t keyLength = strlen(password);
-    sha.resetHMAC(password, keyLength);
-    sha.update(firstInput, sizeof(firstInput));
-    uint8_t block[HmacSha256::HASH_SIZE];
-    sha.finalizeHMAC(password, keyLength, block, sizeof(block));
-    memcpy(out32, block, HmacSha256::HASH_SIZE);
-    for (uint32_t iter = 1; iter < CONTROL_PBKDF2_ITERATIONS; iter++) {
-        sha.resetHMAC(password, keyLength);
-        sha.update(block, sizeof(block));
-        sha.finalizeHMAC(password, keyLength, block, sizeof(block));
-        for (uint8_t i = 0; i < HmacSha256::HASH_SIZE; i++) out32[i] ^= block[i];
-    }
-    memset(block, 0, sizeof(block));
+    hmacFromPads(gDerivation.inner, gDerivation.outer, firstInput, sizeof(firstInput), gDerivation.block);
+    memcpy(gDerivation.out, gDerivation.block, sizeof(gDerivation.out));
     memset(firstInput, 0, sizeof(firstInput));
+    gDerivation.completedIterations = 1;
+    gDerivation.active = true;
 }
 
 bool verifyTag(const uint8_t* canonical, size_t length, const uint8_t* key, size_t keyLength,
@@ -122,12 +206,56 @@ bool verifyTag(const uint8_t* canonical, size_t length, const uint8_t* key, size
 
 namespace packetauth {
 
-void setControlPassword(const char* password) {
+void beginControlPassword(const char* password) {
+    const bool clearing = password == nullptr || password[0] == '\0';
+    const size_t length = clearing ? 0 : strnlen(password, sizeof(gControlKeyPassword));
+    const bool cacheable = !clearing && length < sizeof(gControlKeyPassword);
+    // Same password as the ready or in-progress key: nothing to redo.
+    if ((gControlKeyValid || gDerivation.active) && cacheable &&
+        strcmp(gControlKeyPassword, password) == 0) {
+        return;
+    }
+
+    // Any change invalidates the old key immediately, before the new one exists.
     memset(gControlKey, 0, sizeof(gControlKey));
+    memset(gControlKeyPassword, 0, sizeof(gControlKeyPassword));
     gControlKeyValid = false;
-    if (password == nullptr || password[0] == '\0') return;
-    deriveControlKey(password, gControlKey);
+    wipeDerivation();
+    if (clearing) return;
+    startDerivation(password);
+    if (cacheable) memcpy(gControlKeyPassword, password, length + 1);
+}
+
+bool serviceControlKey(uint32_t maxIterations) {
+    if (!gDerivation.active) return true;
+    uint32_t remaining = CONTROL_PBKDF2_ITERATIONS - gDerivation.completedIterations;
+    uint32_t steps = remaining < maxIterations ? remaining : maxIterations;
+    for (uint32_t step = 0; step < steps; step++) {
+        hmacFromPads(gDerivation.inner, gDerivation.outer,
+                     gDerivation.block, sizeof(gDerivation.block), gDerivation.block);
+        for (uint8_t i = 0; i < HmacSha256::HASH_SIZE; i++) gDerivation.out[i] ^= gDerivation.block[i];
+    }
+    gDerivation.completedIterations += steps;
+    if (gDerivation.completedIterations < CONTROL_PBKDF2_ITERATIONS) return false;
+
+    memcpy(gControlKey, gDerivation.out, sizeof(gControlKey));
     gControlKeyValid = true;
+    gControlKeyDerivations++;
+    wipeDerivation();
+    return true;
+}
+
+bool controlKeyPending() {
+    return gDerivation.active;
+}
+
+void setControlPassword(const char* password) {
+    beginControlPassword(password);
+    serviceControlKey(CONTROL_PBKDF2_ITERATIONS);
+}
+
+uint32_t controlKeyDerivationCount() {
+    return gControlKeyDerivations;
 }
 
 void setRefuseLegacyControl(bool refuse) {

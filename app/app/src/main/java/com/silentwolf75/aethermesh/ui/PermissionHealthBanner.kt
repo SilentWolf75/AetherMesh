@@ -39,39 +39,27 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.silentwolf75.aethermesh.data.AppUiPrefs
+import com.silentwolf75.aethermesh.data.PermissionHealth
+import com.silentwolf75.aethermesh.data.PermissionHealthPolicy
 import com.silentwolf75.aethermesh.ui.main.AccentAmber
 import com.silentwolf75.aethermesh.ui.main.SurfaceDark
 import com.silentwolf75.aethermesh.ui.main.TextLight
 import com.silentwolf75.aethermesh.ui.main.TextMuted
 
-data class PermissionHealth(
-    val missingBle: Boolean,
-    val missingLocation: Boolean,
-    val missingNotifications: Boolean
-) {
-    val hasAnyIssue: Boolean
-        get() = missingBle || missingLocation || missingNotifications
-}
-
 fun checkPermissionHealth(context: Context, bgAlertsEnabled: Boolean): PermissionHealth {
-    val missingBle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) !=
-            PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
-            PackageManager.PERMISSION_GRANTED
-    } else {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
+    val granted = { perm: String ->
+        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
     }
-    val missingLocation =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
-    val missingNotifications = bgAlertsEnabled && Build.VERSION.SDK_INT >= 33 &&
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-        PackageManager.PERMISSION_GRANTED
-    return PermissionHealth(missingBle, missingLocation, missingNotifications)
+    return PermissionHealthPolicy.evaluate(
+        sdkInt = Build.VERSION.SDK_INT,
+        bleScanGranted = granted(Manifest.permission.BLUETOOTH_SCAN),
+        bleConnectGranted = granted(Manifest.permission.BLUETOOTH_CONNECT),
+        fineLocationGranted = granted(Manifest.permission.ACCESS_FINE_LOCATION),
+        coarseLocationGranted = granted(Manifest.permission.ACCESS_COARSE_LOCATION),
+        bgAlertsEnabled = bgAlertsEnabled,
+        notificationsGranted = granted(Manifest.permission.POST_NOTIFICATIONS)
+    )
 }
 
 @Composable
@@ -98,34 +86,9 @@ fun PermissionHealthBanner(
     }
     if (!health.hasAnyIssue) return
 
-    val spanish = appLanguage == "Spanish"
-    val parts = buildList {
-        if (health.missingBle) add(if (spanish) "Bluetooth" else "Bluetooth")
-        if (health.missingLocation) add(if (spanish) "ubicación" else "location")
-        if (health.missingNotifications) add(if (spanish) "notificaciones" else "notifications")
-    }
-    val summary = if (spanish) {
-        "Faltan: ${parts.joinToString(", ")}."
-    } else {
-        "Missing: ${parts.joinToString(", ")}."
-    }
-    val why = when {
-        health.missingBle && health.missingLocation ->
-            if (spanish)
-                "Bluetooth vincula la radio; la ubicación aparece en el mapa (y habilita el escaneo en Android antiguo)."
-            else
-                "Bluetooth links the radio; location shows you on the map (and enables scanning on older Android)."
-        health.missingBle ->
-            if (spanish) "Se necesita Bluetooth para encontrar y conectar tu nodo."
-            else "Bluetooth is required to find and connect your node."
-        health.missingLocation ->
-            if (spanish) "La ubicación muestra tu posición en el mapa y distancia a otros nodos."
-            else "Location shows your position on the map and distance to other nodes."
-        health.missingNotifications ->
-            if (spanish) "Las notificaciones avisan de chats cuando la app está en segundo plano."
-            else "Notifications alert you to chats while the app is in the background."
-        else -> ""
-    }
+    val spanish = AppUiPrefs.isSpanish(appLanguage)
+    val summary = PermissionHealthPolicy.summary(health, spanish)
+    val why = PermissionHealthPolicy.why(health, spanish)
 
     Row(
         modifier = modifier
@@ -140,14 +103,14 @@ fun PermissionHealthBanner(
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
             Icon(
                 imageVector = Icons.Default.Warning,
-                contentDescription = if (spanish) "Permisos" else "Permissions",
+                contentDescription = PermissionHealthPolicy.contentDescription(spanish),
                 tint = AccentAmber,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Column {
                 Text(
-                    text = if (spanish) "Permisos necesarios" else "Permissions needed",
+                    text = PermissionHealthPolicy.title(spanish),
                     color = TextLight,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
@@ -160,7 +123,7 @@ fun PermissionHealthBanner(
         }
         TextButton(onClick = onOpenSettings) {
             Text(
-                if (spanish) "Ajustes" else "Settings",
+                PermissionHealthPolicy.settingsLabel(spanish),
                 color = AccentAmber,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold

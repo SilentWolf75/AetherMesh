@@ -2,6 +2,7 @@ package com.silentwolf75.aethermesh.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,8 +49,11 @@ import com.silentwolf75.aethermesh.theme.SurfaceDark
 import com.silentwolf75.aethermesh.theme.SurfaceRaised
 import com.silentwolf75.aethermesh.theme.TextLight
 import com.silentwolf75.aethermesh.theme.TextMuted
+import com.silentwolf75.aethermesh.data.SignalQualityPolicy
 import com.silentwolf75.aethermesh.theme.batteryLevelColor
+import com.silentwolf75.aethermesh.theme.signalBandColor
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 
@@ -164,21 +168,49 @@ fun NodeBadge(
     shortName: String,
     color: Color,
     modifier: Modifier = Modifier,
-    muted: Boolean = false
+    muted: Boolean = false,
+    hops: Int? = null
 ) {
-    Box(
-        modifier = modifier
-            .size(width = 48.dp, height = 34.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (muted) color.copy(alpha = 0.45f) else color),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = shortName,
-            color = Color.Black,
-            fontWeight = FontWeight.Bold,
-            fontSize = 11.sp
-        )
+    val ring = when {
+        muted -> BorderDark
+        hops == 1 -> AccentMint
+        hops != null && hops > 1 -> AccentSteel
+        else -> color
+    }
+    Box(modifier = modifier.padding(2.dp)) {
+        Box(
+            modifier = Modifier
+                .size(width = 48.dp, height = 34.dp)
+                .border(BorderStroke(1.5.dp, ring.copy(alpha = if (muted) 0.55f else 1f)), RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (muted) color.copy(alpha = 0.45f) else color),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = shortName,
+                color = Color(0xFF061018),
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+        }
+        if (hops != null && hops > 0 && !muted) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(if (hops == 1) AccentMint else AccentSteel)
+                    .border(BorderStroke(1.dp, DarkBackground), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (hops > 9) "9+" else "$hops",
+                    color = Color(0xFF061018),
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
 }
 
@@ -460,5 +492,186 @@ fun GraphicStatTile(
         }
         Text(label, color = TextMuted, fontSize = 10.sp)
         Text(value, color = TextLight, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun SignalBars(
+    rssi: Float,
+    modifier: Modifier = Modifier
+) {
+    val barsCount = SignalQualityPolicy.barsFromRssi(rssi)
+    val barColor = signalBandColor(SignalQualityPolicy.bandFromRssi(rssi))
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+        modifier = modifier.height(11.dp)
+    ) {
+        for (i in 1..4) {
+            val barHeight = (i * 2.5).dp
+            Box(
+                modifier = Modifier
+                    .width(2.5.dp)
+                    .height(barHeight)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(if (i <= barsCount) barColor else BorderDark)
+            )
+        }
+    }
+}
+
+@Composable
+fun SnrMeter(
+    snr: Float,
+    modifier: Modifier = Modifier
+) {
+    val fill = SignalQualityPolicy.snrFillFraction(snr)
+    val color = signalBandColor(SignalQualityPolicy.bandFromSnr(snr))
+    Box(
+        modifier = modifier
+            .width(28.dp)
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(BorderDark)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(fill)
+                .height(6.dp)
+                .background(color)
+        )
+    }
+}
+
+@Composable
+fun HopChip(
+    hops: Int,
+    modifier: Modifier = Modifier,
+    muted: Boolean = false
+) {
+    val accent = when {
+        muted -> TextMuted
+        hops == 1 -> AccentMint
+        else -> AccentSteel
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(accent.copy(alpha = 0.18f))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            if (hops == 1) "DIR" else "${hops}H",
+            color = accent,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+/** Fillable battery body — not the always-full Material icon. */
+@Composable
+fun BatteryMeter(
+    level: Int,
+    modifier: Modifier = Modifier,
+    charging: Boolean = false,
+    unknown: Boolean = false,
+    size: Dp = 18.dp
+) {
+    val color = when {
+        unknown -> TextMuted
+        else -> batteryLevelColor(level.coerceIn(0, 100))
+    }
+    val fill = if (unknown) 0f else (level.coerceIn(0, 100) / 100f)
+    Canvas(modifier = modifier.size(width = size, height = size * 0.62f)) {
+        val stroke = 1.4.dp.toPx()
+        val nubW = this.size.width * 0.10f
+        val nubH = this.size.height * 0.38f
+        val body = androidx.compose.ui.geometry.Size(this.size.width - nubW - stroke, this.size.height - stroke)
+        val topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f)
+        drawRoundRect(
+            color = color,
+            topLeft = topLeft,
+            size = body,
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+            style = Stroke(width = stroke)
+        )
+        drawRoundRect(
+            color = color,
+            topLeft = androidx.compose.ui.geometry.Offset(topLeft.x + body.width, this.size.height * 0.31f),
+            size = androidx.compose.ui.geometry.Size(nubW, nubH),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx(), 1.dp.toPx())
+        )
+        if (fill > 0f) {
+            val pad = stroke + 1.2.dp.toPx()
+            val innerW = (body.width - pad * 2f).coerceAtLeast(0f) * fill
+            drawRoundRect(
+                color = color,
+                topLeft = androidx.compose.ui.geometry.Offset(topLeft.x + pad, topLeft.y + pad),
+                size = androidx.compose.ui.geometry.Size(innerW, (body.height - pad * 2f).coerceAtLeast(0f)),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx(), 1.dp.toPx())
+            )
+        }
+        if (charging) {
+            val w = this.size.width
+            val h = this.size.height
+            val bolt = Path().apply {
+                moveTo(w * 0.42f, h * 0.12f)
+                lineTo(w * 0.30f, h * 0.55f)
+                lineTo(w * 0.46f, h * 0.55f)
+                lineTo(w * 0.36f, h * 0.90f)
+                lineTo(w * 0.58f, h * 0.42f)
+                lineTo(w * 0.42f, h * 0.42f)
+                close()
+            }
+            drawPath(bolt, color = AccentAmber)
+        }
+    }
+}
+
+@Composable
+fun DeliveryTicks(
+    status: String,
+    modifier: Modifier = Modifier,
+    color: Color = AccentCyan,
+    channelWaiting: Boolean = false
+) {
+    Canvas(modifier = modifier.size(12.dp)) {
+        val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+        when (status) {
+            "DELIVERED" -> {
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.05f, size.height * 0.55f), androidx.compose.ui.geometry.Offset(size.width * 0.28f, size.height * 0.82f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.28f, size.height * 0.82f), androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.22f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.38f, size.height * 0.55f), androidx.compose.ui.geometry.Offset(size.width * 0.58f, size.height * 0.82f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.58f, size.height * 0.82f), androidx.compose.ui.geometry.Offset(size.width * 0.95f, size.height * 0.18f), stroke.width, cap = StrokeCap.Round)
+            }
+            "HEARD" -> {
+                drawCircle(color, radius = size.minDimension * 0.32f, center = center, style = stroke)
+                drawCircle(color, radius = size.minDimension * 0.12f, center = center)
+            }
+            "FAILED", "EXPIRED" -> {
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.22f, size.height * 0.22f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.78f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.22f), androidx.compose.ui.geometry.Offset(size.width * 0.22f, size.height * 0.78f), stroke.width, cap = StrokeCap.Round)
+            }
+            "QUEUED" -> {
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.15f, size.height * 0.30f), androidx.compose.ui.geometry.Offset(size.width * 0.85f, size.height * 0.30f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.15f, size.height * 0.50f), androidx.compose.ui.geometry.Offset(size.width * 0.85f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.15f, size.height * 0.70f), androidx.compose.ui.geometry.Offset(size.width * 0.85f, size.height * 0.70f), stroke.width, cap = StrokeCap.Round)
+            }
+            "PENDING", "SENT" -> {
+                val waiting = status == "PENDING" || channelWaiting
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.10f, size.height * 0.50f), androidx.compose.ui.geometry.Offset(size.width * 0.72f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.28f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.72f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                if (waiting) {
+                    drawCircle(color.copy(alpha = 0.7f), radius = 1.6.dp.toPx(), center = androidx.compose.ui.geometry.Offset(size.width * 0.92f, size.height * 0.50f))
+                }
+            }
+            else -> {
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.10f, size.height * 0.50f), androidx.compose.ui.geometry.Offset(size.width * 0.72f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.28f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+                drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.72f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
+            }
+        }
     }
 }

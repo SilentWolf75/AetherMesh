@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [heltec_v4, heltec_v3, rak4631, rak3401_1w, rak19026, lilygo_t_echo, lilygo_t_deck, elecrow_crowpanel_35]
+        env: [heltec_v4, heltec_v3, rak4631, rak3401_1w, rak19026, lilygo_t_echo, lilygo_t_deck, elecrow_crowpanel_35, seeed_t1000_e]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Run simulator regression tests
-        run: python -m unittest -v tools.test_mesh_simulator tools.test_write_firmware_manifest tools.test_hardware_qualification tools.test_database_migrations tools.test_control_auth_vectors
+        run: python -m unittest -v tools.test_mesh_simulator tools.test_write_firmware_manifest tools.test_hardware_qualification tools.test_database_migrations tools.test_control_auth_vectors tools.test_package_firmware
       - name: Produce benchmark report
         run: python tools/mesh_simulator.py --messages 1000
       - name: Verify release target parity
@@ -132,3 +132,34 @@ jobs:
         working-directory: tools/browser-tests
       - run: npm test
         working-directory: tools/browser-tests
+
+  ios-kit:
+    name: iOS core (AetherMeshKit) tests on Linux
+    runs-on: ubuntu-latest
+    container: swift:6.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Swift tests (wire format, crypto vectors, session)
+        working-directory: ios/AetherMeshKit
+        run: swift test
+
+  ios-app:
+    name: iOS app simulator build (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Generate Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: |
+          xcodebuild -project AetherMesh.xcodeproj -scheme AetherMesh \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build

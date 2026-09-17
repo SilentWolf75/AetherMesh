@@ -54,8 +54,11 @@ public:
     
 private:
     void noteRecentAirtime(uint32_t airtimeMs);
-    // SX1262 Instance
+#if defined(SEEED_T1000_E)
+    LR1110* radio;
+#else
     SX1262* radio;
+#endif
     
     // Pins
     int pinNss;

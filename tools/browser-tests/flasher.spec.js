@@ -79,3 +79,22 @@ for (const [name, entry] of [
     expect(await page.evaluate(() => window.writtenFirmware)).toBeNull();
   });
 }
+
+
+for (const [target, file] of [
+  ["lilygo-t-echo", "aethermesh-t-echo-abcdef0.uf2"],
+  ["seeed-t1000-e", "aethermesh-t1000-e-abcdef0.uf2"],
+]) {
+  test(target + " downloads only its verified UF2", async ({ page }) => {
+    await setup(page, [
+      { name: "Unrelated", board: "rak4631", file, size: 4, sha256: hash },
+      { name: target, board: target, file: "correct-" + file, size: 4, sha256: hash },
+    ]);
+    await page.locator('[data-val="' + target + '"]').click();
+    await expect(page.locator("#uf2-guide")).toBeVisible();
+    const download = page.waitForEvent("download");
+    await page.locator("#download-uf2-btn").click();
+    expect((await download).suggestedFilename()).toBe("correct-" + file);
+    expect(await page.evaluate(() => window.serialRequests)).toBe(0);
+  });
+}

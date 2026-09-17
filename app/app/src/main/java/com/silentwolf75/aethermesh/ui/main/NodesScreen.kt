@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silentwolf75.aethermesh.data.ChatMessage
 import com.silentwolf75.aethermesh.data.ChannelConfig
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.RadioRegionPolicy
 import com.silentwolf75.aethermesh.data.TraceRouteState
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.components.*
@@ -398,42 +399,6 @@ fun NodesView(
     }
 }
 
-@Composable
-fun SignalBars(rssi: Float) {
-    val barsCount = when {
-        rssi >= -70f -> 4
-        rssi >= -85f -> 3
-        rssi >= -100f -> 2
-        rssi > -115f -> 1
-        else -> 0
-    }
-    val barColor = when (barsCount) {
-        4 -> AccentMint
-        3 -> AccentCyan
-        2 -> Color(0xFFFBBF24) // Amber
-        1 -> AccentRed
-        else -> TextMuted
-    }
-    
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-        modifier = Modifier.height(11.dp)
-    ) {
-        for (i in 1..4) {
-            val barHeight = (i * 2.5).dp
-            val isFilled = i <= barsCount
-            Box(
-                modifier = Modifier
-                    .width(2.5.dp)
-                    .height(barHeight)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(if (isFilled) barColor else BorderDark)
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NodeItem(
@@ -521,7 +486,7 @@ fun NodeItem(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        NodeBadge(shortName = shortName, color = badgeColor, muted = stale)
+        NodeBadge(shortName = shortName, color = badgeColor, muted = stale, hops = hops)
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -537,17 +502,12 @@ fun NodeItem(
                 }
                 if (hops != null && !isConnectedNode) {
                     Text("  ·  ", color = TextMuted, fontSize = 12.sp)
-                    Text(
-                        "$hops ${if (hops == 1) t("Hop", appLanguage) else t("Hops", appLanguage)}",
-                        color = if (stale) TextMuted else AccentSteel,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    HopChip(hops = hops, muted = stale)
                 }
-                if (node.region == 0 || node.region == 1) {
+                if (RadioRegionPolicy.isKnown(node.region)) {
                     Text("  ·  ", color = TextMuted, fontSize = 12.sp)
                     Text(
-                        if (node.region == 0) "US915" else "EU868",
+                        RadioRegionPolicy.shortLabel(node.region),
                         color = if (stale) TextMuted else AccentCyan,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold
@@ -643,6 +603,8 @@ fun NodeItem(
                     val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
                     if (sigSnr != 0f) {
                         Spacer(modifier = Modifier.width(8.dp))
+                        SnrMeter(snr = sigSnr)
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             "SNR ${"%.1f".format(sigSnr)}",
                             color = TextMuted,
@@ -681,11 +643,11 @@ fun NodeItem(
                     Spacer(modifier = Modifier.width(2.dp))
                 }
                 val batteryUnknown = node.battery <= 0 && node.voltage <= 0f && !node.isCharging
-                Icon(
-                    imageVector = Icons.Default.BatteryFull,
-                    contentDescription = if (appLanguage == "Spanish") "Batería" else "Battery",
-                    tint = if (batteryUnknown) TextMuted else batteryLevelColor(node.battery),
-                    modifier = Modifier.size(16.dp)
+                BatteryMeter(
+                    level = node.battery,
+                    charging = node.isCharging,
+                    unknown = batteryUnknown,
+                    size = 18.dp
                 )
                 Spacer(modifier = Modifier.width(2.dp))
                 Text(

@@ -73,9 +73,20 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.silentwolf75.aethermesh.AetherMeshApplication
+import com.silentwolf75.aethermesh.ble.OtaLocalizePolicy
+import com.silentwolf75.aethermesh.ble.OtaPayloadPolicy
+import com.silentwolf75.aethermesh.ble.OtaTransferPolicy
+import com.silentwolf75.aethermesh.data.AppUiPrefs
 import com.silentwolf75.aethermesh.data.ChatMessage
+import com.silentwolf75.aethermesh.data.IncomingChatPolicy
+import com.silentwolf75.aethermesh.data.FirmwareFreshnessPolicy
 import com.silentwolf75.aethermesh.data.ChannelConfig
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.NodeNamePolicy
+import com.silentwolf75.aethermesh.data.NodeSettingsFormPolicy
+import com.silentwolf75.aethermesh.data.PositionPrecisionPolicy
+import com.silentwolf75.aethermesh.data.RadioRegionPolicy
+import com.silentwolf75.aethermesh.data.TraceRoutePolicy
 import com.silentwolf75.aethermesh.data.TraceRouteState
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.PermissionHealthBanner
@@ -154,42 +165,17 @@ fun isFirmwareTooOld(version: String): Boolean {
 }
 
 // Position privacy blur radius choices (meters); 0 = broadcast precise position
-val POSITION_PRECISION_STEPS = listOf(0, 100, 250, 500, 1000, 2000, 5000, 10000)
+val POSITION_PRECISION_STEPS = PositionPrecisionPolicy.STEPS
 
-fun formatPositionPrecision(meters: Int, imperial: Boolean, language: String): String {
-    if (meters <= 0) return if (language == "Spanish") "Precisa" else "Precise"
-    return if (imperial) {
-        if (meters < 400) "±${(meters * 3.28084 / 10).toInt() * 10} ft"
-        else "±%.1f mi".format(meters / 1609.34)
-    } else {
-        if (meters < 1000) "±$meters m"
-        else "±%.1f km".format(meters / 1000.0)
-    }
-}
+fun formatPositionPrecision(meters: Int, imperial: Boolean, language: String): String =
+    PositionPrecisionPolicy.format(meters, imperial, AppUiPrefs.isSpanish(language))
 
 /** Infer ESP32 vs RAK OTA target from telemetry model and/or BLE / node names. */
-fun isRakOtaTarget(vararg hints: String?): Boolean {
-    val haystack = hints.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
-        .joinToString(" ")
-        .lowercase()
-    if (haystack.isEmpty()) return false
-    return haystack.contains("rak") ||
-        haystack.contains("wisblock") ||
-        haystack.contains("nrf52") ||
-        haystack.contains("nrf52840")
-}
+fun isRakOtaTarget(vararg hints: String?): Boolean =
+    OtaPayloadPolicy.isRakTarget(*hints)
 
-fun isEspOtaTarget(vararg hints: String?): Boolean {
-    val haystack = hints.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
-        .joinToString(" ")
-        .lowercase()
-    if (haystack.isEmpty()) return false
-    return haystack.contains("heltec") ||
-        haystack.contains("t-deck") ||
-        haystack.contains("tdeck") ||
-        haystack.contains("crowpanel") ||
-        haystack.contains("esp32")
-}
+fun isEspOtaTarget(vararg hints: String?): Boolean =
+    OtaPayloadPolicy.isEspTarget(*hints)
 
 /**
  * Reject clearly wrong OTA payloads before flashing.
@@ -202,190 +188,46 @@ fun isValidOtaPayload(
     fileName: String,
     isRakNode: Boolean,
     expectedBoardId: String? = null
-): String? {
-    if (bytes.isEmpty()) return "Empty file"
-    val lower = fileName.lowercase()
-    if (lower.contains("-usb") || lower.endsWith("-usb.bin")) {
-        return "USB images cannot be flashed over BLE OTA — use a -ota.bin or DFU .zip"
-    }
-    if (lower.endsWith(".uf2")) {
-        return "UF2 is for USB drag-and-drop, not BLE OTA"
-    }
-    com.silentwolf75.aethermesh.data.FirmwareCatalog.boardMismatchError(fileName, expectedBoardId)?.let {
-        return it
-    }
-    return if (isRakNode) {
-        when {
-            lower.endsWith(".bin") -> "RAK nodes need a Nordic DFU .zip — not an ESP32 .bin"
-            !lower.endsWith(".zip") -> "RAK updates need a .zip DFU package"
-            bytes.size < 256 -> "File too small to be a DFU package"
-            bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte() ->
-                "Not a valid ZIP (DFU) package"
-            else -> null
-        }
-    } else {
-        when {
-            lower.endsWith(".zip") ->
-                "Heltec/ESP32 updates need a .bin image — not a Nordic DFU .zip"
-            bytes.size < 1024 -> "Firmware image looks too small"
-            bytes[0] != 0xE9.toByte() && !lower.endsWith(".bin") ->
-                "Does not look like an ESP32 .bin image"
-            else -> null
-        }
-    }
-}
+): String? = OtaPayloadPolicy.validate(bytes, fileName, isRakNode, expectedBoardId)
 
 const val WEB_FLASHER_URL = "https://silentwolf75.github.io/AetherMesh/"
 
-fun localizeOtaStatus(status: String, appLanguage: String): String {
-    if (appLanguage != "Spanish" || status.isBlank()) return status
-    return when {
-        status == "Not connected/authenticated" -> "No conectado/autenticado"
-        status == "Preparing..." -> "Preparando…"
-        status == "Retrying start..." -> "Reintentando inicio…"
-        status == "Uploading..." -> "Subiendo…"
-        status.startsWith("Uploading...") -> status.replace("Uploading...", "Subiendo…")
-        status == "Verifying..." -> "Verificando…"
-        status.startsWith("OTA success") || status.startsWith("DFU success") ||
-            status.startsWith("Update verified") || status.startsWith("Update confirmed") -> {
-            status
-                .replace("OTA success", "OTA correcta")
-                .replace("DFU success", "DFU correcto")
-                .replace("Update verified", "Actualización verificada")
-                .replace("Update confirmed", "Actualización confirmada")
-                .replace("installed", "instalado")
-                .replace("expected", "esperado")
-                .replace("Node rebooting / reconnecting…", "Nodo reiniciando / reconectando…")
-                .replace("Rebooting / reconnecting… (confirming version)", "Reiniciando / reconectando… (confirmando versión)")
-                .replace("now running", "ahora ejecuta")
-                .replace("(confirming version)", "(confirmando versión)")
-        }
-        status.startsWith("Update may not have applied") ->
-            status.replace("Update may not have applied — still on", "Es posible que la actualización no se aplicara — sigue en")
-        status == "Update cancelled" -> "Actualización cancelada"
-        status.startsWith("Update failed:") -> status.replace("Update failed:", "Falló la actualización:")
-        status.startsWith("Update interrupted") ->
-            status.replace(
-                "Update interrupted — Bluetooth dropped. Reconnect and retry the update.",
-                "Actualización interrumpida — se perdió Bluetooth. Reconecta e inténtalo de nuevo."
-            )
-        status.startsWith("DFU: connecting") -> "DFU: conectando al bootloader…"
-        status.startsWith("DFU: starting") -> "DFU: iniciando transferencia…"
-        status.startsWith("DFU: validating") -> "DFU: validando firmware…"
-        status.startsWith("DFU uploading...") -> status.replace("DFU uploading...", "DFU subiendo…")
-        status.startsWith("DFU complete") -> "DFU completo — el nodo reinicia con el nuevo firmware"
-        status == "DFU cancelled" -> "DFU cancelado"
-        status.startsWith("DFU failed:") -> status.replace("DFU failed:", "DFU falló:")
-        status.startsWith("Rebooting node into DFU") -> "Reiniciando nodo en bootloader DFU…"
-        status.startsWith("Searching for DFU") -> "Buscando bootloader DFU…"
-        status.startsWith("Starting DFU transfer") -> "Iniciando transferencia DFU…"
-        status == "No device address" -> "Sin dirección del dispositivo"
-        else -> status
-    }
-}
+fun localizeOtaStatus(status: String, appLanguage: String): String =
+    OtaLocalizePolicy.localizeStatus(status, AppUiPrefs.isSpanish(appLanguage))
 
 /** Installed firmware line for Node Details / Firmware Update / Connection. */
 fun formatInstalledFirmwareLabel(
     cachedVersion: String?,
     awaitingFresh: Boolean,
     appLanguage: String
-): String {
-    val spanish = appLanguage == "Spanish"
-    val prefix = if (spanish) "Instalado: " else "Installed: "
-    return when {
-        awaitingFresh -> prefix + if (spanish) "comprobando…" else "checking…"
-        !cachedVersion.isNullOrBlank() -> prefix + cachedVersion
-        else -> prefix + if (spanish) "desconocido" else "unknown"
-    }
-}
+): String = FirmwareFreshnessPolicy.formatInstalledLabel(
+    cachedVersion,
+    awaitingFresh,
+    AppUiPrefs.isSpanish(appLanguage)
+)
 
 fun formatFirmwareVersionValue(
     cachedVersion: String?,
     awaitingFresh: Boolean,
     appLanguage: String
-): String {
-    val spanish = appLanguage == "Spanish"
-    return when {
-        awaitingFresh -> if (spanish) "comprobando…" else "checking…"
-        !cachedVersion.isNullOrBlank() -> cachedVersion
-        else -> if (spanish) "desconocida" else "unknown"
-    }
-}
+): String = FirmwareFreshnessPolicy.formatVersionValue(
+    cachedVersion,
+    awaitingFresh,
+    AppUiPrefs.isSpanish(appLanguage)
+)
 
-fun localizeOtaPickError(error: String, appLanguage: String): String {
-    if (appLanguage != "Spanish") return error
-    return when {
-        error == "Empty file" -> "Archivo vacío"
-        error == "RAK updates need a .zip DFU package" ->
-            "Las actualizaciones RAK requieren un paquete DFU .zip"
-        error == "RAK nodes need a Nordic DFU .zip — not an ESP32 .bin" ->
-            "Los nodos RAK necesitan un .zip DFU de Nordic — no un .bin de ESP32"
-        error == "File too small to be a DFU package" ->
-            "El archivo es demasiado pequeño para ser un paquete DFU"
-        error == "Not a valid ZIP (DFU) package" -> "No es un paquete ZIP (DFU) válido"
-        error == "Heltec updates need a .bin image (not .zip)" ||
-            error == "Heltec/ESP32 updates need a .bin image — not a Nordic DFU .zip" ->
-            "Las actualizaciones Heltec/ESP32 requieren una imagen .bin — no un .zip DFU de Nordic"
-        error == "Firmware image looks too small" ->
-            "La imagen de firmware parece demasiado pequeña"
-        error == "Does not look like an ESP32 .bin image" ->
-            "No parece una imagen .bin de ESP32"
-        error == "USB images cannot be flashed over BLE OTA — use a -ota.bin or DFU .zip" ->
-            "Las imágenes USB no se pueden flashear por BLE OTA — usa un -ota.bin o .zip DFU"
-        error == "UF2 is for USB drag-and-drop, not BLE OTA" ->
-            "UF2 es para arrastrar por USB, no para BLE OTA"
-        error.startsWith("Wrong board firmware:") -> {
-            val rest = error.removePrefix("Wrong board firmware:")
-            "Firmware de placa incorrecto:$rest"
-                .replace("file looks like", "el archivo parece")
-                .replace("node is", "el nodo es")
-        }
-        else -> error
-    }
-}
+fun localizeOtaPickError(error: String, appLanguage: String): String =
+    OtaLocalizePolicy.localizePickError(error, AppUiPrefs.isSpanish(appLanguage))
 
 /** User-visible recovery guidance after a failed mid-OTA / DFU attempt. */
-fun otaRollbackGuidance(isRakNode: Boolean, spanish: Boolean): String {
-    return if (spanish) {
-        if (isRakNode)
-            "Si el DFU falló a medias: el bootloader suele conservar el firmware actual al agotar el tiempo. Si el nodo no vuelve a BLE, flashea el .uf2 por USB (arrastrar al disco RAK) o usa el flasher web."
-        else
-            "Si la OTA falló a medias: el nodo normalmente sigue con el firmware anterior (partición activa). Si no responde por BLE, recupera por USB con el flasher web y la imagen -usb.bin."
-    } else {
-        if (isRakNode)
-            "If DFU failed mid-way: the bootloader usually keeps the current image when it times out. If the node never returns to BLE, flash the .uf2 over USB (drag onto the RAK drive) or use the web flasher."
-        else
-            "If OTA failed mid-way: the node normally keeps running the previous firmware (active partition). If it will not reconnect over BLE, recover over USB with the web flasher and the -usb.bin image."
-    }
-}
+fun otaRollbackGuidance(isRakNode: Boolean, spanish: Boolean): String =
+    OtaTransferPolicy.rollbackGuidance(isRakNode, spanish)
 
-fun localizeTraceRouteError(error: String?, appLanguage: String): String {
-    val spanish = appLanguage == "Spanish"
-    return when (error) {
-        null -> if (spanish) "Traza fallida" else "Trace failed"
-        "No route response received" -> if (spanish)
-            "No se recibió respuesta de ruta"
-        else
-            "No route response received"
-        "Cancelled" -> if (spanish) "Trazado cancelado" else "Traceroute cancelled"
-        "Disconnected" -> if (spanish)
-            "Desconectado — traza cancelada"
-        else
-            "Disconnected — traceroute cancelled"
-        else -> error
-    }
-}
+fun localizeTraceRouteError(error: String?, appLanguage: String): String =
+    TraceRoutePolicy.localizeError(error, AppUiPrefs.isSpanish(appLanguage))
 
-fun localizeChatPlaceholder(content: String, appLanguage: String): String {
-    if (appLanguage != "Spanish") return content
-    return when (content) {
-        "[Encrypted Message - No Key Configured]" -> "[Mensaje cifrado — sin clave configurada]"
-        "[Decryption Error - Invalid Message]" -> "[Error de descifrado — mensaje inválido]"
-        "[Decryption Error - Bad Key or Context]" -> "[Error de descifrado — clave o contexto incorrecto]"
-        "[Decryption Error - Bad Key]" -> "[Error de descifrado — clave incorrecta]"
-        else -> content
-    }
-}
+fun localizeChatPlaceholder(content: String, appLanguage: String): String =
+    IncomingChatPolicy.localizePlaceholder(content, AppUiPrefs.isSpanish(appLanguage))
 
 
 fun t(text: String, lang: String): String {
@@ -440,6 +282,10 @@ fun t(text: String, lang: String): String {
         "Direct Message Keys" -> "Claves de Mensaje Directo"
         "Public Key (Base64)" -> "Clave Pública (Base64)"
         "Private Key (Base64)" -> "Clave Privada (Base64)"
+        "Key check code" -> "Código de verificación"
+        "Their Public Key (Base64)" -> "Clave Pública del Contacto (Base64)"
+        "Paste a contact's public key to get a matching check code." -> "Pegue la clave pública de un contacto para obtener un código coincidente."
+        "Matching check code" -> "Código coincidente"
         "Regenerate Private Key" -> "Regenerar Clave Privada"
         "Export Keys" -> "Exportar Claves"
         "Admin Keys" -> "Claves de Administrador"
@@ -1141,9 +987,9 @@ fun MainScreen(
                                                 onStartRangeTest = if (!sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId)) {
                                                     { viewModel.requestRangeTestDialog(detailNode.nodeId) }
                                                 } else null,
-                                                awaitingFirmware = firmwareFreshness.awaitingFreshTelemetry &&
-                                                    (firmwareFreshness.connectedNodeId == 0L ||
-                                                        sameMeshNodeId(firmwareFreshness.connectedNodeId, detailNode.nodeId)),
+                                                awaitingFirmware = FirmwareFreshnessPolicy.isChecking(
+                                                    firmwareFreshness, detailNode.nodeId
+                                                ),
                                                 queuedCount = viewModel.countQueuedMessagesForRecipient(detailNode.nodeId),
                                                 routerQueueDepth = if (sameMeshNodeId(detailNode.nodeId, viewModel.connectedNodeId))
                                                     routerQueueDepth else 0
@@ -1482,10 +1328,7 @@ fun MainScreen(
                             fontSize = 13.sp
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        listOf(
-                            0 to "US915 (North America)",
-                            1 to "EU868 (Europe)"
-                        ).forEach { (value, label) ->
+                        RadioRegionPolicy.SETUP_CHOICES.forEach { (value, label) ->
                             val selected = setupRegion == value
                             Row(
                                 modifier = Modifier
@@ -1520,40 +1363,35 @@ fun MainScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            val name = nodePrefs.getString("node_name", "")
-                                ?.takeIf { it.isNotBlank() }
-                                ?: nodes.find { it.nodeId == nodeKey }?.name
-                                    ?.replace("AetherMesh-", "")
-                                    ?.replace("Node ", "")
-                                ?: ""
-                            val shortName = nodePrefs.getString("node_short_name", null)
-                                ?: nodes.find { it.nodeId == nodeKey }?.shortName
-                                ?: name.replace(Regex("[^a-zA-Z0-9]"), "").take(4).uppercase()
-                                    .ifEmpty { String.format("%04X", (nodeKey and 0xFFFFL).toInt()) }
+                            val matched = nodes.find { it.nodeId == nodeKey }
+                            val form = NodeSettingsFormPolicy.readFromPrefs(
+                                nodePrefs,
+                                matched?.name,
+                                matched?.shortName
+                            )
+                            val shortName = form.nodeShortName.ifBlank {
+                                NodeNamePolicy.deriveShortName(form.nodeName, nodeKey)
+                            }
                             val sent = viewModel.sendNodeConfig(
-                                name = name,
+                                name = form.nodeName,
                                 shortName = shortName,
-                                sf = nodePrefs.getInt("lora_sf", 11),
-                                bw = nodePrefs.getFloat("lora_bw", 125f),
-                                txPower = nodePrefs.getInt("lora_tx_power", 22),
+                                sf = form.loraSf,
+                                bw = form.loraBw,
+                                txPower = form.loraTxPower,
                                 region = setupRegion,
-                                role = nodePrefs.getInt("node_role", 0),
-                                telemetryInterval = nodePrefs.getInt("telemetry_interval", 60),
-                                screenTimeout = nodePrefs.getInt("screen_timeout", 30),
-                                powerSaveMode = nodePrefs.getBoolean("power_save_mode", false),
-                                positionPrecision = nodePrefs.getInt("position_precision", 0),
-                                gpsMode = nodePrefs.getInt("gps_mode", 0).coerceIn(0, 2),
-                                gpsDutyIntervalSecs = snapGpsDutyIntervalSecs(
-                                    nodePrefs.getInt("gps_duty_interval_secs", 900)
-                                ),
-                                fixedPosition = nodePrefs.getBoolean("fixed_position", false),
-                                fixedLatitude = nodePrefs.getFloat("fixed_latitude", 0f),
-                                fixedLongitude = nodePrefs.getFloat("fixed_longitude", 0f),
-                                fixedAltitude = nodePrefs.getInt("fixed_altitude", 0),
-                                meshHopLimit = nodePrefs.getInt("mesh_hop_limit", 4).coerceIn(1, 8),
-                                rebroadcastTxdelayX100 = nodePrefs.getInt("rebroadcast_txdelay_x100", 100).let {
-                                    if (it <= 0) 100 else it.coerceIn(50, 200)
-                                }
+                                role = form.nodeRole,
+                                telemetryInterval = form.telemetryInterval,
+                                screenTimeout = form.screenTimeout,
+                                powerSaveMode = form.powerSaveMode,
+                                positionPrecision = form.positionPrecision,
+                                gpsMode = form.gpsMode,
+                                gpsDutyIntervalSecs = form.gpsDutyIntervalSecs,
+                                fixedPosition = form.fixedPosition,
+                                fixedLatitude = form.fixedLatitude,
+                                fixedLongitude = form.fixedLongitude,
+                                fixedAltitude = form.fixedAltitude,
+                                meshHopLimit = form.meshHopLimit,
+                                rebroadcastTxdelayX100 = form.rebroadcastTxdelayX100
                             )
                             if (sent) {
                                 nodePrefs.edit()

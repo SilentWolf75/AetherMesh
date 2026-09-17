@@ -25,6 +25,10 @@ public:
     void setInlinePhoneDelivery(bool enabled) { inlinePhoneDelivery = enabled; }
     
     bool isDeviceConnected() { return isConnected; }
+    /** Changes on every connect and disconnect; 0 until the first connection. */
+    uint32_t connectionGeneration() const;
+    /** Connection generation of the phone packet being handed to the callback. */
+    uint32_t deliveringGeneration() const;
     void stopAdvertising();
     void startAdvertising();
     /** Re-request our supervision timeout (phone resets it on priority change). */

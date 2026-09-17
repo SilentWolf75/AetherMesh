@@ -50,9 +50,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.silentwolf75.aethermesh.data.AppUiPrefs
 import com.silentwolf75.aethermesh.data.ChatMessage
 import com.silentwolf75.aethermesh.data.ChannelConfig
+import com.silentwolf75.aethermesh.data.FirmwareFreshnessPolicy
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.NodeSettingsPrefs
+import com.silentwolf75.aethermesh.data.SignalQualityPolicy
 import com.silentwolf75.aethermesh.data.TraceRouteState
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.components.*
@@ -62,6 +66,7 @@ import com.silentwolf75.aethermesh.theme.AccentSteelDim
 import com.silentwolf75.aethermesh.theme.appBackgroundBrush
 import com.silentwolf75.aethermesh.theme.headerBarBrush
 import com.silentwolf75.aethermesh.theme.primaryButtonBrush
+import com.silentwolf75.aethermesh.theme.signalBandColor
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
@@ -331,9 +336,9 @@ fun ConnectionView(
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(displayName, color = TextLight, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                    val awaitingFw = firmwareFreshness.awaitingFreshTelemetry &&
-                                        (firmwareFreshness.connectedNodeId == 0L ||
-                                            firmwareFreshness.connectedNodeId == connectedNode?.nodeId)
+                                    val awaitingFw = FirmwareFreshnessPolicy.isChecking(
+                                        firmwareFreshness, connectedNode?.nodeId
+                                    )
                                     val fwVersion = formatFirmwareVersionValue(
                                         connectedNode?.firmwareVersion,
                                         awaitingFw,
@@ -679,10 +684,12 @@ fun ConnectionView(
             if (scannedDevices.isEmpty()) {
                 val knownBatterySaver = remember(nodes, context) {
                     nodes.any { node ->
-                        context.getSharedPreferences("node_settings_${node.nodeId}", Context.MODE_PRIVATE)
-                            .getBoolean("power_save_mode", false)
-                    } || context.getSharedPreferences("aethermesh_prefs", Context.MODE_PRIVATE)
-                        .getBoolean("last_connected_power_save", false)
+                        context.getSharedPreferences(
+                            NodeSettingsPrefs.prefsName(node.nodeId),
+                            Context.MODE_PRIVATE
+                        ).getBoolean(NodeSettingsPrefs.KEY_POWER_SAVE, false)
+                    } || context.getSharedPreferences(AppUiPrefs.FILE, Context.MODE_PRIVATE)
+                        .getBoolean(AppUiPrefs.LAST_POWER_SAVE, false)
                 }
                 Box(
                     modifier = Modifier
@@ -773,12 +780,18 @@ fun ConnectionView(
                                     Text(device.mac, color = TextMuted, fontSize = 12.sp)
                                 }
                                 if (device.rssi > -127) {
-                                    Text(
-                                        "${device.rssi} dBm",
-                                        color = if (device.rssi >= -70) AccentMint else if (device.rssi >= -85) AccentAmber else TextMuted,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        SignalBars(rssi = device.rssi.toFloat())
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            "${device.rssi} dBm",
+                                            color = signalBandColor(
+                                                SignalQualityPolicy.bandFromRssi(device.rssi.toFloat())
+                                            ),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                     Spacer(modifier = Modifier.width(10.dp))
                                 }
                                 Box(

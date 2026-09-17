@@ -9,10 +9,24 @@ static constexpr size_t BLE_RX_RING_SLOTS = 16; // absorbs OTA bursts across fla
 struct BleRxSlot {
     uint8_t data[BLE_RX_BUFFER_SIZE];
     size_t len;
+    uint32_t generation; // connection the write arrived on (see BleSession.h)
 };
 static BleRxSlot bleRxRing[BLE_RX_RING_SLOTS];
 static volatile size_t bleRxHead = 0; // producer writes here
 static volatile size_t bleRxTail = 0; // consumer reads here
+
+// Bumped by the BLE stack on every connect and disconnect. Trust in main.cpp is
+// keyed to this, so a missed disconnect/reconnect pair cannot carry an
+// authenticated session over to a different phone.
+static volatile uint32_t gConnectionGeneration = 0;
+// Generation of the packet currently inside phoneCallback.
+static volatile uint32_t gDeliveringGeneration = 0;
+
+static void bumpConnectionGeneration() {
+    uint32_t next = gConnectionGeneration + 1;
+    if (next == 0) next = 1; // 0 means "no connection yet"
+    gConnectionGeneration = next;
+}
 
 static void queuePhonePacket(const uint8_t* data, size_t len);
 
@@ -33,6 +47,7 @@ static void deliverPhonePacket(const uint8_t* data, size_t len) {
         }
         uint8_t tmp[BLE_RX_BUFFER_SIZE];
         memcpy(tmp, data, len);
+        gDeliveringGeneration = gConnectionGeneration;
         espBLEInstance->phoneCallback(tmp, len);
         return;
     }
@@ -58,6 +73,7 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
 
     memcpy(bleRxRing[bleRxHead].data, data, len);
     bleRxRing[bleRxHead].len = len;
+    bleRxRing[bleRxHead].generation = gConnectionGeneration;
     bleRxHead = next;
 }
 
@@ -75,6 +91,7 @@ static bool espPeerKnown = false;
 
 class EspServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
+        bumpConnectionGeneration();
         if (espBLEInstance) espBLEInstance->isConnected = true;
         Serial.println("Phone connected via BLE (ESP32).");
     }
@@ -98,6 +115,7 @@ class EspServerCallbacks : public BLEServerCallbacks {
         Serial.println("BLE: requested 20s supervision timeout (was 5s default).");
     }
     void onDisconnect(BLEServer* pServer) override {
+        bumpConnectionGeneration();
         if (espBLEInstance) espBLEInstance->isConnected = false;
         Serial.println("Phone disconnected from BLE (ESP32).");
         // Restart advertising through BLEManager so isAdvertising stays honest.
@@ -119,7 +137,7 @@ class EspCharCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
 #include <bluefruit.h>
 
 // Nordic Static Pointers
@@ -129,11 +147,13 @@ static BLECharacteristic nrfTxChar(TX_CHAR_UUID);
 static BLECharacteristic nrfRxChar(RX_CHAR_UUID);
 
 void nrfConnectCallback(uint16_t conn_handle) {
+    bumpConnectionGeneration();
     if (nrfBLEInstance) nrfBLEInstance->isConnected = true;
     Serial.println("Phone connected via BLE (Nordic).");
 }
 
 void nrfDisconnectCallback(uint16_t conn_handle, uint8_t reason) {
+    bumpConnectionGeneration();
     if (nrfBLEInstance) nrfBLEInstance->isConnected = false;
     Serial.print("Phone disconnected from BLE (Nordic). Reason: 0x");
     Serial.println(reason, HEX);
@@ -206,7 +226,7 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     Serial.println("ESP32 BLE Service started.");
     return true;
 
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     nrfBLEInstance = this;
     
     // Configure BLE stack for maximum bandwidth to support larger MTU (256 bytes)
@@ -281,9 +301,11 @@ void BLEManager::loop() {
     while (bleRxTail != bleRxHead) {
         uint8_t packet[BLE_RX_BUFFER_SIZE];
         size_t len = bleRxRing[bleRxTail].len;
+        uint32_t generation = bleRxRing[bleRxTail].generation;
         memcpy(packet, bleRxRing[bleRxTail].data, len);
         bleRxTail = (bleRxTail + 1) % BLE_RX_RING_SLOTS;
 
+        gDeliveringGeneration = generation;
         phoneCallback(packet, len);
     }
 }
@@ -299,12 +321,20 @@ bool BLEManager::sendToPhone(uint8_t* data, size_t len) {
         espRxChar->notify();
         return true;
     }
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     if (nrfRxChar.notify(data, len)) {
         return true;
     }
 #endif
     return false;
+}
+
+uint32_t BLEManager::connectionGeneration() const {
+    return gConnectionGeneration;
+}
+
+uint32_t BLEManager::deliveringGeneration() const {
+    return gDeliveringGeneration;
 }
 
 void BLEManager::onReceivedFromPhone(void (*callback)(uint8_t* data, size_t len)) {
@@ -314,7 +344,7 @@ void BLEManager::onReceivedFromPhone(void (*callback)(uint8_t* data, size_t len)
 void BLEManager::stopAdvertising() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     BLEDevice::getAdvertising()->stop();
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     Bluefruit.Advertising.stop();
 #endif
     isAdvertising = false;
@@ -327,7 +357,7 @@ void BLEManager::stopAdvertising() {
 void BLEManager::startAdvertising() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK) || defined(ELECROW_CROWPANEL_35)
     BLEDevice::startAdvertising();
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     // restartOnDisconnect may already be running; start(0) is safe to re-arm.
     Bluefruit.Advertising.start(0);
 #endif

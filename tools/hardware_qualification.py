@@ -10,10 +10,11 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-TARGETS = (
-    "heltec_v4", "heltec_v3", "rak4631", "rak3401_1w", "rak19026",
-    "lilygo_t_echo", "lilygo_t_deck", "elecrow_crowpanel_35",
-)
+try:
+    from .board_registry import BOARDS
+except ImportError:
+    from board_registry import BOARDS
+TARGETS = tuple(board["env"] for board in BOARDS)
 CHECKS = (
     "boot_ui", "flash_recovery", "ble_reconnect", "delivery",
     "multihop", "route_failover", "settings_persistence", "soak_12h",
