@@ -1,3 +1,4 @@
+import { boards } from "./boards.js";
 import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.js";
 
   const $ = (id) => document.getElementById(id);
@@ -14,6 +15,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   const fileChipSize = $("file-chip-size");
   const fileChipRemove = $("file-chip-remove");
   const fwSelect = $("fw");
+  const channelSelect = $("channel");
+  const channelNote = $("channel-note");
   const targetSelect = $("target");
   const baudrateSelect = $("baudrate");
   const offsetInput = $("offset");
@@ -102,6 +105,13 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     });
   }
 
+  function matchesBoard(artifact, board) {
+    if (!board) return false;
+    if (artifact.board) return artifact.board === board.id;
+    const file = (artifact.file || "").toLowerCase().replaceAll("_", "-");
+    return board.fileAliases.some(alias => file.includes(alias));
+  }
+
   function populateFirmwareDropdown() {
     if (manifest.length === 0) {
       fwSelect.innerHTML = '<option value="">No bundled builds found - drag a file below</option>';
@@ -109,15 +119,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     }
     const target = targetSelect.value;
     let filtered = manifest.map((m, i) => ({ ...m, index: i }));
-    if (target === "heltec-v4") {
-      filtered = filtered.filter(m => m.name.toLowerCase().includes("v4") || m.file.toLowerCase().includes("v4"));
-    } else if (target === "heltec-v3") {
-      filtered = filtered.filter(m => m.name.toLowerCase().includes("v3") || m.file.toLowerCase().includes("v3"));
-    } else if (target === "lilygo-t-deck") {
-      filtered = filtered.filter(m => m.name.toLowerCase().includes("t-deck") || m.file.toLowerCase().includes("t-deck"));
-    } else if (target === "elecrow-crowpanel-35") {
-      filtered = filtered.filter(m => m.name.toLowerCase().includes("crowpanel") || m.file.toLowerCase().includes("crowpanel"));
-    }
+    const board = boards.find(b => b.flasherId === target);
+    filtered = filtered.filter(m => matchesBoard(m, board) && m.file.endsWith(".bin") && !m.file.includes("-ota"));
     
     if (filtered.length === 0) {
       fwSelect.innerHTML = '<option value="">No matching builds found for target - upload a local file below</option>';
@@ -126,6 +129,72 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
         .map((m) => `<option value="${m.index}">${m.name || m.file}</option>`)
         .join("");
     }
+  }
+
+  const GITHUB_RELEASES_API =
+    "https://api.github.com/repos/SilentWolf75/AetherMesh/releases?per_page=30";
+  const GITHUB_RELEASES_WEB = "https://github.com/SilentWolf75/AetherMesh/releases";
+
+  function setChannelNote(text, isError) {
+    if (!channelNote) return;
+    channelNote.textContent = text;
+    channelNote.style.color = isError ? "#f0999b" : "";
+  }
+
+  // A release channel is only usable if its release published manifest.json:
+  // without it there is no SHA-256 to check the download against, and this tool
+  // does not write unverified bytes to a board.
+  async function loadReleaseChannel(wantPrerelease) {
+    const resp = await fetch(GITHUB_RELEASES_API, {
+      headers: { "Accept": "application/vnd.github+json" }
+    });
+    if (!resp.ok) throw new Error("GitHub Releases returned HTTP " + resp.status);
+    const releases = await resp.json();
+    const match = (Array.isArray(releases) ? releases : [])
+      .filter((r) => !r.draft && !!r.prerelease === wantPrerelease)
+      .find((r) => (r.assets || []).some((a) => a.name === "manifest.json"));
+    if (!match) {
+      throw new Error(wantPrerelease
+        ? "No beta release published yet."
+        : "No stable release published yet.");
+    }
+    const manifestAsset = match.assets.find((a) => a.name === "manifest.json");
+    const manifestResp = await fetch(manifestAsset.browser_download_url);
+    if (!manifestResp.ok) throw new Error("Could not read that release's manifest.");
+    const list = await manifestResp.json();
+    const byName = new Map((match.assets || []).map((a) => [a.name, a.browser_download_url]));
+    // Keep only entries whose binary is actually attached to this release.
+    return (Array.isArray(list) ? list : [])
+      .filter((entry) => byName.has(entry.file))
+      .map((entry) => ({ ...entry, url: byName.get(entry.file), releaseTag: match.tag_name }));
+  }
+
+  async function loadChannel(channel) {
+    fwSelect.innerHTML = '<option value="">Loading builds...</option>';
+    try {
+      if (channel === "latest") {
+        const r = await fetch("./firmware/manifest.json?t=" + Date.now());
+        manifest = r.ok ? await r.json() : [];
+        setChannelNote("Latest build of main. Verified against the SHA-256 published beside it.", false);
+      } else {
+        manifest = await loadReleaseChannel(channel === "beta");
+        const tag = manifest.length ? manifest[0].releaseTag : "";
+        setChannelNote(
+          (channel === "beta" ? "Beta " : "Stable ") + tag +
+          ". Verified against the SHA-256 published in that release.", false);
+      }
+    } catch (error) {
+      manifest = [];
+      setChannelNote(
+        (error && error.message ? error.message : "Could not load that channel.") +
+        " Open " + GITHUB_RELEASES_WEB + " to download it manually, or switch channel.", true);
+    }
+    if (!Array.isArray(manifest)) manifest = [];
+    populateFirmwareDropdown();
+  }
+
+  if (channelSelect) {
+    channelSelect.addEventListener("change", () => loadChannel(channelSelect.value));
   }
 
   // Load manifest firmware
@@ -249,13 +318,19 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   // Target Hardware Selection Handler
   targetSelect.onchange = () => {
     const val = targetSelect.value;
-    if (val === "rak4631" || val === "rak3401-1w" || val === "rak19026" || val === "lilygo-t-echo") {
+    if (boards.find(b => b.flasherId === val)?.updateFormat === "nordic-dfu") {
       card2.style.display = "none";
       card3.style.display = "none";
       $("uf2-guide").style.display = "block";
       
-      const boardName = val === "lilygo-t-echo" ? "T-Echo" : (val === "rak3401-1w" ? "RAK3401 1W" : (val === "rak19026" ? "RAK19026" : "RAK4631"));
-      const driveName = val === "lilygo-t-echo" ? "T-ECHO" : (val === "rak3401-1w" ? "RAK3401/NORDIC" : (val === "rak19026" ? "RAK19026/NORDIC" : "RAK4631/NORDIC"));
+      const boardName = val === "lilygo-t-echo" ? "T-Echo"
+        : (val === "seeed-t1000-e" ? "T1000-E"
+        : (val === "rak3401-1w" ? "RAK3401 1W"
+        : (val === "rak19026" ? "RAK19026" : "RAK4631")));
+      const driveName = val === "lilygo-t-echo" ? "T-ECHO"
+        : (val === "seeed-t1000-e" ? "T1000-E"
+        : (val === "rak3401-1w" ? "RAK3401/NORDIC"
+        : (val === "rak19026" ? "RAK19026/NORDIC" : "RAK4631/NORDIC")));
       
       document.querySelector("#uf2-guide h3").textContent = `${boardName} Bootloader Flow`;
       document.querySelector("#uf2-guide p").innerHTML = 
@@ -297,15 +372,14 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   // Download nRF52 UF2 firmware.
   $("download-uf2-btn").onclick = async () => {
     const val = targetSelect.value;
-    const uf2 = manifest.find(m => {
-      if (!m.file || !m.file.toLowerCase().endsWith(".uf2")) return false;
-      if (val === "lilygo-t-echo") return m.file.toLowerCase().includes("t-echo");
-      if (val === "rak3401-1w") return m.file.toLowerCase().includes("rak3401");
-      if (val === "rak19026") return m.file.toLowerCase().includes("rak19026");
-      return m.file.toLowerCase().includes("rak4631");
-    });
+    const board = boards.find(b => b.flasherId === val);
+    const uf2 = manifest.find(m =>
+      m.file?.toLowerCase().endsWith(".uf2") && matchesBoard(m, board));
     if (uf2) {
-      const boardName = val === "lilygo-t-echo" ? "T-Echo" : (val === "rak3401-1w" ? "RAK3401 1W" : (val === "rak19026" ? "RAK19026" : "RAK4631"));
+      const boardName = val === "lilygo-t-echo" ? "T-Echo"
+        : (val === "seeed-t1000-e" ? "T1000-E"
+        : (val === "rak3401-1w" ? "RAK3401 1W"
+        : (val === "rak19026" ? "RAK19026" : "RAK4631")));
       try {
         setStatus("Verifying " + uf2.file + "...", "info");
         await downloadVerifiedArtifact(uf2);
@@ -314,7 +388,10 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
         setStatus(error.message || "Firmware verification failed.", "err");
       }
     } else {
-      const boardName = val === "lilygo-t-echo" ? "T-Echo" : (val === "rak3401-1w" ? "RAK3401 1W" : (val === "rak19026" ? "RAK19026" : "RAK4631"));
+      const boardName = val === "lilygo-t-echo" ? "T-Echo"
+        : (val === "seeed-t1000-e" ? "T1000-E"
+        : (val === "rak3401-1w" ? "RAK3401 1W"
+        : (val === "rak19026" ? "RAK19026" : "RAK4631")));
       setStatus("No " + boardName + " UF2 build is available on this site yet.", "err");
     }
   };
@@ -446,7 +523,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   }
 
   async function fetchVerifiedArtifact(entry) {
-    const resp = await fetch("./firmware/" + entry.file);
+    const url = entry.url || ("./firmware/" + entry.file);
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error("Could not download " + entry.file);
     const buffer = await resp.arrayBuffer();
     await verifyBundledArtifact(entry, buffer);
