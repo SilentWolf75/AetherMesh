@@ -23,6 +23,10 @@ message MeshPacket {
   uint64 session_id = 24;       // Random boot/session identity used for replay protection.
   uint32 auth_counter = 25;     // Monotonic counter within session_id; 0 when unauthenticated.
   bytes auth_tag = 26;          // Truncated packet authentication tag; empty for V1 compatibility.
+  // hop_limit the originator used (1–16). Relays never change it, so
+  // hop_start - hop_limit + 1 is how many transmissions the packet took, which
+  // sizes replies. 0 = legacy sender (firmware before extended range, max 8).
+  uint32 hop_start = 31;
 
   oneof payload {
     TextMessage text = 6;
@@ -40,6 +44,8 @@ message MeshPacket {
     MeshDiagnostics diagnostics = 22;
     RangeTestControl range_test_control = 27;
     ConfigResult config_result = 28;
+    PositionPrivacy position_privacy = 30; // authenticated BLE only, never LoRa
+    NodeIdentity node_identity = 32;
   }
 }
 
@@ -127,11 +133,46 @@ message OtaStatus {
   string message = 3;
 }
 
+// Persistent local radio privacy floor, independent of the chosen GPS source.
+// Sent only after a local config report advertises support.
+message PositionPrivacy {
+  bool position_disabled = 1;
+  uint32 precision_m = 2;
+}
+
 // Standard chat text message
 message TextMessage {
   string content = 1;
   string channel = 2;        // Target channel name (default: "General")
   bool is_encrypted = 3;     // True if content is encrypted
+  // Sealed payload for a direct message encrypted to the recipient's X25519
+  // key. When set, `content` is empty and `is_encrypted` is true. Raw bytes,
+  // not base64: at SF12 every byte is ~30 ms of airtime.
+  bytes sealed = 4;
+}
+
+// Long-lived identity keys a node announces to the mesh. Hearers store the
+// first key they see for a node (trust on first use) and surface a later change
+// instead of accepting it silently, so a node that starts announcing someone
+// else's identity cannot quietly become them.
+message NodeIdentity {
+  bytes x25519_public = 1;   // 32 bytes, key agreement for direct messages
+  bytes ed25519_public = 2;  // 32 bytes, verifies this announcement
+  uint32 key_epoch = 3;      // Increments whenever the node regenerates its keys
+  bytes signature = 4;       // 64 bytes, Ed25519 over the canonical body
+
+  // What the local node decided about this announcement. Set only on the copy
+  // handed to the companion app over the authenticated BLE link, never on air:
+  // the phone cannot check a signature itself, so it trusts its own radio's
+  // verdict rather than re-deriving one from an unverified broadcast.
+  enum Trust {
+    TRUST_UNSPECIFIED = 0;
+    FIRST_USE = 1;  // no key was on file; this one is now the node's identity
+    KNOWN = 2;      // matches what we already trust
+    ROTATED = 3;    // key replaced with a properly signed newer epoch
+    CONFLICT = 4;   // a different key claimed a node id we already know
+  }
+  Trust trust = 5;
 }
 
 // Telemetry information periodically broadcasted by nodes
@@ -152,6 +193,29 @@ message Telemetry {
   uint32 lora_sf = 12;            // Current spreading factor (7-12). Receivers use this to
                                   // detect radio-profile mismatches across the mesh.
   uint32 region = 13;             // 0 = US915, 1 = EU868 (same enum as NodeConfig.region).
+
+  // Onboard GNSS snapshot. Lets receivers tell a live fix from a stale or
+  // phone-borrowed position. All zero from firmware that predates these fields.
+  enum GpsState {
+    GPS_STATE_UNKNOWN = 0;    // older firmware; infer nothing
+    GPS_STATE_ABSENT = 1;     // no module detected
+    GPS_STATE_OFF = 2;        // disabled by config or low-voltage safe mode
+    GPS_STATE_SLEEPING = 3;   // duty-cycle: powered down between fixes
+    GPS_STATE_SEARCHING = 4;  // powered, no current fix
+    GPS_STATE_FIX = 5;        // fix updated within the last few seconds
+  }
+  enum PositionSource {
+    POSITION_SOURCE_NONE = 0;   // latitude/longitude are 0 or unknown
+    POSITION_SOURCE_GPS = 1;    // onboard GNSS (may be old; see gps_fix_age_secs)
+    POSITION_SOURCE_PHONE = 2;  // borrowed from the connected phone
+    POSITION_SOURCE_FIXED = 3;  // configured fixed position
+  }
+  GpsState gps_state = 14;
+  PositionSource position_source = 15;
+  uint32 gps_satellites_used = 16;     // satellites in the current/last fix solution
+  uint32 gps_satellites_in_view = 17;  // satellites the module currently tracks (all constellations)
+  uint32 gps_hdop_x10 = 18;            // horizontal dilution of precision x10; 0 = unknown
+  uint32 gps_fix_age_secs = 19;        // seconds since the last onboard fix; 0 = none
 }
 
 // On-air route observation. Each receiver appends itself and the quality of
@@ -174,6 +238,14 @@ message TraceRoute {
   repeated sint32 return_snr_quarter_db = 10;
   bool forward_truncated = 11;
   bool return_truncated = 12;
+  // Compact paths for extended-range traces (hop_start > 8), which cannot fit
+  // the repeated fields above in one LoRa frame. 5 bytes per hop: node id
+  // (uint32 little-endian), SNR in quarter dB (int8). No per-hop RSSI: with it a
+  // full 16+16 hop response encodes to 280 bytes, past the 255-byte LoRa limit.
+  // Legacy-range traces keep the repeated fields so older relays still append
+  // in order.
+  bytes forward_hops = 13;
+  bytes return_hops = 14;
 }
 
 // Path discovery for unicast routing
@@ -271,6 +343,12 @@ message NodeConfig {
   uint32 apply_mask = 23;
   // Compact badge label (max 4 chars). Empty = derive from node_name on receivers.
   string node_short_name = 24;
+  // Local BLE report capability and the persisted channel privacy floor.
+  bool position_privacy_supported = 26;
+  bool channel_position_disabled = 27;
+  uint32 channel_precision_m = 28;
+  // Report only: highest mesh_hop_limit this firmware accepts. 0 = legacy (8).
+  uint32 max_hop_limit = 29;
 }
 
 // Outcome of a remote NodeConfig apply/request. Sent over LoRa back to the
