@@ -1,4 +1,8 @@
 #include "MeshRouter.h"
+
+#include "TextSeal.h"
+#include "TraceHops.h"
+#include "MeshIngress.h"
 #include "MeshMath.h"
 #include "Version.h"
 #include "pb_common.h"
@@ -58,6 +62,7 @@ MeshRouter::MeshRouter(MeshRadio* radioMgr) {
     defaultHopLimit = DEFAULT_HOP_LIMIT;
     rebroadcastTxdelayX100 = 100;
     textCallback = nullptr;
+    identityCallback = nullptr;
     telemetryCallback = nullptr;
     configCallback = nullptr;
     deliveryStatusCallback = nullptr;
@@ -164,8 +169,14 @@ void MeshRouter::setNodeRole(uint32_t role) {
 
 void MeshRouter::setDefaultHopLimit(uint8_t hops) {
     if (hops < 1) hops = 1;
-    if (hops > 8) hops = 8;
+    if (hops > meshmath::MAX_HOP_LIMIT) hops = (uint8_t)meshmath::MAX_HOP_LIMIT;
     defaultHopLimit = hops;
+}
+
+uint8_t MeshRouter::replyHopLimitFor(uint32_t nodeId) const {
+    const uint8_t learned = replyHops.lookup(nodeId);
+    if (learned != 0) return learned;
+    return (uint8_t)meshmath::replyHopLimit(0, 0, defaultHopLimit);
 }
 
 void MeshRouter::setRebroadcastTxdelayX100(uint32_t x100) {
@@ -235,6 +246,25 @@ bool MeshRouter::isRouteFailedRecently(uint32_t targetId) const {
     return false;
 }
 
+void MeshRouter::setBeaconIntervalSec(uint32_t beaconIntervalSec) {
+    if (beaconIntervalSec == 0) return;
+    routeSoftAgeMs = meshmath::neighborSoftAgeMsFor(beaconIntervalSec, ROUTE_SOFT_AGE_MS);
+    routeTimeoutMs = meshmath::routeTimeoutMsFor(beaconIntervalSec, ROUTE_TIMEOUT_MS, routeSoftAgeMs);
+}
+
+uint32_t MeshRouter::liveNeighborCount() const {
+    uint32_t now = millis();
+    uint32_t count = 0;
+    for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
+        if (!routingTable[i].active) continue;
+        // Direct neighbor: the next hop toward them is themselves.
+        if (routingTable[i].nextHopId != routingTable[i].targetId) continue;
+        if ((uint32_t)(now - routingTable[i].timestamp) > routeSoftAgeMs) continue;
+        count++;
+    }
+    return count;
+}
+
 bool MeshRouter::isLiveNeighbor(uint32_t nodeId) const {
     if (nodeId == 0 || nodeId == localNodeId) return false;
     uint32_t now = millis();
@@ -242,7 +272,7 @@ bool MeshRouter::isLiveNeighbor(uint32_t nodeId) const {
         if (!routingTable[i].active || routingTable[i].targetId != nodeId) continue;
         // Direct neighbor: the next hop toward them is themselves.
         if (routingTable[i].nextHopId != nodeId) return false;
-        return (uint32_t)(now - routingTable[i].timestamp) <= ROUTE_SOFT_AGE_MS;
+        return (uint32_t)(now - routingTable[i].timestamp) <= routeSoftAgeMs;
     }
     return false;
 }
@@ -300,7 +330,7 @@ void MeshRouter::applyDirectedNextHop(aethermesh_MeshPacket* packet,
     // so relays rediscover instead of black-holing on a quiet next_hop.
     if (hasDirected &&
         meshmath::shouldFloodSoftStaleRoute(millis() - route->timestamp,
-                                            ROUTE_SOFT_AGE_MS)) {
+                                            routeSoftAgeMs)) {
         packet->next_hop_id = 0;
         return;
     }
@@ -611,6 +641,10 @@ bool MeshRouter::queueChannelReplay(const aethermesh_MeshPacket& stored,
     replay.want_ack = false;
     replay.prev_hop_id = localNodeId;
     replay.hop_limit = defaultHopLimit;
+    // The replay is a fresh transmission with this relay's budget. Keeping the
+    // originator's smaller hop_start made hop_limit > hop_start, which receivers
+    // reject as a rewound hop limit.
+    replay.hop_start = replay.hop_limit;
     replay.next_hop_id = 0;
     replay.retry_count = 0;
     applyDirectedNextHop(&replay);
@@ -752,7 +786,7 @@ void MeshRouter::reinforceRouteOnDelivery(uint32_t destId, float ackSnr) {
             refreshed->hasBackup = true;
         }
         refreshed->backupTimestamp = meshmath::nudgedSoftAgeTimestamp(
-            now, refreshed->backupTimestamp, ROUTE_SOFT_AGE_MS);
+            now, refreshed->backupTimestamp, routeSoftAgeMs);
     }
 }
 
@@ -761,11 +795,11 @@ void MeshRouter::maybeSoftDemoteRoute(RouteEntry* route) {
     uint32_t now = millis();
     uint32_t primaryAge = now - route->timestamp;
     uint32_t backupAge = now - route->backupTimestamp;
-    if (!meshmath::backupRouteIsUsable(now, route->backupTimestamp, ROUTE_TIMEOUT_MS)) {
+    if (!meshmath::backupRouteIsUsable(now, route->backupTimestamp, routeTimeoutMs)) {
         return;
     }
     if (!meshmath::shouldDemoteStalePrimary(primaryAge, route->metric, backupAge,
-                                            route->backupMetric, ROUTE_SOFT_AGE_MS,
+                                            route->backupMetric, routeSoftAgeMs,
                                             true)) {
         return;
     }
@@ -805,7 +839,7 @@ bool MeshRouter::tryEarlyPathRepair(PendingAck& pending, uint32_t now) {
     RouteEntry* route = getRoute(dest);
     uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
     uint8_t routeMetric = route ? route->metric : 0;
-    uint32_t routeAge = route ? (now - route->timestamp) : ROUTE_TIMEOUT_MS;
+    uint32_t routeAge = route ? (now - route->timestamp) : routeTimeoutMs;
     uint32_t waited = now - pending.trackedAt;
 
     // Fresher directed hop landed while we were waiting — use it instead of
@@ -824,20 +858,20 @@ bool MeshRouter::tryEarlyPathRepair(PendingAck& pending, uint32_t now) {
     }
 
     uint32_t probeAfter = meshmath::earlyBackupProbeDelayMs(
-        sf, routeMetric, routeAge, ROUTE_SOFT_AGE_MS, 0);
+        sf, routeMetric, routeAge, routeSoftAgeMs, 0);
     uint32_t floodAfter = meshmath::earlyFloodDelayMs(
-        sf, routeMetric, routeAge, ROUTE_SOFT_AGE_MS, 0);
+        sf, routeMetric, routeAge, routeSoftAgeMs, 0);
     // Soft-stale directed: pull limited flood earlier so we do not wait a full
     // ACK exhaustion before backup/flood repair.
     if (directed &&
-        meshmath::shouldFloodSoftStaleRoute(routeAge, ROUTE_SOFT_AGE_MS)) {
+        meshmath::shouldFloodSoftStaleRoute(routeAge, routeSoftAgeMs)) {
         uint32_t earlierFlood = probeAfter + meshmath::earlyFloodGapMs(sf) / 2u;
         if (earlierFlood < floodAfter) floodAfter = earlierFlood;
     }
 
     const bool hasUsableBackup =
         route != nullptr && route->hasBackup &&
-        meshmath::backupRouteIsUsable(now, route->backupTimestamp, ROUTE_TIMEOUT_MS) &&
+        meshmath::backupRouteIsUsable(now, route->backupTimestamp, routeTimeoutMs) &&
         route->backupNextHopId != 0 &&
         route->backupNextHopId != route->nextHopId &&
         // Do not "probe" a backup that is already the pending next hop.
@@ -1011,6 +1045,11 @@ void MeshRouter::loop() {
                 if (queuedUnicast) {
                     if (queuedDirected) directedRelays++;
                     else floodUnicasts++;
+                } else if (pendingRebroadcasts[i].packet.which_payload ==
+                           aethermesh_MeshPacket_text_tag) {
+                    // The originator counts an overheard relay as an implicit
+                    // HEARD, so a separate ACK would only waste airtime.
+                    cancelLocalChannelAck(pendingRebroadcasts[i].packet.packet_id);
                 }
             }
             pendingRebroadcasts[i].active = false;
@@ -1028,7 +1067,9 @@ void MeshRouter::loop() {
         }
 
         uint32_t holdMs = isLocalAck ? ACK_QUEUE_TTL_MS : 5000u;
-        if (now - pendingRebroadcasts[i].queuedAtTime > holdMs) {
+        // Age from the slot opening, so waiting for the slot never counts as
+        // "radio busy too long" (SF12 ACK slots open ~20 s after reception).
+        if (now - pendingRebroadcasts[i].dueAnchorTime > holdMs) {
             // Radio stayed busy past the hold window; give up.
             pendingRebroadcasts[i].active = false;
             queueDrops++;
@@ -1154,7 +1195,7 @@ void MeshRouter::loop() {
                 // Use aged metric so stale paths back off / rediscover sooner.
                 if (retryRoute) {
                     retryMetric = meshmath::agedRouteMetric(
-                        retryMetric, now - retryRoute->timestamp, ROUTE_SOFT_AGE_MS);
+                        retryMetric, now - retryRoute->timestamp, routeSoftAgeMs);
                 }
                 if (pendingAcks[i].stored) {
                     // Next long store-forward cycle may wake again on route sighting.
@@ -1230,7 +1271,7 @@ void MeshRouter::addRoute(uint32_t targetId, uint32_t nextHopId, uint8_t metric)
         // Table bookkeeping lives in MeshTables.h so it can be tested natively;
         // logging, pending retargeting and counters stay here.
         const meshtables::RouteUpdate outcome = meshtables::applyRouteObservation(
-            *existing, nextHopId, metric, now, ROUTE_TIMEOUT_MS, ROUTE_SOFT_AGE_MS);
+            *existing, nextHopId, metric, now, routeTimeoutMs, routeSoftAgeMs);
 
         switch (outcome) {
             case meshtables::ROUTE_REFRESHED_PRIMARY:
@@ -1308,9 +1349,9 @@ RouteEntry* MeshRouter::getRoute(uint32_t targetId) {
     for (int i = 0; i < MAX_ROUTE_TABLE_ENTRIES; i++) {
         if (routingTable[i].active && routingTable[i].targetId == targetId) {
             // Check timeout
-            if (now - routingTable[i].timestamp > ROUTE_TIMEOUT_MS) {
+            if (now - routingTable[i].timestamp > routeTimeoutMs) {
                 if (routingTable[i].hasBackup && meshmath::backupRouteIsUsable(
-                        now, routingTable[i].backupTimestamp, ROUTE_TIMEOUT_MS)) {
+                        now, routingTable[i].backupTimestamp, routeTimeoutMs)) {
                     routingTable[i].nextHopId = routingTable[i].backupNextHopId;
                     routingTable[i].metric = routingTable[i].backupMetric;
                     routingTable[i].timestamp = routingTable[i].backupTimestamp;
@@ -1334,7 +1375,7 @@ void MeshRouter::invalidateRoute(uint32_t targetId) {
         if (routingTable[i].active && routingTable[i].targetId == targetId) {
             uint32_t now = millis();
             if (routingTable[i].hasBackup && meshmath::backupRouteIsUsable(
-                    now, routingTable[i].backupTimestamp, ROUTE_TIMEOUT_MS)) {
+                    now, routingTable[i].backupTimestamp, routeTimeoutMs)) {
                 routingTable[i].nextHopId = routingTable[i].backupNextHopId;
                 routingTable[i].metric = routingTable[i].backupMetric;
                 routingTable[i].timestamp = now;
@@ -1367,8 +1408,26 @@ bool MeshRouter::isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_
                                  SEEN_PACKET_TIMEOUT_MS);
 }
 
-void MeshRouter::markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount) {
-    seenCache.markSeen(millis(), senderId, packetId, retryCount);
+void MeshRouter::markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount,
+                                  uint32_t hopLimit) {
+    seenCache.markSeen(millis(), senderId, packetId, retryCount, hopLimit);
+}
+
+uint8_t MeshRouter::originatedHopLimitFor(uint32_t packetId) const {
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (pendingAcks[i].active &&
+            pendingAcks[i].packet.packet_id == packetId) {
+            return (uint8_t)pendingAcks[i].packet.hop_limit;
+        }
+    }
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (pendingRebroadcasts[i].active &&
+            pendingRebroadcasts[i].packet.sender_id == localNodeId &&
+            pendingRebroadcasts[i].packet.packet_id == packetId) {
+            return (uint8_t)pendingRebroadcasts[i].packet.hop_limit;
+        }
+    }
+    return defaultHopLimit;
 }
 
 void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr) {
@@ -1389,10 +1448,17 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         return;
     }
 
+    if (!meshingress::acceptRadio(packet, localNodeId)) return;
     if (packet.which_payload == aethermesh_MeshPacket_text_tag) {
         terminateTextFields(packet.payload.text);
     }
-    
+
+    if (!meshmath::hopLimitIsSane(packet.hop_limit)) {
+        Serial.printf("Dropping packet %u with insane hop_limit %u\n",
+                      packet.packet_id, packet.hop_limit);
+        return;
+    }
+
     // Ignore loopback of packets we originated — except channel text: an
     // overheard rebroadcast is a Meshtastic-style implicit ACK (the mesh is
     // carrying our flood). Count the relay as HEARD and cancel insurance so
@@ -1403,6 +1469,12 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             uint32_t hearer = (packet.prev_hop_id != 0) ? packet.prev_hop_id : 0;
             if (hearer != 0 && hearer != localNodeId) {
                 noteChannelHearing(packet.packet_id, hearer, rssi, snr);
+                // Only credit a relayer as a next-hop neighbor when hop_limit
+                // proves they heard us directly (decremented by exactly one).
+                if (meshmath::isDirectRelayerCredit(
+                        packet.hop_limit, originatedHopLimitFor(packet.packet_id))) {
+                    addRoute(hearer, hearer, meshmath::hopCost(snr));
+                }
             }
             // Cancel pending primary ASAP + insurance copies for this packet.
             cancelRebroadcast(localNodeId, packet.packet_id);
@@ -1411,15 +1483,32 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
         return;
     }
+
+    // Flood loop: our forwarded copy echoed back (prev_hop still us) with a
+    // different packet_id, or hop_limit rewound on the same attempt.
+    if (meshmath::isEchoLoop(packet.sender_id, packet.prev_hop_id, localNodeId)) {
+        Serial.printf("Flood loop: dropping echo of packet %u (prev_hop is us)\n",
+                      packet.packet_id);
+        return;
+    }
     
     // 2. Filter duplicate attempts. A higher retry_count for the same packet_id
     // is a real retransmit that relays should forward again, while the final
     // recipient should re-ACK without delivering the payload twice.
     bool packetIdSeenBefore = hasSeenPacketId(packet.sender_id, packet.packet_id);
+    // A later copy may have a larger remaining hop limit because it took a
+    // shorter path. Normal dedup suppresses forwarding but must still re-ACK.
     if (isDuplicatePacket(packet.sender_id, packet.packet_id, packet.retry_count)) {
         duplicatePackets++;
+        // Shorter-path copies raise remaining hop_limit; keep the best observation.
+        seenCache.noteBestHop(millis(), packet.sender_id, packet.packet_id,
+                              packet.retry_count, packet.hop_limit,
+                              SEEN_PACKET_TIMEOUT_MS);
         // Cancel pending rebroadcast if we hear a duplicate
         cancelRebroadcast(packet.sender_id, packet.packet_id, packet.retry_count);
+        // The relay wave is over for us as soon as we hear a relay of it, so a
+        // queued ACK no longer has to sit out the whole window it reserved.
+        pullInQueuedChannelAck(packet.packet_id);
         // A duplicate unicast addressed to us means the sender is retransmitting
         // because our ACK was lost — re-ACK it (without re-delivering the payload).
         if (packet.recipient_id == localNodeId && packet.want_ack &&
@@ -1434,7 +1523,11 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         }
         return;
     }
-    markPacketAsSeen(packet.sender_id, packet.packet_id, packet.retry_count);
+    markPacketAsSeen(packet.sender_id, packet.packet_id, packet.retry_count,
+                     packet.hop_limit);
+    replyHops.observe(millis(), packet.sender_id,
+                      (uint8_t)meshmath::replyHopLimit(packet.hop_start, packet.hop_limit,
+                                                       defaultHopLimit));
     
     // 3. Update routing table
     // If prev_hop_id is set, it's the node that directly relayed it to us.
@@ -1475,7 +1568,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
     if (packet.which_payload == aethermesh_MeshPacket_trace_route_tag) {
         aethermesh_TraceRoute& trace = packet.payload.trace_route;
         bool returning = trace.type == aethermesh_TraceRoute_Type_RESPONSE;
-        appendTraceHop(trace, returning, rssi, snr);
+        appendTraceHop(trace, returning, packet.hop_start, rssi, snr);
         addRoute(
             returning ? trace.target_id : trace.origin_id,
             immediateSender,
@@ -1498,7 +1591,14 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         // ACK on receipt, BEFORE processing. A config packet reboots the node
         // inside its callback, so a post-processing ACK would never be sent and
         // the sender would retransmit (rebooting us again on each retry).
-        if (packet.want_ack && packet.which_payload != aethermesh_MeshPacket_ack_tag) {
+        // A sealed message we cannot authenticate is not delivered, so it must
+        // not be acknowledged either — the sender would record it as received.
+        // It is opened below; ACK now only when this is not that case.
+        const bool sealedTextPending =
+            packet.which_payload == aethermesh_MeshPacket_text_tag &&
+            packet.payload.text.sealed.size > 0;
+        if (packet.want_ack && packet.which_payload != aethermesh_MeshPacket_ack_tag &&
+            !sealedTextPending) {
             sendAck(packet.sender_id, packet.packet_id, rssi, snr);
         }
 
@@ -1513,6 +1613,18 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
 
         switch (packet.which_payload) {
             case aethermesh_MeshPacket_text_tag:
+                // Sealed to us: authenticate and unwrap before anything sees it.
+                // A failure here is silent to the user by design — unauthenticated
+                // text is not text, it is someone else's guess at it.
+                if (!openIncomingText(&packet)) {
+                    // We could not read it, most often because we have never
+                    // heard this node's keys. Announce ours so the exchange can
+                    // complete, and leave the message unacknowledged so the
+                    // sender retries rather than believing it landed.
+                    noteStrangerSeen(packet.sender_id);
+                    break;
+                }
+                if (packet.want_ack) sendAck(packet.sender_id, packet.packet_id, rssi, snr);
                 // Higher retry_count is forwarded again for coverage, but it is
                 // still one logical chat message and must not be displayed twice.
                 if (!packetIdSeenBefore && textCallback) {
@@ -1541,6 +1653,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 noteNeighborAckQuality(immediateSender, snr);
                 clearPendingAck(packet.payload.ack.acked_packet_id, rssi, snr);
                 noteChannelHearing(packet.payload.ack.acked_packet_id, packet.sender_id, rssi, snr);
+                // Someone heard our channel text — the insurance copy would only
+                // deafen us to the remaining hearers' ACKs. Drop it.
+                cancelRebroadcast(localNodeId, packet.payload.ack.acked_packet_id);
                 break;
             case aethermesh_MeshPacket_config_tag:
                 if (configCallback) {
@@ -1569,7 +1684,16 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 // Exact same-retry duplicates are filtered earlier. sendAck
                 // coalesces bursts onto one queued outbound ACK.
                 if (packet.want_ack) {
-                    sendAck(packet.sender_id, packet.packet_id, rssi, snr);
+                    const uint32_t neighbors = liveNeighborCount();
+                    if (meshmath::shouldSendChannelReceipt(neighbors)) {
+                        sendAck(packet.sender_id, packet.packet_id, rssi, snr,
+                                (uint32_t)encodedPacketBytes(packet));
+                    } else {
+                        Serial.printf(
+                            "Channel receipt suppressed for packet %u (%u live neighbors > %u slots)\n",
+                            packet.packet_id, neighbors,
+                            (unsigned)meshmath::CHANNEL_ACK_SLOT_COUNT);
+                    }
                 }
                 if (!packetIdSeenBefore && textCallback) {
                     textCallback(packet.sender_id, packet.payload.text.content);
@@ -1584,6 +1708,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                                       packet.payload.telemetry.latitude,
                                       packet.payload.telemetry.longitude);
                 }
+                break;
+            case aethermesh_MeshPacket_node_identity_tag:
+                handleIdentityAnnouncement(packet);
                 break;
             case aethermesh_MeshPacket_route_discovery_tag:
                 if (packet.payload.route_discovery.type == aethermesh_RouteDiscovery_Type_REQUEST) {
@@ -1601,8 +1728,13 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             packet.prev_hop_id = localNodeId;
             packet.next_hop_id = 0; // channel flood — never directed-suppress
             
-            // Queue rebroadcast with SNR-based delay (pure math in MeshMath.h)
-            queueRebroadcast(packet, millis() + meshmath::rebroadcastDelayMs(snr, rebroadcastTxdelayX100));
+            // Queue the relay in an airtime-wide slot (pure math in MeshMath.h) so
+            // two relays of the same broadcast never transmit over each other.
+            uint8_t sfNow = radio ? radio->getSpreadingFactor() : 11;
+            queueRebroadcast(packet, millis() + meshmath::channelFloodDelayMs(
+                                          sfNow, snr, rebroadcastTxdelayX100, localNodeId,
+                                          packet.packet_id,
+                                          (uint32_t)encodedPacketBytes(packet)));
         } else if (!canRelay() && packet.hop_limit > 1) {
             // Still learn topology from broadcasts we hear, but do not forward.
         }
@@ -1645,7 +1777,7 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
             const bool routeSoftStale =
                 route != nullptr &&
                 meshmath::shouldFloodSoftStaleRoute(millis() - route->timestamp,
-                                                    ROUTE_SOFT_AGE_MS);
+                                                    routeSoftAgeMs);
             // Soft-stale dest routes flood — do not cancel peer floods on a
             // stale next_hop (handled above); originator/relay also avoid
             // directed when the table row itself is aged out.
@@ -1743,7 +1875,10 @@ bool MeshRouter::sendText(uint32_t recipientId, const char* text) {
         retry.retry_count = 1;
         retry.prev_hop_id = localNodeId;
         uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
+        size_t messageBytes = 0;
+        if (!pb_get_encoded_size(&messageBytes, aethermesh_MeshPacket_fields, &retry)) messageBytes = 255;
+        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(
+            sf, (uint32_t)random(0, 2000), (uint32_t)messageBytes));
     }
     // After the payload is on the air, ask the mesh for a path (flood-then-direct).
     if (sent && recipientId != 0xFFFFFFFF && getRoute(recipientId) == nullptr) {
@@ -1770,12 +1905,12 @@ bool MeshRouter::sendTextNoAck(uint32_t recipientId, const char* text, bool urge
     return serializeAndSend(&packet, urgent);
 }
 
-bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging, float voltage, uint32_t positionPrecision, uint32_t loraSf, uint32_t region) {
+bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging, float voltage, uint32_t positionPrecision, uint32_t loraSf, uint32_t region, const aethermesh_Telemetry* gpsFields) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.hop_limit = defaultHopLimit;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_telemetry_tag;
@@ -1790,6 +1925,14 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     packet.payload.telemetry.uptime_seconds = (uint32_t)(millis() / 1000);
     packet.payload.telemetry.lora_sf = loraSf;
     packet.payload.telemetry.region = region;
+    if (gpsFields != nullptr) {
+        packet.payload.telemetry.gps_state = gpsFields->gps_state;
+        packet.payload.telemetry.position_source = gpsFields->position_source;
+        packet.payload.telemetry.gps_satellites_used = gpsFields->gps_satellites_used;
+        packet.payload.telemetry.gps_satellites_in_view = gpsFields->gps_satellites_in_view;
+        packet.payload.telemetry.gps_hdop_x10 = gpsFields->gps_hdop_x10;
+        packet.payload.telemetry.gps_fix_age_secs = gpsFields->gps_fix_age_secs;
+    }
     strncpy(packet.payload.telemetry.firmware_version, AETHERMESH_FW_VERSION,
             sizeof(packet.payload.telemetry.firmware_version) - 1);
     if (nodeName != nullptr) {
@@ -1806,6 +1949,8 @@ bool MeshRouter::sendTelemetry(uint32_t recipientId, uint8_t battery, float lat,
     strcpy(packet.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
     strcpy(packet.payload.telemetry.node_model, "T-Echo");
+#elif defined(SEEED_T1000_E)
+    strcpy(packet.payload.telemetry.node_model, "T1000-E");
 #elif defined(RAK4631)
     strcpy(packet.payload.telemetry.node_model, "RAK4631");
 #elif defined(RAK3401_1W)
@@ -1875,7 +2020,8 @@ bool MeshRouter::sendRouteRequest(uint32_t targetId) {
     packet.sender_id = localNodeId;
     packet.recipient_id = 0xFFFFFFFF; // Broadcast
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    // Discovery must reach as far as the traffic it is finding a route for.
+    packet.hop_limit = defaultHopLimit;
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_route_discovery_tag;
@@ -1899,7 +2045,7 @@ void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.hop_limit = replyHopLimitFor(recipientId);
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_route_discovery_tag;
@@ -1917,7 +2063,28 @@ void MeshRouter::sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t
     queueRebroadcast(packet, millis() + random(100, 400));
 }
 
-void MeshRouter::appendTraceHop(aethermesh_TraceRoute& trace, bool returning, float rssi, float snr) {
+void MeshRouter::appendTraceHop(aethermesh_TraceRoute& trace, bool returning, uint32_t hopStart,
+                                float rssi, float snr) {
+    // Extended-range traces use the compact 5-byte-per-hop path so 16 hops
+    // each way fit one LoRa frame. Legacy-range traces keep the repeated fields,
+    // which older relays still append to in order.
+    pb_byte_t* compactBytes = returning ? trace.return_hops.bytes : trace.forward_hops.bytes;
+    pb_size_t& compactSize = returning ? trace.return_hops.size : trace.forward_hops.size;
+    const size_t compactCapacity =
+        returning ? sizeof(trace.return_hops.bytes) : sizeof(trace.forward_hops.bytes);
+    if (hopStart > meshmath::LEGACY_MAX_HOP_LIMIT || compactSize > 0) {
+        const size_t hops = tracehops::hopCount(compactSize);
+        if (hops > 0 && tracehops::nodeAt(compactBytes, hops - 1) == localNodeId) {
+            return;
+        }
+        if (!tracehops::append(compactBytes, compactSize, compactCapacity,
+                               localNodeId, snr)) {
+            if (returning) trace.return_truncated = true;
+            else trace.forward_truncated = true;
+        }
+        return;
+    }
+
     pb_size_t& nodeCount = returning ? trace.return_node_ids_count : trace.forward_node_ids_count;
     pb_size_t& rssiCount = returning ? trace.return_rssi_count : trace.forward_rssi_count;
     pb_size_t& snrCount = returning ? trace.return_snr_quarter_db_count : trace.forward_snr_quarter_db_count;
@@ -1940,6 +2107,16 @@ void MeshRouter::appendTraceHop(aethermesh_TraceRoute& trace, bool returning, fl
 }
 
 uint8_t MeshRouter::traceMetric(const aethermesh_TraceRoute& trace, bool returning) const {
+    const pb_byte_t* compactBytes = returning ? trace.return_hops.bytes : trace.forward_hops.bytes;
+    const pb_size_t compactSize = returning ? trace.return_hops.size : trace.forward_hops.size;
+    if (compactSize > 0) {
+        uint16_t compactMetric = 0;
+        const size_t hops = tracehops::hopCount(compactSize);
+        for (size_t i = 0; i < hops; ++i) {
+            compactMetric += meshmath::hopCost(tracehops::snrQuarterDbAt(compactBytes, i) / 4.0f);
+        }
+        return compactMetric > 255 ? 255 : (uint8_t)compactMetric;
+    }
     pb_size_t count = returning ? trace.return_snr_quarter_db_count : trace.forward_snr_quarter_db_count;
     const int32_t* values = returning ? trace.return_snr_quarter_db : trace.forward_snr_quarter_db;
     uint16_t metric = 0;
@@ -1954,7 +2131,7 @@ void MeshRouter::sendTraceResponse(const aethermesh_TraceRoute& request) {
     packet.sender_id = localNodeId;
     packet.recipient_id = request.origin_id;
     packet.packet_id = ++packetSequenceCounter;
-    packet.hop_limit = DEFAULT_HOP_LIMIT;
+    packet.hop_limit = replyHopLimitFor(request.origin_id);
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.which_payload = aethermesh_MeshPacket_trace_route_tag;
@@ -1964,13 +2141,37 @@ void MeshRouter::sendTraceResponse(const aethermesh_TraceRoute& request) {
     packet.payload.trace_route.return_rssi_count = 0;
     packet.payload.trace_route.return_snr_quarter_db_count = 0;
     packet.payload.trace_route.return_truncated = false;
+    packet.payload.trace_route.return_hops.size = 0;
     queueRebroadcast(packet, millis() + random(120, 320));
 }
 
 bool MeshRouter::serializeAndSend(aethermesh_MeshPacket* packet, bool urgent) {
+    // Final radio boundary: applies to broadcast, unicast and raw local telemetry.
+    // Relay traffic and the precise local BLE loopback are not rewritten.
+    if (meshingress::isBleOnly(packet->which_payload)) return false;
+    if (packet->sender_id == localNodeId &&
+        packet->which_payload == aethermesh_MeshPacket_telemetry_tag) {
+        auto& telemetry = packet->payload.telemetry;
+        positionprivacy::apply(positionPrivacyRecord, telemetry.position_precision,
+            telemetry.latitude, telemetry.longitude, telemetry.latitude,
+            telemetry.longitude, telemetry.position_precision);
+        if (positionPrivacyRecord & positionprivacy::Disabled) telemetry.altitude = 0;
+    }
     if (packet->sender_id == localNodeId && packet->protocol_version == 0) {
         packet->protocol_version = AETHERMESH_PROTOCOL_VERSION;
         packet->session_id = sessionId;
+    }
+    // Seal direct messages we originate to the recipient's announced key, once,
+    // at the radio boundary — so every send path gets it and a queued retry
+    // re-sends the sealed copy rather than sealing twice.
+    if (packet->sender_id == localNodeId &&
+        packet->which_payload == aethermesh_MeshPacket_text_tag) {
+        sealOutgoingText(packet);
+    }
+    // Record the starting hop budget so receivers can size replies. Relays keep
+    // the originator's value; only locally originated packets are stamped.
+    if (packet->sender_id == localNodeId && packet->hop_start == 0) {
+        packet->hop_start = packet->hop_limit;
     }
     // Stamp directed next hop for unicasts when a fresh route is known.
     // Return-path control (ACK / config result / RREP / traceroute response)
@@ -2015,6 +2216,12 @@ void MeshRouter::onReceivedTelemetry(void (*callback)(uint32_t senderId, uint8_t
     telemetryCallback = callback;
 }
 
+void MeshRouter::onIdentityVerified(void (*callback)(uint32_t senderId,
+                                                     const aethermesh_NodeIdentity& identity,
+                                                     aethermesh_NodeIdentity_Trust trust)) {
+    identityCallback = callback;
+}
+
 void MeshRouter::onReceivedConfig(void (*callback)(const aethermesh_MeshPacket& packet)) {
     configCallback = callback;
 }
@@ -2032,7 +2239,7 @@ void MeshRouter::printRoutingTable() {
             active++;
             uint32_t age = now - routingTable[i].timestamp;
             uint8_t aged = meshmath::agedRouteMetric(
-                routingTable[i].metric, age, ROUTE_SOFT_AGE_MS);
+                routingTable[i].metric, age, routeSoftAgeMs);
             Serial.printf("Target: 0x%08X | NextHop: 0x%08X | metric %u (aged %u) | Age: %us",
                           routingTable[i].targetId, routingTable[i].nextHopId,
                           routingTable[i].metric, aged, age / 1000);
@@ -2102,7 +2309,10 @@ bool MeshRouter::sendRawPacket(aethermesh_MeshPacket* packet, bool urgent) {
         retry.retry_count = 1;
         retry.prev_hop_id = localNodeId;
         uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
-        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(sf, (uint32_t)random(0, 2000)));
+        size_t messageBytes = 0;
+        if (!pb_get_encoded_size(&messageBytes, aethermesh_MeshPacket_fields, &retry)) messageBytes = 255;
+        ensureLocalTextQueued(retry, millis() + meshmath::channelInsuranceDelayMs(
+            sf, (uint32_t)random(0, 2000), (uint32_t)messageBytes));
     }
     return sent;
 }
@@ -2155,7 +2365,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
             strcmp(pendingPongs[i].pingId, pingId) == 0) {
             strncpy(pendingPongs[i].content, pongContent, sizeof(pendingPongs[i].content) - 1);
             pendingPongs[i].content[sizeof(pendingPongs[i].content) - 1] = '\0';
-            pendingPongs[i].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
+            pendingPongs[i].hopLimit = directOnly ? 1 : replyHopLimitFor(recipientId);
             pendingPongs[i].directOnly = directOnly;
             // Clear PING airtime on the pinger before the first reply.
             pendingPongs[i].sendAtMs = millis() + DIRECT_PONG_INITIAL_DELAY_MS + random(0, 150);
@@ -2194,7 +2404,7 @@ void MeshRouter::queuePongReply(uint32_t recipientId, const char* pingId, float 
     strncpy(pendingPongs[slot].pingId, pingId, sizeof(pendingPongs[slot].pingId) - 1);
     pendingPongs[slot].pingId[sizeof(pendingPongs[slot].pingId) - 1] = '\0';
     pendingPongs[slot].recipientId = recipientId;
-    pendingPongs[slot].hopLimit = directOnly ? 1 : DEFAULT_HOP_LIMIT;
+    pendingPongs[slot].hopLimit = directOnly ? 1 : replyHopLimitFor(recipientId);
     pendingPongs[slot].directOnly = directOnly;
     pendingPongs[slot].sendAtMs = millis() + DIRECT_PONG_INITIAL_DELAY_MS + random(0, 150);
     pendingPongs[slot].firstQueuedMs = millis();
@@ -2314,6 +2524,7 @@ void MeshRouter::ensureLocalTextQueued(const aethermesh_MeshPacket& packet, uint
         pendingRebroadcasts[i].packet = packet;
         pendingRebroadcasts[i].priority = packetPriority(packet);
         pendingRebroadcasts[i].queuedAtTime = now;
+        pendingRebroadcasts[i].dueAnchorTime = pendingRebroadcasts[i].transmitTime;
         deferQueuedAcks(ackDefer);
         return;
     }
@@ -2392,6 +2603,7 @@ void MeshRouter::queueRebroadcast(const aethermesh_MeshPacket& packet, uint32_t 
     pendingRebroadcasts[emptySlot].packet = packet;
     pendingRebroadcasts[emptySlot].transmitTime = transmitTime;
     pendingRebroadcasts[emptySlot].queuedAtTime = millis();
+    pendingRebroadcasts[emptySlot].dueAnchorTime = transmitTime;
     pendingRebroadcasts[emptySlot].priority = priority;
     pendingRebroadcasts[emptySlot].active = true;
 
@@ -2469,13 +2681,55 @@ bool MeshRouter::evictFarthestLocalAck() {
     return true;
 }
 
-void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr) {
+// Drop our own queued channel ACK once our relay of that packet goes out — the
+// relay itself is the receipt (implicit HEARD at the originator).
+// Reschedule our queued channel ACK to just after the relay we are hearing.
+// The slot grid still separates hearers; only the long flood-wave reservation
+// is dropped, which is what made SF12 receipts arrive 30-60 s late.
+void MeshRouter::pullInQueuedChannelAck(uint32_t ackedPacketId) {
+    uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
+    uint32_t now = millis();
+    uint32_t earliest = now + meshmath::channelAckDelayMs(
+                                  sf, localNodeId, (uint32_t)random(0, 256));
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) continue;
+        if (pendingRebroadcasts[i].packet.sender_id != localNodeId) continue;
+        if (pendingRebroadcasts[i].packet.payload.ack.acked_packet_id != ackedPacketId) continue;
+        if (!meshmath::deadlineBefore(earliest, pendingRebroadcasts[i].transmitTime, now)) continue;
+        pendingRebroadcasts[i].transmitTime = earliest;
+        pendingRebroadcasts[i].dueAnchorTime = earliest;
+        Serial.printf("Pulled in queued ACK for packet %u to %u ms (relay heard)\n",
+                      ackedPacketId, earliest - now);
+    }
+}
+
+void MeshRouter::cancelLocalChannelAck(uint32_t ackedPacketId) {
+    for (int i = 0; i < MAX_PENDING_REBROADCASTS; i++) {
+        if (!pendingRebroadcasts[i].active) continue;
+        if (pendingRebroadcasts[i].packet.which_payload != aethermesh_MeshPacket_ack_tag) continue;
+        if (pendingRebroadcasts[i].packet.sender_id != localNodeId) continue;
+        if (pendingRebroadcasts[i].packet.payload.ack.acked_packet_id != ackedPacketId) continue;
+        pendingRebroadcasts[i].active = false;
+        Serial.printf("Relayed packet %u — dropping our queued ACK (implicit HEARD)\n",
+                      ackedPacketId);
+    }
+}
+
+size_t MeshRouter::encodedPacketBytes(const aethermesh_MeshPacket& packet) {
+    size_t size = 0;
+    if (!pb_get_encoded_size(&size, aethermesh_MeshPacket_fields, &packet)) return 255;
+    return size;
+}
+
+void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr,
+                         uint32_t messageBytes) {
     uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
     // One ACK attempt: node-id slot + small random. No recovery wave — that
     // doubled every hearer's queue footprint and starved application text
     // (MeshCore/Meshtastic keep ACKs single-shot / bounded).
     uint32_t primaryDelayMs =
-        meshmath::channelAckDelayMs(sf, localNodeId, (uint32_t)random(0, 256));
+        meshmath::channelAckDelayMs(sf, localNodeId, (uint32_t)random(0, 256), messageBytes);
 
     bool havePrimary = false;
     uint32_t now = millis();
@@ -2505,6 +2759,7 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
         if ((int32_t)(now - pendingRebroadcasts[i].transmitTime) >= 0) {
             pendingRebroadcasts[i].transmitTime = now + primaryDelayMs;
             pendingRebroadcasts[i].queuedAtTime = now;
+            pendingRebroadcasts[i].dueAnchorTime = pendingRebroadcasts[i].transmitTime;
             Serial.printf("Rescheduled queued ACK for packet %u to 0x%08X in %u ms\n",
                           ackedPacketId, recipientId, primaryDelayMs);
         } else {
@@ -2526,7 +2781,7 @@ void MeshRouter::sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rss
         ackPacket.sender_id = localNodeId;
         ackPacket.recipient_id = recipientId;
         ackPacket.packet_id = ++packetSequenceCounter;
-        ackPacket.hop_limit = DEFAULT_HOP_LIMIT;
+        ackPacket.hop_limit = replyHopLimitFor(recipientId);
         ackPacket.want_ack = false;
         ackPacket.retry_count = 0;
         ackPacket.prev_hop_id = localNodeId;
@@ -2607,6 +2862,174 @@ void MeshRouter::noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId,
     }
 }
 
+void MeshRouter::sealOutgoingText(aethermesh_MeshPacket* packet) {
+    if (packet == nullptr) return;
+    aethermesh_TextMessage& text = packet->payload.text;
+    if (text.sealed.size != 0) return;                       // already sealed
+    if (packet->recipient_id == 0xFFFFFFFFu) return;         // channel text has no one key
+    if (!nodeidentity::isReady()) return;
+    if (!peerIdentities.mayEncrypt(packet->recipient_id)) return;
+    const identity::Peer* peer = peerIdentities.lookup(packet->recipient_id);
+    if (peer == nullptr) return;
+
+    const size_t plainLen = strnlen(text.content, sizeof(text.content));
+    if (!sealedtext::fits(plainLen, sizeof(text.sealed.bytes))) return;
+
+    size_t sealedLen = 0;
+    if (!textseal::seal(peer->xPublic, packet->sender_id, packet->recipient_id,
+                        (const uint8_t*)text.content, plainLen, text.sealed.bytes,
+                        sizeof(text.sealed.bytes), &sealedLen)) {
+        Serial.printf("Seal failed for packet %u; sending unsealed.\n", packet->packet_id);
+        return;
+    }
+    text.sealed.size = (pb_size_t)sealedLen;
+    memset(text.content, 0, sizeof(text.content));
+    text.is_encrypted = true;
+}
+
+bool MeshRouter::openIncomingText(aethermesh_MeshPacket* packet) {
+    if (packet == nullptr) return true;
+    aethermesh_TextMessage& text = packet->payload.text;
+    if (text.sealed.size == 0) return true;  // nothing sealed; legacy path
+    if (!nodeidentity::isReady()) {
+        Serial.printf("Sealed message %u dropped: this node has no identity.\n",
+                      packet->packet_id);
+        return false;
+    }
+    const identity::Peer* peer = peerIdentities.lookup(packet->sender_id);
+    if (peer == nullptr) {
+        Serial.printf("Sealed message %u dropped: no key on file for 0x%08X.\n",
+                      packet->packet_id, packet->sender_id);
+        return false;
+    }
+
+    uint8_t plain[sizeof(text.content)];
+    size_t plainLen = 0;
+    if (!textseal::open(peer->xPublic, packet->sender_id, packet->recipient_id,
+                        text.sealed.bytes, text.sealed.size, plain, sizeof(plain) - 1,
+                        &plainLen)) {
+        // A failed tag means wrong key, tampering, or a message from another
+        // conversation. None of those should reach the user as content.
+        Serial.printf("Sealed message %u from 0x%08X failed authentication.\n",
+                      packet->packet_id, packet->sender_id);
+        return false;
+    }
+    memcpy(text.content, plain, plainLen);
+    text.content[plainLen] = '\0';
+    text.sealed.size = 0;
+    memset(plain, 0, sizeof(plain));
+    return true;
+}
+
+bool MeshRouter::sendIdentityAnnouncement() {
+    if (!nodeidentity::isReady()) return false;
+    aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
+    packet.sender_id = localNodeId;
+    packet.recipient_id = 0xFFFFFFFFu;
+    packet.packet_id = ++packetSequenceCounter;
+    packet.hop_limit = defaultHopLimit;
+    packet.prev_hop_id = localNodeId;
+    // Announcements are self-authenticating and idempotent: no receipts wanted.
+    packet.want_ack = false;
+    packet.which_payload = aethermesh_MeshPacket_node_identity_tag;
+
+    aethermesh_NodeIdentity& id = packet.payload.node_identity;
+    id.x25519_public.size = identity::PUBLIC_KEY_BYTES;
+    memcpy(id.x25519_public.bytes, nodeidentity::x25519Public(), identity::PUBLIC_KEY_BYTES);
+    id.ed25519_public.size = identity::PUBLIC_KEY_BYTES;
+    memcpy(id.ed25519_public.bytes, nodeidentity::ed25519Public(), identity::PUBLIC_KEY_BYTES);
+    id.key_epoch = nodeidentity::keyEpoch();
+    id.signature.size = identity::SIGNATURE_BYTES;
+    if (!nodeidentity::signAnnouncement(id.signature.bytes)) {
+        Serial.println("Identity: could not sign an announcement.");
+        return false;
+    }
+    Serial.printf("Announcing identity (epoch %u).\n", id.key_epoch);
+    lastIdentityAnnounceMs = millis();
+    identityAnnouncedOnce = true;
+    return serializeAndSend(&packet);
+}
+
+void MeshRouter::noteStrangerSeen(uint32_t nodeId) {
+    if (nodeId == 0 || nodeId == localNodeId) return;
+    if (peerIdentities.lookup(nodeId) != nullptr) return;
+    if (!identity::shouldAnnounceForStranger(millis(), lastIdentityAnnounceMs,
+                                             identityAnnouncedOnce,
+                                             nodeidentity::isReady())) {
+        return;
+    }
+    identityAnnouncePending = true;
+}
+
+bool MeshRouter::serviceIdentityAnnounce() {
+    if (!identityAnnouncePending) return false;
+    identityAnnouncePending = false;
+    return sendIdentityAnnouncement();
+}
+
+void MeshRouter::handleIdentityAnnouncement(const aethermesh_MeshPacket& packet) {
+    const aethermesh_NodeIdentity& id = packet.payload.node_identity;
+    if (id.x25519_public.size != identity::PUBLIC_KEY_BYTES ||
+        id.ed25519_public.size != identity::PUBLIC_KEY_BYTES ||
+        id.signature.size != identity::SIGNATURE_BYTES) {
+        Serial.printf("Identity from 0x%08X ignored: malformed announcement.\n", packet.sender_id);
+        return;
+    }
+
+    // The signature proves whoever sent this holds the key inside it. Whether
+    // that key is the one we already trust for this node id is the table's call.
+    const bool signatureOk = nodeidentity::verifyAnnouncement(
+        packet.sender_id, id.key_epoch, id.x25519_public.bytes, id.ed25519_public.bytes,
+        id.signature.bytes);
+    const identity::Trust decision =
+        peerIdentities.observe(millis(), packet.sender_id, id.x25519_public.bytes,
+                               id.ed25519_public.bytes, id.key_epoch, signatureOk);
+
+    if (identityCallback && decision != identity::Trust::Invalid) {
+        aethermesh_NodeIdentity_Trust reported = aethermesh_NodeIdentity_Trust_TRUST_UNSPECIFIED;
+        switch (decision) {
+            case identity::Trust::FirstUse: reported = aethermesh_NodeIdentity_Trust_FIRST_USE; break;
+            case identity::Trust::Match:    reported = aethermesh_NodeIdentity_Trust_KNOWN; break;
+            case identity::Trust::Rotated:  reported = aethermesh_NodeIdentity_Trust_ROTATED; break;
+            case identity::Trust::Changed:  reported = aethermesh_NodeIdentity_Trust_CONFLICT; break;
+            default: break;
+        }
+        identityCallback(packet.sender_id, id, reported);
+    }
+
+    char fp[identity::FINGERPRINT_CHARS] = {0};
+    nodeidentity::fingerprintOf(id.ed25519_public.bytes, fp, sizeof(fp));
+    switch (decision) {
+        case identity::Trust::FirstUse:
+            Serial.printf("Identity learned for 0x%08X: %s (epoch %u).\n", packet.sender_id, fp,
+                          id.key_epoch);
+            // They may not hold ours yet. Answering closes the exchange in one
+            // round trip instead of waiting out the slow announcement timer.
+            if (identity::shouldAnnounceForStranger(millis(), lastIdentityAnnounceMs,
+                                                    identityAnnouncedOnce,
+                                                    nodeidentity::isReady())) {
+                identityAnnouncePending = true;
+            }
+            break;
+        case identity::Trust::Match:
+            break;  // the common case, every announcement interval
+        case identity::Trust::Rotated:
+            Serial.printf("Identity ROTATED for 0x%08X: now %s (epoch %u). Confirm before "
+                          "sealing to it.\n",
+                          packet.sender_id, fp, id.key_epoch);
+            break;
+        case identity::Trust::Changed:
+            Serial.printf("Identity CONFLICT for 0x%08X: %s claims an id we already know. "
+                          "Keeping the stored key.\n",
+                          packet.sender_id, fp);
+            break;
+        case identity::Trust::Invalid:
+            Serial.printf("Identity from 0x%08X rejected (bad signature or replay).\n",
+                          packet.sender_id);
+            break;
+    }
+}
+
 void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     if (!packet.want_ack || packet.recipient_id == 0xFFFFFFFF) {
         return;
@@ -2616,7 +3039,14 @@ void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     int slot = -1;
     for (int i = 0; i < MAX_PENDING_ACKS; i++) {
         if (pendingAcks[i].active && pendingAcks[i].packet.packet_id == packet.packet_id) {
-            return; // already tracked
+            // A phone resend reserves a new retry range. Replace the old snapshot
+            // and restart its budget so firmware retries cannot go backwards.
+            if (packet.sender_id != pendingAcks[i].packet.sender_id ||
+                packet.recipient_id != pendingAcks[i].packet.recipient_id ||
+                packet.retry_count <= pendingAcks[i].packet.retry_count) return;
+            cancelRebroadcast(packet.sender_id, packet.packet_id);
+            slot = i;
+            break;
         }
         if (slot == -1 && !pendingAcks[i].active) {
             slot = i;
@@ -2654,7 +3084,7 @@ void MeshRouter::trackForAck(const aethermesh_MeshPacket& packet) {
     uint8_t routeMetric = route ? route->metric : 0;
     if (route) {
         routeMetric = meshmath::agedRouteMetric(
-            routeMetric, now - route->timestamp, ROUTE_SOFT_AGE_MS);
+            routeMetric, now - route->timestamp, routeSoftAgeMs);
     }
     uint8_t sf = radio ? radio->getSpreadingFactor() : 11;
     pendingAcks[slot].nextRetryTime = now +

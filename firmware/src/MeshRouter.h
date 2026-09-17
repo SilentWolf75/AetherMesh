@@ -5,6 +5,9 @@
 #include "mesh.pb.h"
 #include "MeshRadio.h"
 #include "MeshTables.h"
+#include "IdentityTable.h"
+#include "NodeIdentity.h"
+#include "PositionPrivacy.h"
 
 // Define constants
 #define MAX_ROUTE_TABLE_ENTRIES 30
@@ -78,6 +81,10 @@ struct PendingRebroadcast {
     aethermesh_MeshPacket packet;
     uint32_t transmitTime;
     uint32_t queuedAtTime;
+    // When this entry was first due to transmit. The queue TTL runs from here,
+    // not from queuedAtTime: a slotted channel ACK waits out the relay wave and
+    // can legitimately sit for tens of seconds at SF12 before its slot opens.
+    uint32_t dueAnchorTime;
     uint8_t priority;
     bool active;
 };
@@ -179,6 +186,9 @@ public:
     MeshRouter(MeshRadio* radioMgr);
     void init(uint32_t localId);
     void loop();
+    void setPositionPrivacy(uint32_t policy) {
+        positionPrivacyRecord = positionprivacy::validateRecord(policy);
+    }
 
     // 0 = Client (no LoRa relay — MeshCore-style companion)
     // 1 = Router (relay + BLE/UI)
@@ -187,20 +197,46 @@ public:
     uint32_t getNodeRole() const { return nodeRole; }
     bool canRelay() const { return nodeRole != 0; }
 
-    // Default hop_limit for locally originated packets (1–8).
+    // Default hop_limit for locally originated packets (1–16).
     void setDefaultHopLimit(uint8_t hops);
+    // hop_limit for a reply to nodeId, sized from its last packet's hop_start.
+    uint8_t replyHopLimitFor(uint32_t nodeId) const;
     uint8_t getDefaultHopLimit() const { return defaultHopLimit; }
 
     // Rebroadcast pace multiplier ×100 (50–200). Affects flood/relay stagger.
     void setRebroadcastTxdelayX100(uint32_t x100);
+    // Beacon-scaled route aging (see meshmath::neighborSoftAgeMsFor). Defaults
+    // match the historical fixed constants until the node reports its cadence.
+    void setBeaconIntervalSec(uint32_t beaconIntervalSec);
+
+    // Broadcasts this node's signed identity keys. Called on a long timer, and
+    // once shortly after boot so a fresh node becomes reachable for sealed
+    // direct messages without waiting out a full announcement interval.
+    bool sendIdentityAnnouncement();
+    void onIdentityVerified(void (*callback)(uint32_t senderId,
+                                             const aethermesh_NodeIdentity& identity,
+                                             aethermesh_NodeIdentity_Trust trust));
+    // Authenticates and unwraps a message sealed to this node. Returns false if
+    // the tag does not verify or no key is on file, in which case the packet
+    // must not be shown to the user or forwarded to the companion app.
+    bool openIncomingText(aethermesh_MeshPacket* packet);
+    // Sends an announcement queued by meeting a node whose keys we lack. Called
+    // from the main loop so the announcement never goes out inside packet
+    // handling, where the radio is still busy with the packet that triggered it.
+    bool serviceIdentityAnnounce();
+    // Keys learned from other nodes' announcements (trust on first use).
+    const identity::PeerTable& identities() const { return peerIdentities; }
+    identity::PeerTable& identities() { return peerIdentities; }
     uint32_t getRebroadcastTxdelayX100() const { return rebroadcastTxdelayX100; }
     
     // Send message interfaces
     bool sendText(uint32_t recipientId, const char* text);
     // Unicast text without want_ack / retransmit tracking (used for range-test PONG replies).
     bool sendTextNoAck(uint32_t recipientId, const char* text, bool urgent = false, uint8_t hopLimit = DEFAULT_HOP_LIMIT);
-    // lat/lon must already be privacy-blurred by the caller when positionPrecision > 0
-    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0, uint32_t loraSf = 0, uint32_t region = 0);
+    // LoRa telemetry is always privacy-blurred here when positionPrecision > 0
+    // (broadcast and unicast). BLE loopback in main.cpp stays precise.
+    // gpsFields: only its gps_* / position_source fields are copied (may be null).
+    bool sendTelemetry(uint32_t recipientId, uint8_t battery, float lat, float lon, const char* nodeName, bool charging = false, float voltage = 0.0f, uint32_t positionPrecision = 0, uint32_t loraSf = 0, uint32_t region = 0, const aethermesh_Telemetry* gpsFields = nullptr);
     
     // Packet processing entrypoint (called by RadioManager receive callback)
     void processIncomingPacket(uint8_t* data, size_t len, float rssi, float snr);
@@ -231,6 +267,7 @@ public:
     bool sendRawPacket(aethermesh_MeshPacket* packet, bool urgent = false);
 
 private:
+    uint32_t positionPrivacyRecord = 0;
     MeshRadio* radio;
     uint32_t localNodeId;
     uint32_t packetSequenceCounter;
@@ -242,6 +279,7 @@ private:
     // Data structures
     RouteEntry routingTable[MAX_ROUTE_TABLE_ENTRIES];
     meshtables::SeenCache<MAX_SEEN_PACKETS_CACHE> seenCache;
+    meshtables::ReplyHopTable replyHops;
     PendingRebroadcast pendingRebroadcasts[MAX_PENDING_REBROADCASTS];
     PendingAck pendingAcks[MAX_PENDING_ACKS];
     ChannelReceiptTrack channelReceipts[MAX_CHANNEL_RECEIPTS];
@@ -278,6 +316,11 @@ private:
     void (*textCallback)(uint32_t senderId, const char* text);
     void (*telemetryCallback)(uint32_t senderId, uint8_t battery, float lat, float lon);
     void (*configCallback)(const aethermesh_MeshPacket& packet);
+    // Verified identity announcements, with this node's verdict attached. The
+    // phone cannot check a signature itself, so it is told the outcome instead
+    // of being handed the raw broadcast.
+    void (*identityCallback)(uint32_t senderId, const aethermesh_NodeIdentity& identity,
+                             aethermesh_NodeIdentity_Trust trust);
     void (*deliveryStatusCallback)(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId);
     
     // Private Helpers
@@ -288,6 +331,10 @@ private:
     bool isRouteFailedRecently(uint32_t targetId) const;
     // True when nodeId is a recently heard 1-hop neighbor (nextHop == self).
     bool isLiveNeighbor(uint32_t nodeId) const;
+    /** Direct neighbors heard from within routeSoftAgeMs. */
+    uint32_t liveNeighborCount() const;
+    uint32_t routeSoftAgeMs = ROUTE_SOFT_AGE_MS;
+    uint32_t routeTimeoutMs = ROUTE_TIMEOUT_MS;
     void learnReverseRoute(uint32_t originId, uint32_t viaHopId, uint8_t lastHopCost);
     void applyDirectedNextHop(aethermesh_MeshPacket* packet, bool preferReturnPath = false);
     bool noteFloodDest(uint32_t targetId);
@@ -322,7 +369,9 @@ private:
     
     bool hasSeenPacketId(uint32_t senderId, uint32_t packetId);
     bool isDuplicatePacket(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
-    void markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount);
+    void markPacketAsSeen(uint32_t senderId, uint32_t packetId, uint32_t retryCount,
+                          uint32_t hopLimit = 0);
+    uint8_t originatedHopLimitFor(uint32_t packetId) const;
     
     bool handleRouteRequest(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rreq);
     void handleRouteReply(uint32_t senderId, uint32_t prevHopId, const aethermesh_RouteDiscovery& rrep);
@@ -332,7 +381,8 @@ private:
     bool sendRouteRequest(uint32_t targetId);
     void sendRouteReply(uint32_t recipientId, uint32_t targetId, uint8_t metric);
 
-    void appendTraceHop(aethermesh_TraceRoute& trace, bool returning, float rssi, float snr);
+    void appendTraceHop(aethermesh_TraceRoute& trace, bool returning, uint32_t hopStart,
+                        float rssi, float snr);
     uint8_t traceMetric(const aethermesh_TraceRoute& trace, bool returning) const;
     void sendTraceResponse(const aethermesh_TraceRoute& request);
     
@@ -349,7 +399,19 @@ private:
 
     // ACK/retransmit helpers
     // Channel/broadcast path never schedules a recovery ACK (one attempt).
-    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr);
+    void handleIdentityAnnouncement(const aethermesh_MeshPacket& packet);
+    // Sealing happens at the radio boundary so every send path is covered once.
+    void sealOutgoingText(aethermesh_MeshPacket* packet);
+    void noteStrangerSeen(uint32_t nodeId);
+    identity::PeerTable peerIdentities;
+    uint32_t lastIdentityAnnounceMs = 0;
+    bool identityAnnouncedOnce = false;
+    bool identityAnnouncePending = false;
+    void cancelLocalChannelAck(uint32_t ackedPacketId);
+    void pullInQueuedChannelAck(uint32_t ackedPacketId);
+    static size_t encodedPacketBytes(const aethermesh_MeshPacket& packet);
+    void sendAck(uint32_t recipientId, uint32_t ackedPacketId, float rssi, float snr,
+                 uint32_t messageBytes = 0);
     void trackForAck(const aethermesh_MeshPacket& packet);
     void trackChannelReceipt(uint32_t packetId);
     void noteChannelHearing(uint32_t ackedPacketId, uint32_t fromNodeId, float ackRssi = 0.0f, float ackSnr = 0.0f);

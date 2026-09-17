@@ -2,8 +2,13 @@
 #include <string.h>
 #include "RadioManager.h"
 #include "MeshRouter.h"
+#include "NodeIdentity.h"
 #include "PacketAuth.h"
+#include "BleSession.h"
+#include "GpsStatus.h"
 #include "MeshMath.h"
+#include "MeshIngress.h"
+#include "OnDeviceSettings.h"
 #include "BLEManager.h"
 #include "Version.h"
 #include "pb_decode.h"
@@ -14,7 +19,7 @@
 #define AETHER_COLOR_UI
 #endif
 
-#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
 #include <bluefruit.h>
 #include <nrf_nvic.h>
 #include <Adafruit_LittleFS.h>
@@ -645,6 +650,18 @@ RadioManager radioMgr;
 MeshRouter router(&radioMgr);
 BLEManager bleMgr;
 TinyGPSPlus gps;
+// Satellites in view per constellation (GSV field 3). TinyGPS++ only parses
+// satellites *used* (GGA); in-view shows whether a module without a fix can
+// hear the sky at all, which separates "needs time" from "antenna problem".
+TinyGPSCustom gsvGps(gps, "GPGSV", 3);
+TinyGPSCustom gsvGlonass(gps, "GLGSV", 3);
+TinyGPSCustom gsvGalileo(gps, "GAGSV", 3);
+TinyGPSCustom gsvBeidouBd(gps, "BDGSV", 3);
+TinyGPSCustom gsvBeidouGb(gps, "GBGSV", 3);
+TinyGPSCustom gsvQzss(gps, "GQGSV", 3);
+static TinyGPSCustom* const GSV_IN_VIEW[] = {
+    &gsvGps, &gsvGlonass, &gsvGalileo, &gsvBeidouBd, &gsvBeidouGb, &gsvQzss,
+};
 
 // Unique Node Identifier
 uint32_t localNodeId = 0;
@@ -697,7 +714,7 @@ uint8_t countActivePeers() {
 // The ESP32-S3 (Heltec) has no equivalent without extra wiring, so it relies
 // on the voltage heuristic below.
 bool externalPowerPresent() {
-#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     uint8_t sd_enabled = 0;
     if (sd_softdevice_is_enabled(&sd_enabled) == 0 && sd_enabled) {
         uint32_t usb_reg = 0;
@@ -830,7 +847,12 @@ char nodePassword[33] = "";   // Max 32 chars + null terminator
 // plaintext password on the mesh). Default false during the deprecation window;
 // set via NVS/InternalFS key "refuse_legacy". See docs/CONTROL-AUTH.md.
 bool refuseLegacyRemoteControl = false;
-bool isBleClientAuthenticated = false;
+// Phone trust (authentication, OTA ownership) is bound to one BLE connection
+// generation, so it cannot outlive the link it was granted on. See BleSession.h.
+blesession::Session bleSession;
+static inline bool isBleClientAuthenticated() {
+    return bleSession.isAuthenticated(bleMgr.connectionGeneration());
+}
 
 // Brute-force protection: 5 wrong passwords -> 30s lockout
 uint8_t failedAuthAttempts = 0;
@@ -842,7 +864,7 @@ int32_t loraTxPower = 22; // default for Heltec V4
 uint32_t nodeRegion = 0; // 0 = US915, 1 = EU868
 bool regionConfigured = false; // set true after first-setup / Settings apply
 uint32_t nodeRole = 0;   // 0 = Client, 1 = Router, 2 = Low-Power Repeater
-uint32_t meshHopLimit = 4;               // 1–8; locally originated hop_limit
+uint32_t meshHopLimit = 4;               // 1–16; hop_limit for traffic this node originates
 uint32_t rebroadcastTxdelayX100 = 100;   // 50–200 (=0.5x–2.0x) rebroadcast pace
 uint32_t telemetryIntervalSec = 60; // default telemetry broadcast interval in seconds
 uint32_t screenTimeoutSecs = 30; // Screen timeout in seconds (0 = display off, 0xFFFFFFFF = display always on)
@@ -852,6 +874,7 @@ bool powerSaveMode = false;
 // Persisted by saveSettings() directly from this global (not a parameter) so a
 // call site can't accidentally reset it by omitting a trailing argument.
 uint32_t positionPrecisionM = 0;
+uint32_t channelPrivacyRecord = 0;
 // GPS power mode: 0 = always on, 1 = always off, 2 = duty-cycle (wake for a
 // fix every gpsDutyIntervalSecs, then power down). Persisted from globals.
 uint32_t gpsMode = 0;
@@ -860,6 +883,7 @@ static constexpr uint32_t GPS_DUTY_FIX_TIMEOUT_MS = 90000UL;
 static constexpr uint32_t GPS_DUTY_MIN_INTERVAL_SECS = 300;  // 5 min
 static constexpr uint32_t GPS_DUTY_MAX_INTERVAL_SECS = 3600; // 60 min
 static bool gpsRailPowered = false;
+static uint32_t gpsPoweredOnAtMs = 0; // last off->on transition; starts the detect window
 static uint8_t gpsDutyState = 0; // 0 = sleeping, 1 = acquiring
 static uint32_t gpsDutyWakeAtMs = 0;
 static uint32_t gpsDutyOnSinceMs = 0;
@@ -1031,6 +1055,25 @@ static void setOnboardGpsPowered(bool on) {
         digitalWrite(37, LOW);
         digitalWrite(34, LOW);
     }
+#elif defined(SEEED_T1000_E)
+    pinMode(PIN_GPS_EN, OUTPUT);
+    pinMode(PIN_GPS_RESET, OUTPUT);
+    if (on) {
+        digitalWrite(PIN_GPS_EN, GPS_EN_ACTIVE);
+        digitalWrite(PIN_GPS_RESET, !GPS_RESET_MODE);
+        if (!gpsRailPowered) {
+            delay(100);
+            // Pulse reset so AG3335 restarts cleanly after rail enable.
+            digitalWrite(PIN_GPS_RESET, GPS_RESET_MODE);
+            delay(20);
+            digitalWrite(PIN_GPS_RESET, !GPS_RESET_MODE);
+            delay(50);
+            Serial1.setPins(PIN_SERIAL1_RX, PIN_SERIAL1_TX);
+            Serial1.begin(115200);
+        }
+    } else {
+        digitalWrite(PIN_GPS_EN, !GPS_EN_ACTIVE);
+    }
 #elif defined(RAK4631) || defined(RAK3401_1W)
     pinMode(34, OUTPUT); // WB_IO2 — powers Slot A/B (GPS + OLED share this rail)
     if (on) {
@@ -1048,6 +1091,7 @@ static void setOnboardGpsPowered(bool on) {
 #else
     (void)on;
 #endif
+    if (on && !gpsRailPowered) gpsPoweredOnAtMs = millis();
     gpsRailPowered = on;
 }
 
@@ -1217,9 +1261,11 @@ static bool tdeckComposeFrameDrawn = false;
 static uint8_t tdeckLastRenderMode = 0xFF;
 static uint32_t tdeckLastRenderSig = 0;
 #endif
+static uint32_t tdeckPendingRegion = 0xFFFFFFFFu;
 #endif
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval = 60, uint32_t screenTimeout = 30, bool powerSave = false);
+static void applyOnDeviceRegion(uint32_t nextRegion, bool reboot);
 void applyNodeNameOnly(const char* name, const char* shortName = nullptr);
 void sendNodeConfigReportToPhone();
 void sendBleTelemetryLoopbackToPhone();
@@ -1294,6 +1340,10 @@ static void serviceSerialDeployCommand() {
                                   (unsigned long)loraSF);
                     scheduleMcuReset(1500);
                 }
+            } else if (strcmp(cmdBuf, "SET_REGION US915") == 0) {
+                applyOnDeviceRegion(ondevice::RegionUs915, true);
+            } else if (strcmp(cmdBuf, "SET_REGION EU868") == 0) {
+                applyOnDeviceRegion(ondevice::RegionEu868, true);
             } else {
                 Serial.printf("Unknown serial cmd: '%s'\n", cmdBuf);
             }
@@ -1338,6 +1388,65 @@ static void sanitizeFixedPositionGlobals() {
     }
 }
 
+// Separate record leaves all existing settings-version migrations untouched.
+static void loadPositionPrivacy() {
+#ifdef ESP32
+    Preferences privacy;
+    if (!privacy.begin("mesh-privacy", false)) {
+        channelPrivacyRecord = positionprivacy::Disabled;
+        return;
+    }
+    channelPrivacyRecord = positionprivacy::validateRecord(privacy.getUInt("policy", 0));
+    privacy.end();
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
+    InternalFS.begin();
+    channelPrivacyRecord = 0;
+    const char* paths[] = {"/privacy.bin", "/privacy.bak"};
+    for (const char* path : paths) {
+        if (!InternalFS.exists(path)) continue;
+        channelPrivacyRecord = positionprivacy::Disabled; // corrupt file: fail closed
+        File file(InternalFS);
+        if (!file.open(path, FILE_O_READ)) continue;
+        uint32_t value = 0;
+        bool valid = file.size() == sizeof(value) &&
+                     file.read((uint8_t*)&value, sizeof(value)) == sizeof(value);
+        file.close();
+        if (valid) {
+            channelPrivacyRecord = positionprivacy::validateRecord(value);
+            return;
+        }
+    }
+#endif
+}
+
+static bool savePositionPrivacy(uint32_t value) {
+#ifdef ESP32
+    Preferences privacy;
+    if (!privacy.begin("mesh-privacy", false)) return false;
+    bool saved = privacy.putUInt("policy", value) == sizeof(value);
+    privacy.end();
+    return saved;
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
+    InternalFS.remove("/privacy.tmp");
+    File file(InternalFS);
+    if (!file.open("/privacy.tmp", FILE_O_WRITE)) return false;
+    bool written = file.write((uint8_t*)&value, sizeof(value)) == sizeof(value);
+    file.close();
+    if (!written) return false;
+    if (InternalFS.exists("/privacy.bin")) {
+        InternalFS.remove("/privacy.bak");
+        if (!InternalFS.rename("/privacy.bin", "/privacy.bak")) return false;
+    }
+    if (!InternalFS.rename("/privacy.tmp", "/privacy.bin")) {
+        if (InternalFS.exists("/privacy.bak")) InternalFS.rename("/privacy.bak", "/privacy.bin");
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
 void loadSettings() {
 #ifdef ESP32
     preferences.begin("aethermesh", true); // Read-only mode
@@ -1366,7 +1475,7 @@ void loadSettings() {
         nodeRole = preferences.getUInt("node_role", 0);
         meshHopLimit = preferences.getUInt("mesh_hops", 4);
         rebroadcastTxdelayX100 = preferences.getUInt("txdelay_x100", 100);
-        if (meshHopLimit == 0 || meshHopLimit > 8) meshHopLimit = 4;
+        if (meshHopLimit == 0 || meshHopLimit > meshmath::MAX_HOP_LIMIT) meshHopLimit = 4;
         if (rebroadcastTxdelayX100 == 0) rebroadcastTxdelayX100 = 100;
         if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
         if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
@@ -1439,7 +1548,7 @@ void loadSettings() {
     Serial.println();
     Serial.printf("  Fixed Position: %s (Lat=%.6f, Lon=%.6f, Alt=%d)\n", fixedPosition ? "YES" : "NO", fixedLat, fixedLon, fixedAlt);
     Serial.printf("  Refuse legacy remote control (<v3): %s\n", refuseLegacyRemoteControl ? "YES" : "no");
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     InternalFS.begin();
     NodeSettings settings = {};
     bool loaded = false;
@@ -1472,7 +1581,7 @@ void loadSettings() {
             regionConfigured = settings.regionConfigured;
             meshHopLimit = settings.meshHopLimit ? settings.meshHopLimit : 4;
             rebroadcastTxdelayX100 = settings.rebroadcastTxdelayX100 ? settings.rebroadcastTxdelayX100 : 100;
-            if (meshHopLimit > 8) meshHopLimit = 4;
+            if (meshHopLimit > meshmath::MAX_HOP_LIMIT) meshHopLimit = 4;
             if (rebroadcastTxdelayX100 < 50) rebroadcastTxdelayX100 = 50;
             if (rebroadcastTxdelayX100 > 200) rebroadcastTxdelayX100 = 200;
             strncpy(nodeShortName, settings.shortName, sizeof(nodeShortName) - 1);
@@ -1696,7 +1805,7 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
     preferences.putUInt("settings_ver", SETTINGS_VERSION);
     preferences.end();
     Serial.println("Saved settings to NVS.");
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     // Atomic commit: write temp → rotate previous to .bak → rename temp to .bin.
     // LittleFS rename is atomic even across power loss (unlike delete-then-write).
     sanitizeFixedPositionGlobals();
@@ -1768,8 +1877,80 @@ void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint
         }
     }
 #endif
-    packetauth::setControlPassword(password);
+    // Non-blocking: loop() finishes the derivation (a no-op when unchanged).
+    packetauth::beginControlPassword(password);
     packetauth::setRefuseLegacyControl(refuseLegacyRemoteControl);
+}
+
+static void persistNodeSettings() {
+    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword,
+                 nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
+}
+
+static void applyOnDeviceGpsMode(uint32_t nextMode) {
+    gpsMode = nextMode;
+    if (gpsMode == ondevice::GpsDuty) {
+        gpsDutyResetSchedule(2000);
+    } else if (gpsMode == ondevice::GpsOn) {
+        setOnboardGpsPowered(true);
+    } else {
+        setOnboardGpsPowered(false);
+    }
+    persistNodeSettings();
+#if defined(AETHER_COLOR_UI)
+    tdeckDisplayDirty = true;
+#endif
+    Serial.printf("On-device GPS mode: %s\n", ondevice::gpsModeLabel(gpsMode));
+}
+
+static void applyOnDeviceGpsDuty(uint32_t nextSecs) {
+    gpsDutyIntervalSecs = clampGpsDutyIntervalSecs(nextSecs);
+    if (gpsMode == ondevice::GpsDuty) {
+        gpsDutyResetSchedule(2000);
+    }
+    persistNodeSettings();
+#if defined(AETHER_COLOR_UI)
+    tdeckDisplayDirty = true;
+#endif
+    Serial.printf("On-device GPS duty: %us\n", (unsigned)gpsDutyIntervalSecs);
+}
+
+static void applyOnDeviceRegion(uint32_t nextRegion, bool reboot) {
+    nodeRegion = (nextRegion == ondevice::RegionEu868) ? ondevice::RegionEu868
+                                                       : ondevice::RegionUs915;
+    regionConfigured = true;
+    persistNodeSettings();
+#if defined(AETHER_COLOR_UI)
+    tdeckDisplayDirty = true;
+#endif
+    Serial.printf("On-device region: %s%s\n", ondevice::regionLabel(nodeRegion),
+                  reboot ? " (rebooting)" : "");
+    if (reboot) {
+        scheduleMcuReset(1500);
+    }
+}
+
+static bool applyOnDeviceAction(ondevice::Action action) {
+    switch (action) {
+        case ondevice::ActToggleRegion:
+            nodeRegion = ondevice::nextRegion(nodeRegion);
+#if defined(AETHER_COLOR_UI)
+            tdeckDisplayDirty = true;
+#endif
+            Serial.printf("Region wizard: %s\n", ondevice::regionLabel(nodeRegion));
+            return true;
+        case ondevice::ActConfirmRegion:
+            applyOnDeviceRegion(nodeRegion, true);
+            return true;
+        case ondevice::ActCycleGpsMode:
+            applyOnDeviceGpsMode(ondevice::nextGpsMode(gpsMode));
+            return true;
+        case ondevice::ActCycleDuty:
+            applyOnDeviceGpsDuty(ondevice::nextGpsDutyIntervalSecs(gpsDutyIntervalSecs));
+            return true;
+        default:
+            return false;
+    }
 }
 
 void applyNodeNameOnly(const char* name, const char* shortName) {
@@ -1795,7 +1976,7 @@ uint32_t getHardwareNodeId() {
 #if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI)
     uint64_t mac = ESP.getEfuseMac();
     return (uint32_t)(mac & 0xFFFFFFFF);
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     return NRF_FICR->DEVICEID[0];
 #else
     return 0xDEADBEEF; // Fallback
@@ -1910,6 +2091,35 @@ uint8_t readBatteryLevel() {
     updateChargingState(voltage);
 
     Serial.printf("Battery (T-Echo): raw %.0f | %.3f V | %u%%\n",
+                  raw, voltage, lipoPercentFromVoltage(voltage));
+
+    cachedLevel = lipoPercentFromVoltage(voltage);
+    haveSample = true;
+    lastSampleTime = millis();
+    return cachedLevel;
+#elif defined(SEEED_T1000_E)
+    static uint32_t lastSampleTime = 0;
+    static uint8_t cachedLevel = 0;
+    static bool haveSample = false;
+
+    if (haveSample && (millis() - lastSampleTime < 30000)) {
+        return cachedLevel;
+    }
+
+    analogReference(AR_INTERNAL_3_0);
+    analogReadResolution(12);
+    delay(2);
+    uint32_t adcSum = 0;
+    for (int i = 0; i < 32; i++) adcSum += analogRead(BATTERY_PIN);
+    float raw = adcSum / 32.0f;
+    float voltage = (raw / 4096.0f) * 3.0f * ADC_MULTIPLIER;
+    updateChargingState(voltage);
+    // Magnetic charger presence (active low) when VBUSDETECT is quiet.
+    if (digitalRead(EXT_CHRG_DETECT) == EXT_CHRG_DETECT_VALUE) {
+        batteryCharging = true;
+    }
+
+    Serial.printf("Battery (T1000-E): raw %.0f | %.3f V | %u%%\n",
                   raw, voltage, lipoPercentFromVoltage(voltage));
 
     cachedLevel = lipoPercentFromVoltage(voltage);
@@ -2440,7 +2650,7 @@ static void drawTDeckHome() {
     char footer[48];
     char up[16];
     tdeckFormatUptime(up, sizeof(up));
-    snprintf(footer, sizeof(footer), "%s  %s  v%s", (nodeRegion == 0) ? "US915" : "EU868", up, AETHERMESH_FW_VERSION);
+    snprintf(footer, sizeof(footer), "%s  %s  v%s", ondevice::regionLabel(nodeRegion), up, AETHERMESH_FW_VERSION);
     tdeckDrawText(12, 229, u8g2_font_5x7_tf, footer, TDECK_MUTED, 1);
 
     uint32_t now = millis();
@@ -2515,6 +2725,7 @@ static void drawTDeckGpsPage() {
     }
     tdeckDrawText(26, 76, u8g2_font_7x14_tf, line, (ownFix || phoneFix || fixedPosition) ? TDECK_GREEN : TDECK_AMBER, 2);
     tdeckDrawStatusDot(288, 80, (ownFix || phoneFix || fixedPosition) ? TDECK_GREEN : TDECK_AMBER, ownFix || phoneFix || fixedPosition);
+    tdeckDrawText(26, 92, u8g2_font_5x7_tf, "G MODE   D INTERVAL", TDECK_MUTED, 1);
 
     tdeckDrawCard(12, 116, 296, 62, "POSITION", TDECK_CYAN);
     if (fixedPosition || ownFix || phoneFix) {
@@ -2529,7 +2740,12 @@ static void drawTDeckGpsPage() {
     }
 
     tdeckDrawCard(12, 190, 142, 34, "SAT", TDECK_BLUE);
-    snprintf(line, sizeof(line), "%lu", (unsigned long)gps.satellites.value());
+    if (gpsMode == ondevice::GpsDuty) {
+        snprintf(line, sizeof(line), "%s  %s", ondevice::gpsModeLabel(gpsMode),
+                 ondevice::gpsDutyMinutesLabel(gpsDutyIntervalSecs));
+    } else {
+        snprintf(line, sizeof(line), "%lu", (unsigned long)gps.satellites.value());
+    }
     tdeckDrawText(26, 206, u8g2_font_6x10_tf, line, TDECK_TEXT, 2);
     tdeckDrawMiniSignalBars(108, 202, (uint8_t)min((unsigned long)5, (unsigned long)gps.satellites.value()), TDECK_BLUE);
 
@@ -2627,7 +2843,11 @@ static void drawTDeckSystemPage() {
     tdeckDrawProgressBar(24, 140, 112, readBatteryLevel(), tdeckBatteryColor(readBatteryLevel()));
 
     tdeckDrawCard(166, 106, 142, 46, "REGION", TDECK_AMBER);
-    snprintf(line, sizeof(line), "%s  %ddBm", (nodeRegion == 0) ? "US915" : "EU868", (int)loraTxPower);
+    if (tdeckPendingRegion != 0xFFFFFFFFu) {
+        snprintf(line, sizeof(line), "SET %s?", ondevice::regionLabel(tdeckPendingRegion));
+    } else {
+        snprintf(line, sizeof(line), "%s  %ddBm", ondevice::regionLabel(nodeRegion), (int)loraTxPower);
+    }
     tdeckDrawText(178, 128, u8g2_font_6x10_tf, line, TDECK_TEXT, 1);
 
     tdeckDrawCard(12, 164, 142, 46, "MEMORY", TDECK_CYAN);
@@ -2639,10 +2859,7 @@ static void drawTDeckSystemPage() {
     snprintf(line, sizeof(line), "v%s", AETHERMESH_FW_VERSION);
     tdeckDrawText(178, 186, u8g2_font_5x7_tf, line, TDECK_TEXT, 1);
 
-    if (positionPrecisionM > 0) {
-        snprintf(line, sizeof(line), "POS +/-%um", (unsigned)positionPrecisionM);
-        tdeckDrawText(16, 224, u8g2_font_5x7_tf, line, TDECK_MUTED, 1);
-    }
+    tdeckDrawText(16, 224, u8g2_font_5x7_tf, "R REGION   ENTER SETS", TDECK_MUTED, 1);
     st7789_push_frame();
 }
 
@@ -2770,22 +2987,22 @@ void drawGpsPage() {
         u8g2.drawStr(0, 32, "GPS DISABLED");
         u8g2.setFont(u8g2_font_6x10_tf);
         u8g2.drawStr(0, 47, "Off by config (power)");
-        u8g2.drawStr(0, 58, "Uses phone GPS if shared");
+        u8g2.drawStr(0, 58, "Hold: cycle GPS");
     } else if (gpsMode == 2) {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, gpsDutyState == 1 ? "GPS DUTY ON" : "GPS DUTY SLEEP");
         u8g2.setFont(u8g2_font_6x10_tf);
-        snprintf(line, sizeof(line), "Every %um",
-                 (unsigned)((gpsDutyIntervalSecs + 59) / 60));
+        snprintf(line, sizeof(line), "Every %s",
+                 ondevice::gpsDutyMinutesLabel(gpsDutyIntervalSecs));
         u8g2.drawStr(0, 47, line);
-        u8g2.drawStr(0, 58, gpsDutyState == 1 ? "Acquiring fix..." : "Waiting for wake");
+        u8g2.drawStr(0, 58, "Hold: cycle GPS");
     } else {
         u8g2.setFont(u8g2_font_7x14_tf);
         u8g2.drawStr(0, 32, "NO GPS LOCK");
         u8g2.setFont(u8g2_font_6x10_tf);
         snprintf(line, sizeof(line), "Sats in view: %lu", (unsigned long)gps.satellites.value());
         u8g2.drawStr(0, 47, line);
-        u8g2.drawStr(0, 58, "Waiting for fix...");
+        u8g2.drawStr(0, 58, "Hold: cycle GPS");
     }
     u8g2.sendBuffer();
 }
@@ -2872,7 +3089,7 @@ void drawSysPage() {
     u8g2.drawStr(0, 23, line);
     const char* roleName = (nodeRole == 1) ? "Router" : (nodeRole == 2) ? "Repeater" : "Client";
     snprintf(line, sizeof(line), "%s TX %ddBm %s", roleName, (int)loraTxPower,
-             (nodeRegion == 0) ? "US915" : "EU868");
+             ondevice::regionLabel(nodeRegion));
     u8g2.drawStr(0, 34, line);
     snprintf(line, sizeof(line), "Batt %u%% %.2fV%s", (unsigned)readBatteryLevel(),
              batteryVoltage, batteryCharging ? " CHG" : "");
@@ -2887,10 +3104,9 @@ void drawSysPage() {
     u8g2.setFont(u8g2_font_5x7_tf);
     snprintf(line, sizeof(line), "v%s", AETHERMESH_FW_VERSION);
     u8g2.drawStr(0, 64, line);
-    if (positionPrecisionM > 0) {
-        char pp[16];
-        snprintf(pp, sizeof(pp), "Pos +/-%um", (unsigned)positionPrecisionM);
-        u8g2.drawStr(128 - (int)u8g2.getStrWidth(pp), 64, pp);
+    {
+        const char* hold = (gpsMode == ondevice::GpsDuty) ? "Hold: duty" : "Hold: GPS";
+        u8g2.drawStr(128 - (int)u8g2.getStrWidth(hold), 64, hold);
     }
     u8g2.sendBuffer();
 }
@@ -2979,13 +3195,46 @@ void drawEchoStatus() {
         epd.setCursor(6, y); epd.print(line); y += 14;
     }
 
-    // Footer: uptime + firmware version
+    // Footer: region + uptime + firmware
     uint32_t upSec = millis() / 1000UL;
-    snprintf(line, sizeof(line), "Up %lum   v%s",
-             (unsigned long)(upSec / 60), AETHERMESH_FW_VERSION);
+    if (!regionConfigured) {
+        snprintf(line, sizeof(line), "SETUP %s  2x band  3x set",
+                 ondevice::regionLabel(nodeRegion));
+    } else {
+        snprintf(line, sizeof(line), "%s  Up %lum  v%s",
+                 ondevice::regionLabel(nodeRegion),
+                 (unsigned long)(upSec / 60), AETHERMESH_FW_VERSION);
+    }
     epd.setCursor(6, 186); epd.print(line);
 
     epd.display(); // full refresh (blocks ~2-3s)
+}
+#endif
+
+static void drawRegionSetupOled() {
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W)
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(0, 10, "REGION SETUP");
+    u8g2.drawHLine(0, 12, 128);
+    u8g2.setFont(u8g2_font_7x14_tf);
+    u8g2.drawStr(0, 32, ondevice::regionLabel(nodeRegion));
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(0, 47, "Click: US915/EU868");
+    u8g2.drawStr(0, 58, "Hold: confirm");
+    u8g2.sendBuffer();
+#endif
+}
+
+#if defined(AETHER_COLOR_UI)
+static void drawTDeckRegionSetup() {
+    tdeckDrawBackground(TDECK_AMBER);
+    tdeckDrawHeader("Region", 0, TDECK_AMBER);
+    tdeckDrawCard(12, 64, 296, 90, "LORA BAND", TDECK_AMBER);
+    tdeckDrawText(24, 96, u8g2_font_ncenB14_tr, ondevice::regionLabel(nodeRegion), TDECK_TEXT, 2);
+    tdeckDrawText(24, 124, u8g2_font_6x10_tf, "R SWITCHES   ENTER CONFIRMS", TDECK_MUTED, 1);
+    tdeckDrawText(12, 220, u8g2_font_5x7_tf, "REQUIRED BEFORE THE MESH WILL TX", TDECK_MUTED, 1);
+    st7789_push_frame();
 }
 #endif
 
@@ -3027,6 +3276,9 @@ void updateDisplay() {
         // Always wake screen up for message popup overlay
         shouldBeOn = true;
     }
+    if (!regionConfigured) {
+        shouldBeOn = true;
+    }
 
     if (!shouldBeOn) {
 #if defined(AETHER_COLOR_UI)
@@ -3065,7 +3317,7 @@ void updateDisplay() {
     displayIsOn = true;
 
 #if defined(AETHER_COLOR_UI)
-    uint8_t tdeckMode = tdeckComposeActive ? 10 : (popupActive ? 11 : oledPage);
+    uint8_t tdeckMode = tdeckComposeActive ? 10 : (popupActive ? 11 : (!regionConfigured ? 12 : oledPage));
     uint32_t tdeckSig;
     if (tdeckComposeActive) {
         tdeckSig = tdeckComposeRenderSignature();
@@ -3074,7 +3326,8 @@ void updateDisplay() {
     } else if (oledPage == 0) {
         tdeckSig = tdeckHomeRenderSignature(now);
     } else {
-        tdeckSig = (uint32_t)oledPage << 24;
+        tdeckSig = ((uint32_t)oledPage << 24) ^ gpsMode ^ (gpsDutyIntervalSecs << 2) ^
+                   nodeRegion ^ (regionConfigured ? 1u : 0u) ^ tdeckPendingRegion;
     }
     if (!tdeckShouldRedraw(tdeckMode, tdeckSig)) {
         return;
@@ -3082,6 +3335,10 @@ void updateDisplay() {
 
     if (tdeckComposeActive) {
         drawTDeckCompose();
+        return;
+    }
+    if (!regionConfigured) {
+        drawTDeckRegionSetup();
         return;
     }
 #endif
@@ -3132,6 +3389,11 @@ void updateDisplay() {
         return;
     } else {
         hasNewMsgPopup = false;
+    }
+
+    if (!regionConfigured) {
+        drawRegionSetupOled();
+        return;
     }
 
 #if defined(AETHER_COLOR_UI)
@@ -3366,9 +3628,24 @@ static void tdeckAppendCompose(char c) {
 }
 
 static bool tdeckHandleControlKey(uint8_t key) {
+    if (!regionConfigured) {
+        if (key == '\r' || key == '\n') {
+            applyOnDeviceAction(ondevice::ActConfirmRegion);
+            return true;
+        }
+        if (key == 'r' || key == 'R' || key == '\t') {
+            applyOnDeviceAction(ondevice::ActToggleRegion);
+            return true;
+        }
+        return true; // swallow other keys until region is set
+    }
     if (key == '\r' || key == '\n') {
         if (tdeckComposeActive) {
             tdeckSendCompose();
+        } else if (oledPage == ondevice::PageSystem && tdeckPendingRegion != 0xFFFFFFFFu) {
+            applyOnDeviceRegion(tdeckPendingRegion, true);
+            tdeckPendingRegion = 0xFFFFFFFFu;
+            tdeckSetNotice("REGION SET");
         } else {
             tdeckBeginCompose();
         }
@@ -3377,6 +3654,9 @@ static bool tdeckHandleControlKey(uint8_t key) {
     if (key == 0x08 || key == 0x7F) {
         if (tdeckComposeActive) {
             tdeckBackspaceCompose();
+        } else if (tdeckPendingRegion != 0xFFFFFFFFu) {
+            tdeckPendingRegion = 0xFFFFFFFFu;
+            tdeckSetNotice("REGION KEEP");
         } else if (oledPage > 0) {
             oledPage--;
         }
@@ -3385,6 +3665,9 @@ static bool tdeckHandleControlKey(uint8_t key) {
     if (key == 0x1B) {
         if (tdeckComposeActive) {
             tdeckCancelCompose();
+        } else if (tdeckPendingRegion != 0xFFFFFFFFu) {
+            tdeckPendingRegion = 0xFFFFFFFFu;
+            tdeckSetNotice("REGION KEEP");
         } else if (hasNewMsgPopup) {
             hasNewMsgPopup = false;
         }
@@ -3405,6 +3688,30 @@ static void handleTDeckKey(uint8_t key) {
     lastDisplayActivityTime = millis();
 
     if (tdeckHandleControlKey(key)) {
+        updateDisplay();
+        return;
+    }
+
+    if (!tdeckComposeActive && (key == 'g' || key == 'G') &&
+        (oledPage == ondevice::PageGps || oledPage == ondevice::PageSystem)) {
+        applyOnDeviceAction(ondevice::ActCycleGpsMode);
+        tdeckSetNotice(ondevice::gpsModeLabel(gpsMode));
+        updateDisplay();
+        return;
+    }
+    if (!tdeckComposeActive && (key == 'd' || key == 'D') &&
+        (oledPage == ondevice::PageGps || oledPage == ondevice::PageSystem)) {
+        applyOnDeviceAction(ondevice::ActCycleDuty);
+        tdeckSetNotice(ondevice::gpsDutyMinutesLabel(gpsDutyIntervalSecs));
+        updateDisplay();
+        return;
+    }
+    if (!tdeckComposeActive && (key == 'r' || key == 'R') &&
+        oledPage == ondevice::PageSystem) {
+        uint32_t current = (tdeckPendingRegion == 0xFFFFFFFFu) ? nodeRegion : tdeckPendingRegion;
+        tdeckPendingRegion = ondevice::nextRegion(current);
+        tdeckSetNotice(ondevice::regionLabel(tdeckPendingRegion));
+        tdeckDisplayDirty = true;
         updateDisplay();
         return;
     }
@@ -3455,6 +3762,16 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     bool decodeSuccess = pb_decode(&stream, aethermesh_MeshPacket_fields, &packet);
+    if (!decodeSuccess) {
+        // Keep the router's raw diagnostic-beacon handling, never forward raw
+        // undecoded radio input into the phone's local control dispatcher.
+        router.processIncomingPacket(data, len, rssi, snr);
+        return;
+    }
+    if (!meshingress::acceptRadio(packet, localNodeId)) {
+        Serial.println("Rejected radio packet at ingress.");
+        return;
+    }
 
     if (decodeSuccess) {
         notePeerHeard(packet.sender_id, rssi);
@@ -3480,10 +3797,24 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
     bool isPongPacket = decodeSuccess &&
                         packet.which_payload == aethermesh_MeshPacket_text_tag &&
                         strncmp(packet.payload.text.content, "PONG_", 5) == 0;
+    bool isForUs = (packet.recipient_id == localNodeId) ||
+                   (packet.recipient_id <= 0xFFFFu && (packet.recipient_id == (localNodeId & 0xFFFFu)));
+    bool isIdentityAnnouncement =
+        decodeSuccess && packet.which_payload == aethermesh_MeshPacket_node_identity_tag;
+    bool isForUsOrBroadcast = decodeSuccess && !isIdentityAnnouncement &&
+                              (isForUs || packet.recipient_id == 0xFFFFFFFFu || isPongPacket);
     bool isDuplicate = decodeSuccess &&
                        (packet.sender_id == localNodeId ||
                         ((!isAckPacket && !isPongPacket) && router.hasSeen(packet.sender_id, packet.packet_id)));
-    if (bleMgr.isDeviceConnected() && isBleClientAuthenticated && !isDuplicate) {
+    // A message sealed to this node is opened before the phone sees it: the app
+    // is on the far side of an authenticated local link, and it has no keys.
+    bool sealedOpened = true;
+    if (decodeSuccess && packet.which_payload == aethermesh_MeshPacket_text_tag &&
+        packet.payload.text.sealed.size > 0 && packet.recipient_id == localNodeId) {
+        sealedOpened = router.openIncomingText(&packet);
+    }
+    if (bleMgr.isDeviceConnected() && isBleClientAuthenticated() && !isDuplicate &&
+        isForUsOrBroadcast && sealedOpened) {
         if (decodeSuccess) {
             if (isPongPacket) {
                 Serial.printf("Range-test PONG received, forwarding to phone: %s\n",
@@ -3497,11 +3828,8 @@ void onLoRaPacketReceived(uint8_t* data, size_t len, float rssi, float snr) {
             if (pb_encode(&outStream, aethermesh_MeshPacket_fields, &packet)) {
                 bleMgr.sendToPhone(buffer, outStream.bytes_written);
             }
-        } else {
-            // Fallback: forward raw bytes if decode fails
-            bleMgr.sendToPhone(data, len);
         }
-    } else if (decodeSuccess && isPongPacket && bleMgr.isDeviceConnected() && !isBleClientAuthenticated) {
+    } else if (decodeSuccess && isPongPacket && bleMgr.isDeviceConnected() && !isBleClientAuthenticated()) {
         Serial.println("PONG received but BLE client not authenticated; not forwarding to phone.");
     }
     
@@ -3541,6 +3869,9 @@ void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
 
 void fillNodeConfigSnapshot(aethermesh_NodeConfig& cfg) {
     memset(&cfg, 0, sizeof(cfg));
+    cfg.position_privacy_supported = true;
+    cfg.channel_position_disabled = (channelPrivacyRecord & positionprivacy::Disabled) != 0;
+    cfg.channel_precision_m = channelPrivacyRecord & ~positionprivacy::Disabled;
     strncpy(cfg.node_name, nodeCustomName, sizeof(cfg.node_name) - 1);
     cfg.node_name[sizeof(cfg.node_name) - 1] = '\0';
     strncpy(cfg.node_short_name, nodeShortName, sizeof(cfg.node_short_name) - 1);
@@ -3564,6 +3895,7 @@ void fillNodeConfigSnapshot(aethermesh_NodeConfig& cfg) {
     cfg.report_only = true;
     cfg.region_configured = regionConfigured;
     cfg.mesh_hop_limit = meshHopLimit;
+    cfg.max_hop_limit = meshmath::MAX_HOP_LIMIT;
     cfg.rebroadcast_txdelay_x100 = rebroadcastTxdelayX100;
     cfg.request_report = false;
     cfg.apply_mask = 0;
@@ -3575,7 +3907,7 @@ void sendConfigResultTo(uint32_t recipientId, uint32_t requestPacketId,
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = random(1, 0x7FFFFFFF);
-    packet.hop_limit = 4;
+    packet.hop_limit = router.replyHopLimitFor(recipientId);
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
@@ -3596,7 +3928,7 @@ void sendNodeConfigReportTo(uint32_t recipientId) {
     packet.sender_id = localNodeId;
     packet.recipient_id = recipientId;
     packet.packet_id = random(1, 0x7FFFFFFF);
-    packet.hop_limit = 4;
+    packet.hop_limit = router.replyHopLimitFor(recipientId);
     packet.want_ack = false;
     packet.prev_hop_id = localNodeId;
     packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
@@ -3609,7 +3941,7 @@ void sendNodeConfigReportTo(uint32_t recipientId) {
 // Push the node's persisted radio/GPS settings to the phone after BLE auth so
 // an app reinstall can hydrate Settings without overwriting the device.
 void sendNodeConfigReportToPhone() {
-    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated()) {
         return;
     }
 
@@ -3634,11 +3966,49 @@ void sendNodeConfigReportToPhone() {
     }
 }
 
+// GNSS snapshot for Telemetry (gps_state, position_source, satellites, HDOP).
+static constexpr uint32_t GSV_MAX_AGE_MS = 5000;
+
+static gpsstatus::Inputs gpsStatusInputs() {
+    gpsstatus::Inputs in = {};
+    in.moduleDetected = hasOnboardGps;
+    in.gpsMode = gpsMode;
+    in.powered = gpsHardwareActive() && gpsRailPowered;
+    in.locationValid = gps.location.isValid();
+    in.locationAgeMs = in.locationValid ? gps.location.age() : 0;
+    in.satellitesUsed = gps.satellites.isValid() ? gps.satellites.value() : 0;
+    if (in.powered) {
+        uint32_t counts[sizeof(GSV_IN_VIEW) / sizeof(GSV_IN_VIEW[0])];
+        uint32_t ages[sizeof(GSV_IN_VIEW) / sizeof(GSV_IN_VIEW[0])];
+        const int n = (int)(sizeof(GSV_IN_VIEW) / sizeof(GSV_IN_VIEW[0]));
+        for (int i = 0; i < n; i++) {
+            counts[i] = GSV_IN_VIEW[i]->isValid() ? (uint32_t)atoi(GSV_IN_VIEW[i]->value()) : 0;
+            ages[i] = GSV_IN_VIEW[i]->isValid() ? GSV_IN_VIEW[i]->age() : UINT32_MAX;
+        }
+        in.satellitesInView = gpsstatus::satellitesInView(counts, ages, n, GSV_MAX_AGE_MS);
+    }
+    in.hdopValid = gps.hdop.isValid();
+    in.hdop = gps.hdop.hdop();
+    in.fixedPosition = fixedPosition;
+    in.phonePositionFresh = hasInheritedLocation && (millis() - lastInheritedTime < 300000);
+    return in;
+}
+
+static void fillGpsTelemetry(aethermesh_Telemetry& telemetry) {
+    const gpsstatus::Inputs in = gpsStatusInputs();
+    telemetry.gps_state = (aethermesh_Telemetry_GpsState)gpsstatus::state(in);
+    telemetry.position_source = (aethermesh_Telemetry_PositionSource)gpsstatus::source(in);
+    telemetry.gps_satellites_used = in.satellitesUsed;
+    telemetry.gps_satellites_in_view = in.satellitesInView;
+    telemetry.gps_hdop_x10 = gpsstatus::hdopX10(in);
+    telemetry.gps_fix_age_secs = gpsstatus::fixAgeSecs(in);
+}
+
 // Push one telemetry sample to the phone (no LoRa). Called right after BLE auth
 // so Firmware / battery / position refresh without waiting for telemetry_interval
 // (important after OTA/DFU when power-save can stretch that interval).
 void sendBleTelemetryLoopbackToPhone() {
-    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated()) {
         return;
     }
 
@@ -3696,6 +4066,8 @@ void sendBleTelemetryLoopbackToPhone() {
     strcpy(localTelemetryPacket.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
     strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
+#elif defined(SEEED_T1000_E)
+    strcpy(localTelemetryPacket.payload.telemetry.node_model, "T1000-E");
 #elif defined(RAK19026)
     strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK19026");
 #elif defined(RAK4631)
@@ -3705,6 +4077,8 @@ void sendBleTelemetryLoopbackToPhone() {
 #else
     strcpy(localTelemetryPacket.payload.telemetry.node_model, "Generic Node");
 #endif
+
+    fillGpsTelemetry(localTelemetryPacket.payload.telemetry);
 
     uint8_t bleBuffer[256];
     pb_ostream_t stream = pb_ostream_from_buffer(bleBuffer, sizeof(bleBuffer));
@@ -3717,7 +4091,7 @@ void sendBleTelemetryLoopbackToPhone() {
 }
 
 void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aethermesh_DeliveryStatus_State state, aethermesh_DeliveryStatus_Reason reason, uint32_t retryCount, float ackRssi, float ackSnr, uint32_t heardCount, uint32_t fromNodeId) {
-    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated()) {
         return;
     }
 
@@ -3749,7 +4123,7 @@ void sendDeliveryStatusToPhone(uint32_t packetId, uint32_t recipientId, aetherme
 }
 
 void sendMeshDiagnosticsToPhone() {
-    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated) return;
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated()) return;
 
     aethermesh_MeshPacket packet = aethermesh_MeshPacket_init_zero;
     packet.sender_id = localNodeId;
@@ -3844,6 +4218,7 @@ void otaAbort(const char* reason) {
     // Report the last contiguous offset before clearing so the phone can resume.
     const uint32_t resumeAt = otaExpectedOffset;
     otaActive = false;
+    bleSession.releaseOta();
     radioMgr.setOtaSuppressed(false);
     otaExpectedOffset = 0;
     otaExpectedSha256[0] = '\0';
@@ -3859,13 +4234,13 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
     // it directly. If the transfer never starts, the bootloader times out
     // back into the current app - nothing is lost.
     if (ctl.op == aethermesh_OtaControl_Op_ENTER_DFU) {
-#if defined(RAK4631) || defined(RAK3401_1W)
+#if defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
         Serial.println("Rebooting into OTA DFU bootloader (phone streams the update)...");
         sendOtaStatus(aethermesh_OtaStatus_State_READY, 0, "Entering DFU bootloader");
         delay(600); // let the BLE notify flush before we tear the stack down
         enterOTADfu();
 #else
-        sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "ENTER_DFU is for RAK/nRF52 boards");
+        sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "ENTER_DFU is for nRF52 boards");
 #endif
         return;
     }
@@ -3876,6 +4251,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             if (otaActive) {
                 Update.abort();
                 otaActive = false;
+                bleSession.releaseOta();
             }
             if (ctl.total_size == 0) {
                 sendOtaStatus(aethermesh_OtaStatus_State_ERROR, 0, "Zero image size");
@@ -3892,6 +4268,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             otaExpectedSha256[sizeof(otaExpectedSha256) - 1] = '\0';
             otaSha256.reset();
             otaActive = true;
+            bleSession.claimOta(bleMgr.deliveringGeneration());
             // Hold off LoRa TX: an SF12 frame owns the radio for seconds and
             // starves the BLE link past its 5s supervision timeout.
             radioMgr.setOtaSuppressed(true);
@@ -3947,6 +4324,7 @@ void handleOtaControl(const aethermesh_OtaControl& ctl) {
             }
             if (Update.end(true)) {
                 otaActive = false;
+                bleSession.releaseOta();
                 bleMgr.setInlinePhoneDelivery(false);
                 Serial.println("OTA success. Rebooting into new firmware...");
                 drawOtaProgress(100, "rebooting");
@@ -4015,6 +4393,36 @@ void handleOtaData(const aethermesh_OtaData& od) {
 #endif
 }
 
+// Routes an authenticated OTA packet. Returns false when the packet is not OTA
+// traffic. DATA/END/ABORT only steer the stream owned by the connection that
+// sent BEGIN; anything else is dropped without touching flash.
+static bool dispatchPhoneOtaPacket(const aethermesh_MeshPacket& packet, uint32_t packetGeneration) {
+    blesession::OtaPacketKind kind;
+    if (packet.which_payload == aethermesh_MeshPacket_ota_data_tag) {
+        kind = blesession::OtaPacketKind::Data;
+    } else if (packet.which_payload == aethermesh_MeshPacket_ota_control_tag) {
+        switch (packet.payload.ota_control.op) {
+            case aethermesh_OtaControl_Op_BEGIN: kind = blesession::OtaPacketKind::Begin; break;
+            case aethermesh_OtaControl_Op_END: kind = blesession::OtaPacketKind::End; break;
+            case aethermesh_OtaControl_Op_ENTER_DFU: kind = blesession::OtaPacketKind::EnterDfu; break;
+            default: kind = blesession::OtaPacketKind::Abort; break;
+        }
+    } else {
+        return false;
+    }
+
+    if (!bleSession.mayHandleOta(kind, otaActive, packetGeneration)) {
+        Serial.println("OTA packet rejected: stream belongs to another BLE connection.");
+        return true;
+    }
+    if (kind == blesession::OtaPacketKind::Data) {
+        handleOtaData(packet.payload.ota_data);
+    } else {
+        handleOtaControl(packet.payload.ota_control);
+    }
+    return true;
+}
+
 // Callback: Phone BLE -> LoRa / Router
 void onBlePacketReceived(uint8_t* data, size_t len) {
     // Deserialize packet
@@ -4022,14 +4430,20 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     
     if (pb_decode(&stream, aethermesh_MeshPacket_fields, &packet)) {
+        const uint32_t packetGeneration = bleMgr.deliveringGeneration();
+        const blesession::PhonePacketRoute route =
+            bleSession.route(packetGeneration, bleMgr.connectionGeneration(), otaActive);
+        if (route == blesession::PhonePacketRoute::Drop) {
+            Serial.println("BLE packet dropped: queued on a previous connection.");
+            return;
+        }
+
         // During OTA, ignore everything except OTA control/data so GPS / chat
         // / config packets can't stall flash writes or create offset gaps.
-        if (otaActive) {
-            if (packet.which_payload == aethermesh_MeshPacket_ota_control_tag) {
-                handleOtaControl(packet.payload.ota_control);
-            } else if (packet.which_payload == aethermesh_MeshPacket_ota_data_tag) {
-                handleOtaData(packet.payload.ota_data);
-            }
+        // Authentication is decided first: an OTA stream never exempts a
+        // connection from logging in.
+        if (route == blesession::PhonePacketRoute::OtaOnly) {
+            dispatchPhoneOtaPacket(packet, packetGeneration);
             return;
         }
 
@@ -4039,7 +4453,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         }
 
         // Enforce authentication
-        if (!isBleClientAuthenticated) {
+        if (route == blesession::PhonePacketRoute::AuthHandshake) {
             if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag) {
                 bool hasPassword = (strlen(nodePassword) > 0);
                 bool isRequestPasswordEmpty = (strlen(packet.payload.auth_request.password) == 0);
@@ -4060,7 +4474,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     strncpy(nodePassword, packet.payload.auth_request.password, sizeof(nodePassword) - 1);
                     nodePassword[sizeof(nodePassword) - 1] = '\0';
                     saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
-                    isBleClientAuthenticated = true;
+                    bleSession.markAuthenticated(packetGeneration);
                     Serial.println("Initial device password set successfully.");
                     sendAuthResponse(true, "Password set successfully", false);
                     sendNodeConfigReportToPhone();
@@ -4068,7 +4482,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                 } else {
                     // Verify the password
                     if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
-                        isBleClientAuthenticated = true;
+                        bleSession.markAuthenticated(packetGeneration);
                         failedAuthAttempts = 0;
                         Serial.println("BLE client authenticated successfully.");
                         sendAuthResponse(true, "Authenticated successfully", false);
@@ -4096,7 +4510,12 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
 
         // Handle password change request when already authenticated
         if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag && packet.payload.auth_request.is_change_password) {
-            if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
+            if (!blesession::isAcceptableNewPassword(packet.payload.auth_request.new_password)) {
+                // An empty password would return the node to first-connect
+                // state, where any phone in range can claim it.
+                Serial.println("Device password update rejected: new password is empty.");
+                sendAuthResponse(false, "New password cannot be empty", false);
+            } else if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
                 strncpy(nodePassword, packet.payload.auth_request.new_password, sizeof(nodePassword) - 1);
                 nodePassword[sizeof(nodePassword) - 1] = '\0';
                 saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole, telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
@@ -4109,14 +4528,26 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             return;
         }
 
-        // Firmware update stream (BLE-only, requires the authenticated session
-        // established above; never forwarded to LoRa)
-        if (packet.which_payload == aethermesh_MeshPacket_ota_control_tag) {
-            handleOtaControl(packet.payload.ota_control);
+        if (packet.which_payload == aethermesh_MeshPacket_position_privacy_tag) {
+            uint32_t policy = positionprivacy::record(
+                packet.payload.position_privacy.position_disabled,
+                packet.payload.position_privacy.precision_m);
+            if (policy == channelPrivacyRecord || savePositionPrivacy(policy)) {
+                channelPrivacyRecord = policy;
+                router.setPositionPrivacy(policy);
+                if (policy & positionprivacy::Disabled) hasInheritedLocation = false;
+            } else {
+                Serial.println("Could not persist channel privacy; reporting previous policy.");
+            }
+            // Reports persisted state, so BLE write acceptance is never mistaken
+            // for privacy confirmation. This does not reboot the node.
+            sendNodeConfigReportToPhone();
             return;
         }
-        if (packet.which_payload == aethermesh_MeshPacket_ota_data_tag) {
-            handleOtaData(packet.payload.ota_data);
+
+        // Firmware update stream (BLE-only, requires the authenticated session
+        // established above; never forwarded to LoRa)
+        if (dispatchPhoneOtaPacket(packet, packetGeneration)) {
             return;
         }
 
@@ -4180,7 +4611,7 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             nodeRegion = packet.payload.config.region;
             if (packet.payload.config.mesh_hop_limit > 0) {
                 meshHopLimit = packet.payload.config.mesh_hop_limit;
-                if (meshHopLimit > 8) meshHopLimit = 8;
+                if (meshHopLimit > meshmath::MAX_HOP_LIMIT) meshHopLimit = meshmath::MAX_HOP_LIMIT;
             }
             if (packet.payload.config.rebroadcast_txdelay_x100 > 0) {
                 rebroadcastTxdelayX100 = packet.payload.config.rebroadcast_txdelay_x100;
@@ -4212,12 +4643,21 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         // Intercept Telemetry packet from phone (used to share phone's GPS with the node)
         if (packet.which_payload == aethermesh_MeshPacket_telemetry_tag) {
             Serial.println("Received Telemetry packet from phone via BLE.");
-            if (!gps.location.isValid()) {
-                inheritedLat = packet.payload.telemetry.latitude;
-                inheritedLon = packet.payload.telemetry.longitude;
-                hasInheritedLocation = true;
-                lastInheritedTime = millis();
-                Serial.printf("Inherited GPS from Phone: Lat=%.6f, Lon=%.6f\n", inheritedLat, inheritedLon);
+            if (!positionprivacy::allowInheritedFix(channelPrivacyRecord)) {
+                hasInheritedLocation = false;
+                Serial.println("Ignoring phone GPS — channel privacy disables position sharing.");
+            } else if (!gps.location.isValid()) {
+                const float lat = packet.payload.telemetry.latitude;
+                const float lon = packet.payload.telemetry.longitude;
+                if (!isSaneFixedLatLon(lat, lon)) {
+                    Serial.println("Ignoring phone GPS — invalid or null-island fix.");
+                } else {
+                    inheritedLat = lat;
+                    inheritedLon = lon;
+                    hasInheritedLocation = true;
+                    lastInheritedTime = millis();
+                    Serial.printf("Inherited GPS from Phone: Lat=%.6f, Lon=%.6f\n", inheritedLat, inheritedLon);
+                }
             }
             return;
         }
@@ -4225,6 +4665,14 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         // Ensure correct sender ID
         packet.sender_id = localNodeId;
         packet.prev_hop_id = localNodeId;
+        // Apps hardcoded hop limits (4 for chat), so the node's configured
+        // mesh hop limit never applied to phone traffic. hop_start is stamped
+        // from this at send time; a stale value from the app is not trusted.
+        packet.hop_limit = meshmath::phoneOriginHopLimit(
+            packet.hop_limit, meshHopLimit,
+            packet.which_payload == aethermesh_MeshPacket_trace_route_tag ||
+                packet.which_payload == aethermesh_MeshPacket_route_discovery_tag);
+        packet.hop_start = 0;
 
         Serial.print("Sending phone packet over LoRa mesh. Recipient: 0x");
         Serial.println(packet.recipient_id, HEX);
@@ -4393,7 +4841,7 @@ bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t 
     gRemoteReplayDirty = true;
     persistRemoteReplayCache(knownSession);
     return true;
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     struct ReplayEntry {
         uint32_t senderId;
         uint64_t sessionId;
@@ -4458,6 +4906,32 @@ bool acceptRemoteControlCounter(uint32_t senderId, uint64_t sessionId, uint32_t 
 #endif
 }
 
+static constexpr uint32_t CONTROL_KEY_ITERATIONS_PER_PASS = 250;
+
+// Newest v3 remote config that arrived while the control key was still being
+// derived (just after boot or a password change). Verified once the key is ready.
+static aethermesh_MeshPacket gHeldRemoteConfig = aethermesh_MeshPacket_init_zero;
+static bool gHasHeldRemoteConfig = false;
+
+// The phone cannot verify a signature (it has no curve implementation and no
+// keys), so it is told what this node decided rather than being handed the raw
+// broadcast. The verdict travels only over the authenticated BLE link.
+void onIdentityVerified(uint32_t senderId, const aethermesh_NodeIdentity& identity,
+                        aethermesh_NodeIdentity_Trust trust) {
+    if (!bleMgr.isDeviceConnected() || !isBleClientAuthenticated()) return;
+    aethermesh_MeshPacket out = aethermesh_MeshPacket_init_zero;
+    out.sender_id = senderId;
+    out.recipient_id = localNodeId;
+    out.which_payload = aethermesh_MeshPacket_node_identity_tag;
+    out.payload.node_identity = identity;
+    out.payload.node_identity.trust = trust;
+    uint8_t buffer[256];
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (pb_encode(&stream, aethermesh_MeshPacket_fields, &out)) {
+        bleMgr.sendToPhone(buffer, stream.bytes_written);
+    }
+}
+
 void onReceivedConfig(const aethermesh_MeshPacket& packet) {
     uint32_t senderId = packet.sender_id;
     const aethermesh_NodeConfig& config = packet.payload.config;
@@ -4466,6 +4940,16 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
 
     if (config.report_only) {
         Serial.println("Ignoring report_only NodeConfig on LoRa apply path.");
+        return;
+    }
+
+    // Without the key a valid v3 packet would fail verification and count as an
+    // auth failure. Hold it instead; nothing is applied or answered until the
+    // key is ready. Replay and rate limits still run when it is processed.
+    if (packet.protocol_version >= 3 && packetauth::controlKeyPending()) {
+        gHeldRemoteConfig = packet;
+        gHasHeldRemoteConfig = true;
+        Serial.println("Remote config held: control key still deriving.");
         return;
     }
 
@@ -4613,7 +5097,8 @@ void onReceivedConfig(const aethermesh_MeshPacket& packet) {
         // Invalid ON request: leave previous fixed settings unchanged.
     }
     if ((mask & CFG_APPLY_HOP) && config.mesh_hop_limit > 0) {
-        meshHopLimit = config.mesh_hop_limit > 8 ? 8 : config.mesh_hop_limit;
+        meshHopLimit = config.mesh_hop_limit > meshmath::MAX_HOP_LIMIT ? meshmath::MAX_HOP_LIMIT
+                                                                     : config.mesh_hop_limit;
     }
     if ((mask & CFG_APPLY_TXDELAY) && config.rebroadcast_txdelay_x100 > 0) {
         rebroadcastTxdelayX100 = config.rebroadcast_txdelay_x100;
@@ -4764,11 +5249,14 @@ void setup() {
 
     // Load Settings from NVS
     loadSettings();
-    packetauth::setControlPassword(nodePassword);
+    loadPositionPrivacy();
+    // The 120k-iteration PBKDF2 runs in slices from loop() (~27 s on nRF52840,
+    // ~7 s on ESP32-S3) instead of holding up radio and BLE bring-up.
+    packetauth::beginControlPassword(nodePassword);
     packetauth::setRefuseLegacyControl(refuseLegacyRemoteControl);
-    Serial.printf("Control auth: refuse_legacy=%s key_cached=%s\n",
+    Serial.printf("Control auth: refuse_legacy=%s key=%s\n",
                   refuseLegacyRemoteControl ? "yes" : "no",
-                  (nodePassword[0] != '\0') ? "yes" : "no");
+                  packetauth::controlKeyPending() ? "deriving" : "none");
 #ifdef ESP32
     loadRemoteReplayCache();
 #endif
@@ -4779,11 +5267,22 @@ void setup() {
     pinMode(LED_BLUE, OUTPUT);
     digitalWrite(LED_GREEN, LOW);
     digitalWrite(LED_BLUE, LOW);
+#elif defined(SEEED_T1000_E)
+    pinMode(PIN_LED1, OUTPUT);
+    digitalWrite(PIN_LED1, !LED_STATE_ON);
+    pinMode(BUTTON_PIN, INPUT); // pulldown in hardware / sense
+    pinMode(EXT_CHRG_DETECT, INPUT_PULLUP);
 #endif
     
     // 1. Unique Hardware Identifier
     localNodeId = getHardwareNodeId();
     randomSeed(localNodeId);
+
+    // Identity keys before anything can announce or seal: derived from a stored
+    // 32-byte seed, generated once on first boot and never transmitted.
+    if (!nodeidentity::begin(localNodeId)) {
+        Serial.println("Identity unavailable — this node will not announce keys.");
+    }
     
     // 2. Initialize display if Heltec V4, V3, or LILYGO T-Deck — show the boot splash while the
     // radio/BLE/GPS bring-up below runs
@@ -4914,11 +5413,13 @@ void setup() {
     
     // 5. Initialize Mesh Router
     router.init(localNodeId);
+    router.setPositionPrivacy(channelPrivacyRecord);
     router.setNodeRole(nodeRole);
     router.setDefaultHopLimit((uint8_t)meshHopLimit);
     router.setRebroadcastTxdelayX100(rebroadcastTxdelayX100);
     router.onReceivedTextMessage(onReceivedTextMessage);
     router.onReceivedConfig(onReceivedConfig);
+    router.onIdentityVerified(onIdentityVerified);
     router.onDeliveryStatus(sendDeliveryStatusToPhone);
     
     // 6. Initialize BLE Manager with custom name if configured
@@ -4951,6 +5452,18 @@ void setup() {
 }
 
 void loop() {
+    // Advance the control-key PBKDF2 a slice per pass (~15 ms ESP32-S3, ~55 ms
+    // nRF52840). Paused during OTA so flash writes keep their throughput.
+    if (!otaActive && packetauth::controlKeyPending() &&
+        packetauth::serviceControlKey(CONTROL_KEY_ITERATIONS_PER_PASS)) {
+        Serial.printf("Control key ready (%lu ms since boot).\n", (unsigned long)millis());
+        if (gHasHeldRemoteConfig) {
+            aethermesh_MeshPacket held = gHeldRemoteConfig;
+            gHasHeldRemoteConfig = false;
+            onReceivedConfig(held);
+        }
+    }
+
 #if defined(RAK4631) || defined(RAK3401_1W)
     // Auto-baud + pick ONE feed path. Dual UART+I2C into TinyGPS corrupts sentences.
     if (gpsHardwareActive() && hasOnboardGps && gpsBaudProbePhase < 2 && gpsRailPowered) {
@@ -4980,8 +5493,13 @@ void loop() {
     }
 #endif
 
-    // Check if onboard GPS is present (run once after GPS_DETECT_TIMEOUT_MS)
-    if (!gpsChecked && millis() > GPS_DETECT_TIMEOUT_MS) {
+    // Check if onboard GPS is present, once it has been powered for
+    // GPS_DETECT_TIMEOUT_MS. Timing this from boot misfired once setup() began
+    // spending >15 s on control-key derivation: the first loop pass declared the
+    // GPS absent before it was switched on, and duty-cycle mode then never
+    // powered it again (hasOnboardGps gates the duty wake).
+    if (!gpsChecked && gpsRailPowered && gpsHardwareActive() &&
+        (int32_t)(millis() - gpsPoweredOnAtMs) > (int32_t)GPS_DETECT_TIMEOUT_MS) {
         gpsChecked = true;
 #if defined(RAK4631) || defined(RAK3401_1W)
         if (uartGpsBytes >= 16) gpsIfaceMask |= 0x01;
@@ -5058,6 +5576,8 @@ void loop() {
         if (!touchGestureHandled && displayIsOn && gestureMs < 1800 && abs(primary) > 45) {
             if (hasNewMsgPopup) {
                 hasNewMsgPopup = false;
+            } else if (!regionConfigured) {
+                applyOnDeviceAction(ondevice::ActToggleRegion);
             } else if (primary < 0) {
                 oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
             } else {
@@ -5066,8 +5586,33 @@ void loop() {
             touchGestureHandled = true;
             lastDisplayActivityTime = millis();
             updateDisplay();
+        } else if (!touchGestureHandled && displayIsOn && !regionConfigured &&
+                   gestureMs >= 800) {
+            applyOnDeviceAction(ondevice::ActConfirmRegion);
+            touchGestureHandled = true;
+            lastDisplayActivityTime = millis();
+            updateDisplay();
         }
     } else if (!currentTouchState && lastTouchState) {
+        uint32_t heldMs = millis() - touchStartMs;
+        int16_t dx = (int16_t)touchLastX - (int16_t)touchStartX;
+        int16_t dy = (int16_t)touchLastY - (int16_t)touchStartY;
+        if (!touchGestureHandled && abs(dx) <= 45 && abs(dy) <= 45 && heldMs < 800) {
+            if (hasNewMsgPopup) {
+                hasNewMsgPopup = false;
+            } else if (!regionConfigured) {
+                applyOnDeviceAction(ondevice::ActToggleRegion);
+            } else if (oledPage == ondevice::PageGps) {
+                applyOnDeviceAction(ondevice::ActCycleGpsMode);
+            } else if (oledPage == ondevice::PageSystem) {
+                ondevice::Action act = (gpsMode == ondevice::GpsDuty)
+                                           ? ondevice::ActCycleDuty
+                                           : ondevice::ActCycleGpsMode;
+                applyOnDeviceAction(act);
+            }
+            lastDisplayActivityTime = millis();
+            updateDisplay();
+        }
         touchGestureHandled = false;
     }
     lastTouchState = currentTouchState;
@@ -5075,37 +5620,14 @@ void loop() {
 #if defined(USER_BUTTON_PIN) && USER_BUTTON_PIN >= 0
 #if defined(LILYGO_T_ECHO)
     static bool lastButtonState = LOW;
-#else
-    static bool lastButtonState = HIGH;
-#endif
     bool currentButtonState = digitalRead(USER_BUTTON_PIN);
-#if defined(LILYGO_T_ECHO)
     bool buttonPressed = (currentButtonState == HIGH && lastButtonState == LOW);
-#else
-    bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
-#endif
     if (buttonPressed) {
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(AETHER_COLOR_UI) || defined(RAK4631) || defined(RAK3401_1W)
-        // Button behavior: dismiss a visible message popup first; otherwise
-        // advance the page carousel while the screen is on. Pressing while the
-        // screen is off just wakes it (updateDisplay lands on HOME).
-        if (hasNewMsgPopup) {
-            hasNewMsgPopup = false;
-        } else if (displayIsOn) {
-            oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
-        }
-#endif
-#if defined(LILYGO_T_ECHO)
-        // On the T-Echo the button toggles the e-paper frontlight and forces an
-        // immediate screen refresh (e-paper otherwise only refreshes on a slow
-        // cadence, which reads as "the screen isn't updating").
         echoBacklightOn = !echoBacklightOn;
         digitalWrite(EINK_BL, echoBacklightOn ? HIGH : LOW);
         echoNeedsRefresh = true;
-#endif
         lastDisplayActivityTime = millis();
         if (nodeRole != 2) {
-            // Predictable leave-behind wake: press → advertise ~5 min (or extend).
             wakeBleAdvertisingWindow("button");
         } else {
             Serial.println("Button: Role 2 (low-power repeater) keeps BLE off.");
@@ -5113,6 +5635,49 @@ void loop() {
         updateDisplay();
     }
     lastButtonState = currentButtonState;
+#else
+    static bool lastButtonState = HIGH;
+    static uint32_t buttonDownAt = 0;
+    static bool buttonLongHandled = false;
+    static bool buttonDownWhileOn = false;
+    bool currentButtonState = digitalRead(USER_BUTTON_PIN);
+    bool pressed = (currentButtonState == LOW && lastButtonState == HIGH);
+    bool released = (currentButtonState == HIGH && lastButtonState == LOW);
+    if (pressed) {
+        buttonDownAt = millis();
+        buttonLongHandled = false;
+        buttonDownWhileOn = displayIsOn;
+        lastDisplayActivityTime = millis();
+        if (nodeRole != 2) {
+            wakeBleAdvertisingWindow("button");
+        } else {
+            Serial.println("Button: Role 2 (low-power repeater) keeps BLE off.");
+        }
+    } else if (currentButtonState == LOW && buttonDownAt != 0 && !buttonLongHandled &&
+               buttonDownWhileOn && (millis() - buttonDownAt) >= 800) {
+        buttonLongHandled = true;
+        ondevice::Action act = ondevice::longPressAction(regionConfigured, oledPage, gpsMode);
+        if (applyOnDeviceAction(act)) {
+            updateDisplay();
+        }
+    }
+    if (released) {
+        if (!buttonLongHandled) {
+            if (hasNewMsgPopup) {
+                hasNewMsgPopup = false;
+            } else if (displayIsOn) {
+                ondevice::Action act = ondevice::shortPressAction(regionConfigured);
+                if (!applyOnDeviceAction(act)) {
+                    oledPage = (oledPage + 1) % OLED_PAGE_COUNT;
+                }
+            }
+            updateDisplay();
+        }
+        buttonDownAt = 0;
+        buttonLongHandled = false;
+    }
+    lastButtonState = currentButtonState;
+#endif
 #endif
 
     static uint32_t lastDisplayRefresh = 0;
@@ -5188,27 +5753,25 @@ void loop() {
             echoNeedsRefresh = true;
             Serial.println("Func Click 1x -> Toggle Backlight");
         } else if (funcBtnClickCount == 2) {
-            // 2 Clicks: Send Mesh range-test PING
-            Serial.println("Func Click 2x -> Send Ping Broadcast");
-            router.sendText(0xFFFFFFFF, "PING");
-            echoNeedsRefresh = true;
-        } else if (funcBtnClickCount == 3) {
-            // 3 Clicks: Cycle GPS mode On -> Duty -> Off
-            if (gpsMode == 0) {
-                gpsMode = 2;
-                gpsDutyResetSchedule(2000);
-                Serial.printf("Func Click 3x -> GPS DUTY every %us\n",
-                              (unsigned)gpsDutyIntervalSecs);
-            } else if (gpsMode == 2) {
-                gpsMode = 1;
-                setOnboardGpsPowered(false);
-                Serial.println("Func Click 3x -> GPS OFF");
+            if (!regionConfigured) {
+                applyOnDeviceAction(ondevice::ActToggleRegion);
+                echoNeedsRefresh = true;
+                Serial.printf("Func Click 2x -> Region wizard %s\n",
+                              ondevice::regionLabel(nodeRegion));
             } else {
-                gpsMode = 0;
-                setOnboardGpsPowered(true);
-                Serial.println("Func Click 3x -> GPS ON");
+                Serial.println("Func Click 2x -> Send Ping Broadcast");
+                router.sendText(0xFFFFFFFF, "PING");
+                echoNeedsRefresh = true;
             }
-            echoNeedsRefresh = true;
+        } else if (funcBtnClickCount == 3) {
+            if (!regionConfigured) {
+                applyOnDeviceAction(ondevice::ActConfirmRegion);
+                echoNeedsRefresh = true;
+            } else {
+                applyOnDeviceAction(ondevice::ActCycleGpsMode);
+                echoNeedsRefresh = true;
+                Serial.printf("Func Click 3x -> GPS %s\n", ondevice::gpsModeLabel(gpsMode));
+            }
         } else if (funcBtnClickCount >= 4) {
             // 4+ Clicks: Force full e-paper screen refresh
             echoNeedsRefresh = true;
@@ -5259,42 +5822,49 @@ void loop() {
         // Drain phone→node BLE packets while advertising OR connected.
         // Gating on isAdvertising alone drops settings applies after connect
         // when advertising was stopped for power-save.
-        if (bleMgr.isAdvertising || bleMgr.isDeviceConnected()) {
-            bleMgr.loop();
-        }
-
-        // Check BLE connection state transitions to reset/manage authentication.
-        // Challenge is deferred (non-blocking): a delay() here stalled radio + BLE
-        // drain and often fired before the phone enabled CCCD, so the challenge
-        // was lost and post-reboot auto-auth raced a half-ready link.
-        static bool lastBleConnected = false;
+        // Detect connection changes by generation, not by sampling the connected
+        // flag: a disconnect + reconnect inside one loop pass must still end the
+        // old session (BleSession.h). Authentication needs no reset here - it is
+        // only valid for the generation it was granted on. This runs before the
+        // RX drain so an orphaned OTA is aborted before the new phone's packets
+        // are handled.
+        // The auth challenge is deferred (non-blocking): a delay() here stalled
+        // radio + BLE drain and often fired before the phone enabled CCCD, so the
+        // challenge was lost and post-reboot auto-auth raced a half-ready link.
         static uint32_t pendingAuthChallengeAtMs = 0;
+        const uint32_t liveBleGeneration = bleMgr.connectionGeneration();
         bool currentBleConnected = bleMgr.isDeviceConnected();
-        if (currentBleConnected != lastBleConnected) {
-            lastBleConnected = currentBleConnected;
+        if (bleSession.consumeGenerationChange(liveBleGeneration)) {
+            // Firmware updates belong to the connection that began them; the app
+            // restarts from BEGIN after reconnecting.
+            if (bleSession.otaOrphaned(otaActive, liveBleGeneration)) {
+                otaAbort("BLE connection changed");
+            }
+            // Range-test quiet mode is BLE-session scoped — never leave a
+            // remote node soft-stalled after the phone walks away.
+            if (router.isQuietMode()) {
+                router.setQuietMode(false);
+                Serial.println("Cleared range-test quiet mode (BLE connection changed).");
+            }
             if (currentBleConnected) {
-                isBleClientAuthenticated = false;
                 pendingAuthChallengeAtMs = millis() + 400;
                 Serial.println("BLE client connected. Awaiting auth...");
             } else {
-                isBleClientAuthenticated = false;
                 pendingAuthChallengeAtMs = 0;
                 Serial.println("BLE client disconnected.");
-                // Range-test quiet mode is BLE-session scoped — never leave a
-                // remote node soft-stalled after the phone walks away.
-                if (router.isQuietMode()) {
-                    router.setQuietMode(false);
-                    Serial.println("Cleared range-test quiet mode (BLE disconnect).");
-                }
                 // Re-open the advertise window after disconnect (Battery Saver /
                 // leave-behind). Without this the node becomes unscannable.
                 wakeBleAdvertisingWindow("disconnect");
             }
         }
+
+        if (bleMgr.isAdvertising || bleMgr.isDeviceConnected()) {
+            bleMgr.loop();
+        }
         if (pendingAuthChallengeAtMs != 0 &&
             (int32_t)(millis() - pendingAuthChallengeAtMs) >= 0) {
             pendingAuthChallengeAtMs = 0;
-            if (bleMgr.isDeviceConnected() && !isBleClientAuthenticated) {
+            if (bleMgr.isDeviceConnected() && !isBleClientAuthenticated()) {
                 sendAuthResponse(false, "Authentication required", strlen(nodePassword) == 0);
             }
         }
@@ -5357,7 +5927,7 @@ void loop() {
     serviceLowVoltageSafeMode();
 
     // Read and parse NMEA while the module is powered (always-on or duty acquire).
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO) || defined(SEEED_T1000_E)
     if (gpsHardwareActive() && hasOnboardGps) {
 #if defined(RAK4631) || defined(RAK3401_1W)
         // During baud probe, count UART bytes; after probe, only feed the chosen iface.
@@ -5463,6 +6033,12 @@ void loop() {
         if (lowVoltageCutoff && effectiveTelemetrySec < 900) {
             effectiveTelemetrySec = 900;
         }
+        // Airtime budget: never beacon faster than the channel can afford at
+        // this SF (SF11/12 stretch; SF7-10 keep the configured interval).
+        effectiveTelemetrySec = meshmath::telemetryIntervalSecFor(
+            (uint8_t)loraSF, effectiveTelemetrySec);
+        // Route aging follows the beacon cadence we actually use.
+        router.setBeaconIntervalSec(effectiveTelemetrySec);
         serviceLowVoltageSafeMode();
         if (lowVoltageSafeMode || lowVoltageCutoff) {
             Serial.printf("Power state: LV_SAFE=%d LV_CUTOFF=%d V=%.3f TX_blocked=%d\n",
@@ -5471,8 +6047,43 @@ void loop() {
                           batteryVoltage,
                           radioMgr.isTxBlocked() ? 1 : 0);
         }
-        if (!otaActive && millis() - lastTelemetry > (effectiveTelemetrySec * 1000L)) {
+        // First beacon after boot ignores the stretched interval: neighbors must
+        // learn we exist in seconds, not in the minutes an SF12 cadence implies.
+        // Node-id offset keeps nodes powered up together from colliding.
+        static bool firstBeaconSent = false;
+        uint32_t telemetryDueMs = effectiveTelemetrySec * 1000UL;
+        if (!firstBeaconSent) {
+            telemetryDueMs = 15000UL + (localNodeId % 9000UL);
+            if (telemetryDueMs > effectiveTelemetrySec * 1000UL) {
+                telemetryDueMs = effectiveTelemetrySec * 1000UL;
+            }
+        }
+        // Identity announcements are big and almost never change, so they run on
+        // their own far slower timer than beacons. The first one goes out shortly
+        // after the first beacon so a rebooted node can be sealed to again
+        // without waiting out the full interval.
+        static uint32_t lastIdentityAnnounce = 0;
+        static bool firstAnnounceSent = false;
+        if (!otaActive && nodeidentity::isReady()) {
+            uint32_t announceDueMs =
+                identity::announceIntervalSecFor((uint8_t)loraSF, effectiveTelemetrySec) * 1000UL;
+            if (!firstAnnounceSent) {
+                announceDueMs = 40000UL + (localNodeId % 20000UL);
+            }
+            if (millis() - lastIdentityAnnounce > announceDueMs) {
+                lastIdentityAnnounce = millis();
+                firstAnnounceSent = true;
+                router.sendIdentityAnnouncement();
+            } else if (router.serviceIdentityAnnounce()) {
+                // Answered a node we had not met; that counts as this interval's.
+                lastIdentityAnnounce = millis();
+                firstAnnounceSent = true;
+            }
+        }
+
+        if (!otaActive && millis() - lastTelemetry > telemetryDueMs) {
             lastTelemetry = millis();
+            firstBeaconSent = true;
             
             // No fix -> broadcast 0,0 so the app plots no marker (it skips lat/lon == 0),
             // instead of a misleading fallback position.
@@ -5511,16 +6122,15 @@ void loop() {
 
             // 1. Broadcast telemetry over LoRa Mesh — position privacy-blurred
             // when the user configured a precision radius (0 = precise)
-            float txLat = lat;
-            float txLon = lon;
-            meshmath::blurPosition(lat, lon, positionPrecisionM, txLat, txLon);
             // Quiet mode (phone range test): keep BLE loopback so the app still
             // sees local GPS, but skip LoRa telemetry broadcasts that contend
             // with direct PING/PONG airtime. LV cutoff also skips LoRa telem
             // (RadioManager refuses TX); BLE loopback below still refreshes the
             // phone so Low-V safe is visible from battery_voltage.
             if (!router.isQuietMode() && !lowVoltageCutoff) {
-                router.sendTelemetry(0xFFFFFFFF, battery, txLat, txLon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM, loraSF, nodeRegion);
+                aethermesh_Telemetry gpsFields = aethermesh_Telemetry_init_zero;
+                fillGpsTelemetry(gpsFields);
+                router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM, loraSF, nodeRegion, &gpsFields);
             } else if (lowVoltageCutoff) {
                 Serial.println("LV_CUTOFF: skipping LoRa telemetry TX (BLE loopback may still update phone).");
             } else {
@@ -5528,7 +6138,7 @@ void loop() {
             }
             
             // 2. Loopback telemetry to BLE connected phone so the app can plot our own position
-            if (bleMgr.isDeviceConnected() && isBleClientAuthenticated) {
+            if (bleMgr.isDeviceConnected() && isBleClientAuthenticated()) {
                 aethermesh_MeshPacket localTelemetryPacket = aethermesh_MeshPacket_init_zero;
                 localTelemetryPacket.sender_id = localNodeId;
                 localTelemetryPacket.recipient_id = 0xFFFFFFFF; // Broadcast representation
@@ -5567,6 +6177,8 @@ void loop() {
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "CrowPanel 3.5");
 #elif defined(LILYGO_T_ECHO)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "T-Echo");
+#elif defined(SEEED_T1000_E)
+                strcpy(localTelemetryPacket.payload.telemetry.node_model, "T1000-E");
 #elif defined(RAK19026)
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "RAK19026");
 #elif defined(RAK4631)
@@ -5576,6 +6188,7 @@ void loop() {
 #else
                 strcpy(localTelemetryPacket.payload.telemetry.node_model, "Generic Node");
 #endif
+                fillGpsTelemetry(localTelemetryPacket.payload.telemetry);
                 
                 uint8_t bleBuffer[256];
                 pb_ostream_t stream = pb_ostream_from_buffer(bleBuffer, sizeof(bleBuffer));
