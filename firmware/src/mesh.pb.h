@@ -30,6 +30,36 @@ typedef enum _aethermesh_OtaStatus_State {
     aethermesh_OtaStatus_State_ERROR = 4 /* aborted; message says why */
 } aethermesh_OtaStatus_State;
 
+/* What the local node decided about this announcement. Set only on the copy
+ handed to the companion app over the authenticated BLE link, never on air:
+ the phone cannot check a signature itself, so it trusts its own radio's
+ verdict rather than re-deriving one from an unverified broadcast. */
+typedef enum _aethermesh_NodeIdentity_Trust {
+    aethermesh_NodeIdentity_Trust_TRUST_UNSPECIFIED = 0,
+    aethermesh_NodeIdentity_Trust_FIRST_USE = 1, /* no key was on file; this one is now the node's identity */
+    aethermesh_NodeIdentity_Trust_KNOWN = 2, /* matches what we already trust */
+    aethermesh_NodeIdentity_Trust_ROTATED = 3, /* key replaced with a properly signed newer epoch */
+    aethermesh_NodeIdentity_Trust_CONFLICT = 4 /* a different key claimed a node id we already know */
+} aethermesh_NodeIdentity_Trust;
+
+/* Onboard GNSS snapshot. Lets receivers tell a live fix from a stale or
+ phone-borrowed position. All zero from firmware that predates these fields. */
+typedef enum _aethermesh_Telemetry_GpsState {
+    aethermesh_Telemetry_GpsState_GPS_STATE_UNKNOWN = 0, /* older firmware; infer nothing */
+    aethermesh_Telemetry_GpsState_GPS_STATE_ABSENT = 1, /* no module detected */
+    aethermesh_Telemetry_GpsState_GPS_STATE_OFF = 2, /* disabled by config or low-voltage safe mode */
+    aethermesh_Telemetry_GpsState_GPS_STATE_SLEEPING = 3, /* duty-cycle: powered down between fixes */
+    aethermesh_Telemetry_GpsState_GPS_STATE_SEARCHING = 4, /* powered, no current fix */
+    aethermesh_Telemetry_GpsState_GPS_STATE_FIX = 5 /* fix updated within the last few seconds */
+} aethermesh_Telemetry_GpsState;
+
+typedef enum _aethermesh_Telemetry_PositionSource {
+    aethermesh_Telemetry_PositionSource_POSITION_SOURCE_NONE = 0, /* latitude/longitude are 0 or unknown */
+    aethermesh_Telemetry_PositionSource_POSITION_SOURCE_GPS = 1, /* onboard GNSS (may be old; see gps_fix_age_secs) */
+    aethermesh_Telemetry_PositionSource_POSITION_SOURCE_PHONE = 2, /* borrowed from the connected phone */
+    aethermesh_Telemetry_PositionSource_POSITION_SOURCE_FIXED = 3 /* configured fixed position */
+} aethermesh_Telemetry_PositionSource;
+
 typedef enum _aethermesh_TraceRoute_Type {
     aethermesh_TraceRoute_Type_REQUEST = 0,
     aethermesh_TraceRoute_Type_RESPONSE = 1
@@ -130,12 +160,39 @@ typedef struct _aethermesh_OtaStatus {
     char message[40];
 } aethermesh_OtaStatus;
 
+/* Persistent local radio privacy floor, independent of the chosen GPS source.
+ Sent only after a local config report advertises support. */
+typedef struct _aethermesh_PositionPrivacy {
+    bool position_disabled;
+    uint32_t precision_m;
+} aethermesh_PositionPrivacy;
+
+typedef PB_BYTES_ARRAY_T(192) aethermesh_TextMessage_sealed_t;
 /* Standard chat text message */
 typedef struct _aethermesh_TextMessage {
     char content[168];
     char channel[32]; /* Target channel name (default: "General") */
     bool is_encrypted; /* True if content is encrypted */
+    /* Sealed payload for a direct message encrypted to the recipient's X25519
+ key. When set, `content` is empty and `is_encrypted` is true. Raw bytes,
+ not base64: at SF12 every byte is ~30 ms of airtime. */
+    aethermesh_TextMessage_sealed_t sealed;
 } aethermesh_TextMessage;
+
+typedef PB_BYTES_ARRAY_T(32) aethermesh_NodeIdentity_x25519_public_t;
+typedef PB_BYTES_ARRAY_T(32) aethermesh_NodeIdentity_ed25519_public_t;
+typedef PB_BYTES_ARRAY_T(64) aethermesh_NodeIdentity_signature_t;
+/* Long-lived identity keys a node announces to the mesh. Hearers store the
+ first key they see for a node (trust on first use) and surface a later change
+ instead of accepting it silently, so a node that starts announcing someone
+ else's identity cannot quietly become them. */
+typedef struct _aethermesh_NodeIdentity {
+    aethermesh_NodeIdentity_x25519_public_t x25519_public; /* 32 bytes, key agreement for direct messages */
+    aethermesh_NodeIdentity_ed25519_public_t ed25519_public; /* 32 bytes, verifies this announcement */
+    uint32_t key_epoch; /* Increments whenever the node regenerates its keys */
+    aethermesh_NodeIdentity_signature_t signature; /* 64 bytes, Ed25519 over the canonical body */
+    aethermesh_NodeIdentity_Trust trust;
+} aethermesh_NodeIdentity;
 
 /* Telemetry information periodically broadcasted by nodes */
 typedef struct _aethermesh_Telemetry {
@@ -155,8 +212,16 @@ typedef struct _aethermesh_Telemetry {
     uint32_t lora_sf; /* Current spreading factor (7-12). Receivers use this to */
     /* detect radio-profile mismatches across the mesh. */
     uint32_t region; /* 0 = US915, 1 = EU868 (same enum as NodeConfig.region). */
+    aethermesh_Telemetry_GpsState gps_state;
+    aethermesh_Telemetry_PositionSource position_source;
+    uint32_t gps_satellites_used; /* satellites in the current/last fix solution */
+    uint32_t gps_satellites_in_view; /* satellites the module currently tracks (all constellations) */
+    uint32_t gps_hdop_x10; /* horizontal dilution of precision x10; 0 = unknown */
+    uint32_t gps_fix_age_secs; /* seconds since the last onboard fix; 0 = none */
 } aethermesh_Telemetry;
 
+typedef PB_BYTES_ARRAY_T(80) aethermesh_TraceRoute_forward_hops_t;
+typedef PB_BYTES_ARRAY_T(80) aethermesh_TraceRoute_return_hops_t;
 /* On-air route observation. Each receiver appends itself and the quality of
  the link on which it received the packet. The target turns REQUEST into
  RESPONSE, preserving the outbound path and collecting the return path. */
@@ -179,6 +244,14 @@ typedef struct _aethermesh_TraceRoute {
     int32_t return_snr_quarter_db[8];
     bool forward_truncated;
     bool return_truncated;
+    /* Compact paths for extended-range traces (hop_start > 8), which cannot fit
+ the repeated fields above in one LoRa frame. 5 bytes per hop: node id
+ (uint32 little-endian), SNR in quarter dB (int8). No per-hop RSSI: with it a
+ full 16+16 hop response encodes to 280 bytes, past the 255-byte LoRa limit.
+ Legacy-range traces keep the repeated fields so older relays still append
+ in order. */
+    aethermesh_TraceRoute_forward_hops_t forward_hops;
+    aethermesh_TraceRoute_return_hops_t return_hops;
 } aethermesh_TraceRoute;
 
 /* Path discovery for unicast routing */
@@ -253,6 +326,12 @@ typedef struct _aethermesh_NodeConfig {
  proto3 zero-default means "on" for configs that omit it.
  Seconds between GPS wake attempts when gps_mode == 2. 0 = firmware default (900). */
     uint32_t gps_duty_interval_secs;
+    /* Local BLE report capability and the persisted channel privacy floor. */
+    bool position_privacy_supported;
+    bool channel_position_disabled;
+    uint32_t channel_precision_m;
+    /* Report only: highest mesh_hop_limit this firmware accepts. 0 = legacy (8). */
+    uint32_t max_hop_limit;
 } aethermesh_NodeConfig;
 
 /* Outcome of a remote NodeConfig apply/request. Sent over LoRa back to the
@@ -303,6 +382,8 @@ typedef struct _aethermesh_MeshPacket {
         aethermesh_MeshDiagnostics diagnostics;
         aethermesh_RangeTestControl range_test_control;
         aethermesh_ConfigResult config_result;
+        aethermesh_PositionPrivacy position_privacy; /* authenticated BLE only, never LoRa */
+        aethermesh_NodeIdentity node_identity;
     } payload;
     uint32_t prev_hop_id; /* The node that just transmitted/relayed this packet */
     float rx_rssi; /* Received Signal Strength Indicator (LoRa last hop) */
@@ -315,6 +396,10 @@ typedef struct _aethermesh_MeshPacket {
     /* Intended next relay for unicast. 0 = flood/legacy (any Router may forward).
  When set, only that node should rebroadcast; others suppress (Phase 1 smart routing). */
     uint32_t next_hop_id;
+    /* hop_limit the originator used (1–16). Relays never change it, so
+ hop_start - hop_limit + 1 is how many transmissions the packet took, which
+ sizes replies. 0 = legacy sender (firmware before extended range, max 8). */
+    uint32_t hop_start;
 } aethermesh_MeshPacket;
 
 
@@ -334,6 +419,18 @@ extern "C" {
 #define _aethermesh_OtaStatus_State_MIN aethermesh_OtaStatus_State_IDLE
 #define _aethermesh_OtaStatus_State_MAX aethermesh_OtaStatus_State_ERROR
 #define _aethermesh_OtaStatus_State_ARRAYSIZE ((aethermesh_OtaStatus_State)(aethermesh_OtaStatus_State_ERROR+1))
+
+#define _aethermesh_NodeIdentity_Trust_MIN aethermesh_NodeIdentity_Trust_TRUST_UNSPECIFIED
+#define _aethermesh_NodeIdentity_Trust_MAX aethermesh_NodeIdentity_Trust_CONFLICT
+#define _aethermesh_NodeIdentity_Trust_ARRAYSIZE ((aethermesh_NodeIdentity_Trust)(aethermesh_NodeIdentity_Trust_CONFLICT+1))
+
+#define _aethermesh_Telemetry_GpsState_MIN aethermesh_Telemetry_GpsState_GPS_STATE_UNKNOWN
+#define _aethermesh_Telemetry_GpsState_MAX aethermesh_Telemetry_GpsState_GPS_STATE_FIX
+#define _aethermesh_Telemetry_GpsState_ARRAYSIZE ((aethermesh_Telemetry_GpsState)(aethermesh_Telemetry_GpsState_GPS_STATE_FIX+1))
+
+#define _aethermesh_Telemetry_PositionSource_MIN aethermesh_Telemetry_PositionSource_POSITION_SOURCE_NONE
+#define _aethermesh_Telemetry_PositionSource_MAX aethermesh_Telemetry_PositionSource_POSITION_SOURCE_FIXED
+#define _aethermesh_Telemetry_PositionSource_ARRAYSIZE ((aethermesh_Telemetry_PositionSource)(aethermesh_Telemetry_PositionSource_POSITION_SOURCE_FIXED+1))
 
 #define _aethermesh_TraceRoute_Type_MIN aethermesh_TraceRoute_Type_REQUEST
 #define _aethermesh_TraceRoute_Type_MAX aethermesh_TraceRoute_Type_RESPONSE
@@ -366,6 +463,11 @@ extern "C" {
 
 
 
+#define aethermesh_NodeIdentity_trust_ENUMTYPE aethermesh_NodeIdentity_Trust
+
+#define aethermesh_Telemetry_gps_state_ENUMTYPE aethermesh_Telemetry_GpsState
+#define aethermesh_Telemetry_position_source_ENUMTYPE aethermesh_Telemetry_PositionSource
+
 #define aethermesh_TraceRoute_type_ENUMTYPE aethermesh_TraceRoute_Type
 
 #define aethermesh_RouteDiscovery_type_ENUMTYPE aethermesh_RouteDiscovery_Type
@@ -381,35 +483,39 @@ extern "C" {
 
 
 /* Initializer values for message structs */
-#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0}
+#define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, 0}
 #define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_default {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_default        {_aethermesh_OtaStatus_State_MIN, 0, ""}
-#define aethermesh_TextMessage_init_default      {"", "", 0}
-#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0}
-#define aethermesh_TraceRoute_init_default       {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
+#define aethermesh_PositionPrivacy_init_default  {0, 0}
+#define aethermesh_TextMessage_init_default      {"", "", 0, {0, {0}}}
+#define aethermesh_NodeIdentity_init_default     {{0, {0}}, {0, {0}}, 0, {0, {0}}, _aethermesh_NodeIdentity_Trust_MIN}
+#define aethermesh_Telemetry_init_default        {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0, _aethermesh_Telemetry_GpsState_MIN, _aethermesh_Telemetry_PositionSource_MIN, 0, 0, 0, 0}
+#define aethermesh_TraceRoute_init_default       {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, {0, {0}}, {0, {0}}}
 #define aethermesh_RouteDiscovery_init_default   {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_default              {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
-#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
+#define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0}
 #define aethermesh_ConfigResult_init_default     {_aethermesh_ConfigResult_Status_MIN, 0, ""}
 #define aethermesh_AuthRequest_init_default      {"", 0, ""}
 #define aethermesh_AuthResponse_init_default     {0, "", 0}
-#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0}
+#define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, 0}
 #define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_zero    {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
 #define aethermesh_OtaStatus_init_zero           {_aethermesh_OtaStatus_State_MIN, 0, ""}
-#define aethermesh_TextMessage_init_zero         {"", "", 0}
-#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0}
-#define aethermesh_TraceRoute_init_zero          {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0}
+#define aethermesh_PositionPrivacy_init_zero     {0, 0}
+#define aethermesh_TextMessage_init_zero         {"", "", 0, {0, {0}}}
+#define aethermesh_NodeIdentity_init_zero        {{0, {0}}, {0, {0}}, 0, {0, {0}}, _aethermesh_NodeIdentity_Trust_MIN}
+#define aethermesh_Telemetry_init_zero           {0, 0, 0, 0, "", 0, "", 0, 0, 0, "", 0, 0, _aethermesh_Telemetry_GpsState_MIN, _aethermesh_Telemetry_PositionSource_MIN, 0, 0, 0, 0}
+#define aethermesh_TraceRoute_init_zero          {_aethermesh_TraceRoute_Type_MIN, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, {0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, {0, {0}}, {0, {0}}}
 #define aethermesh_RouteDiscovery_init_zero      {_aethermesh_RouteDiscovery_Type_MIN, 0, 0}
 #define aethermesh_Ack_init_zero                 {0, 0, 0}
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
-#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0}
+#define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0}
 #define aethermesh_ConfigResult_init_zero        {_aethermesh_ConfigResult_Status_MIN, 0, ""}
 #define aethermesh_AuthRequest_init_zero         {"", 0, ""}
 #define aethermesh_AuthResponse_init_zero        {0, "", 0}
@@ -452,9 +558,17 @@ extern "C" {
 #define aethermesh_OtaStatus_state_tag           1
 #define aethermesh_OtaStatus_next_offset_tag     2
 #define aethermesh_OtaStatus_message_tag         3
+#define aethermesh_PositionPrivacy_position_disabled_tag 1
+#define aethermesh_PositionPrivacy_precision_m_tag 2
 #define aethermesh_TextMessage_content_tag       1
 #define aethermesh_TextMessage_channel_tag       2
 #define aethermesh_TextMessage_is_encrypted_tag  3
+#define aethermesh_TextMessage_sealed_tag        4
+#define aethermesh_NodeIdentity_x25519_public_tag 1
+#define aethermesh_NodeIdentity_ed25519_public_tag 2
+#define aethermesh_NodeIdentity_key_epoch_tag    3
+#define aethermesh_NodeIdentity_signature_tag    4
+#define aethermesh_NodeIdentity_trust_tag        5
 #define aethermesh_Telemetry_battery_level_tag   1
 #define aethermesh_Telemetry_latitude_tag        2
 #define aethermesh_Telemetry_longitude_tag       3
@@ -468,6 +582,12 @@ extern "C" {
 #define aethermesh_Telemetry_node_name_tag       11
 #define aethermesh_Telemetry_lora_sf_tag         12
 #define aethermesh_Telemetry_region_tag          13
+#define aethermesh_Telemetry_gps_state_tag       14
+#define aethermesh_Telemetry_position_source_tag 15
+#define aethermesh_Telemetry_gps_satellites_used_tag 16
+#define aethermesh_Telemetry_gps_satellites_in_view_tag 17
+#define aethermesh_Telemetry_gps_hdop_x10_tag    18
+#define aethermesh_Telemetry_gps_fix_age_secs_tag 19
 #define aethermesh_TraceRoute_type_tag           1
 #define aethermesh_TraceRoute_trace_id_tag       2
 #define aethermesh_TraceRoute_origin_id_tag      3
@@ -480,6 +600,8 @@ extern "C" {
 #define aethermesh_TraceRoute_return_snr_quarter_db_tag 10
 #define aethermesh_TraceRoute_forward_truncated_tag 11
 #define aethermesh_TraceRoute_return_truncated_tag 12
+#define aethermesh_TraceRoute_forward_hops_tag   13
+#define aethermesh_TraceRoute_return_hops_tag    14
 #define aethermesh_RouteDiscovery_type_tag       1
 #define aethermesh_RouteDiscovery_target_id_tag  2
 #define aethermesh_RouteDiscovery_metric_tag     3
@@ -518,6 +640,10 @@ extern "C" {
 #define aethermesh_NodeConfig_apply_mask_tag     23
 #define aethermesh_NodeConfig_node_short_name_tag 24
 #define aethermesh_NodeConfig_gps_duty_interval_secs_tag 25
+#define aethermesh_NodeConfig_position_privacy_supported_tag 26
+#define aethermesh_NodeConfig_channel_position_disabled_tag 27
+#define aethermesh_NodeConfig_channel_precision_m_tag 28
+#define aethermesh_NodeConfig_max_hop_limit_tag  29
 #define aethermesh_ConfigResult_status_tag       1
 #define aethermesh_ConfigResult_request_packet_id_tag 2
 #define aethermesh_ConfigResult_message_tag      3
@@ -547,6 +673,8 @@ extern "C" {
 #define aethermesh_MeshPacket_diagnostics_tag    22
 #define aethermesh_MeshPacket_range_test_control_tag 27
 #define aethermesh_MeshPacket_config_result_tag  28
+#define aethermesh_MeshPacket_position_privacy_tag 30
+#define aethermesh_MeshPacket_node_identity_tag  32
 #define aethermesh_MeshPacket_prev_hop_id_tag    10
 #define aethermesh_MeshPacket_rx_rssi_tag        14
 #define aethermesh_MeshPacket_rx_snr_tag         15
@@ -556,6 +684,7 @@ extern "C" {
 #define aethermesh_MeshPacket_auth_counter_tag   25
 #define aethermesh_MeshPacket_auth_tag_tag       26
 #define aethermesh_MeshPacket_next_hop_id_tag    29
+#define aethermesh_MeshPacket_hop_start_tag      31
 
 /* Struct field encoding specification for nanopb */
 #define aethermesh_MeshPacket_FIELDLIST(X, a) \
@@ -587,7 +716,10 @@ X(a, STATIC,   SINGULAR, UINT32,   auth_counter,     25) \
 X(a, STATIC,   SINGULAR, BYTES,    auth_tag,         26) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,range_test_control,payload.range_test_control),  27) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,config_result,payload.config_result),  28) \
-X(a, STATIC,   SINGULAR, UINT32,   next_hop_id,      29)
+X(a, STATIC,   SINGULAR, UINT32,   next_hop_id,      29) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,position_privacy,payload.position_privacy),  30) \
+X(a, STATIC,   SINGULAR, UINT32,   hop_start,        31) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,node_identity,payload.node_identity),  32)
 #define aethermesh_MeshPacket_CALLBACK NULL
 #define aethermesh_MeshPacket_DEFAULT NULL
 #define aethermesh_MeshPacket_payload_text_MSGTYPE aethermesh_TextMessage
@@ -605,6 +737,8 @@ X(a, STATIC,   SINGULAR, UINT32,   next_hop_id,      29)
 #define aethermesh_MeshPacket_payload_diagnostics_MSGTYPE aethermesh_MeshDiagnostics
 #define aethermesh_MeshPacket_payload_range_test_control_MSGTYPE aethermesh_RangeTestControl
 #define aethermesh_MeshPacket_payload_config_result_MSGTYPE aethermesh_ConfigResult
+#define aethermesh_MeshPacket_payload_position_privacy_MSGTYPE aethermesh_PositionPrivacy
+#define aethermesh_MeshPacket_payload_node_identity_MSGTYPE aethermesh_NodeIdentity
 
 #define aethermesh_MeshDiagnostics_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   tx_packets,        1) \
@@ -663,12 +797,28 @@ X(a, STATIC,   SINGULAR, STRING,   message,           3)
 #define aethermesh_OtaStatus_CALLBACK NULL
 #define aethermesh_OtaStatus_DEFAULT NULL
 
+#define aethermesh_PositionPrivacy_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     position_disabled,   1) \
+X(a, STATIC,   SINGULAR, UINT32,   precision_m,       2)
+#define aethermesh_PositionPrivacy_CALLBACK NULL
+#define aethermesh_PositionPrivacy_DEFAULT NULL
+
 #define aethermesh_TextMessage_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   content,           1) \
 X(a, STATIC,   SINGULAR, STRING,   channel,           2) \
-X(a, STATIC,   SINGULAR, BOOL,     is_encrypted,      3)
+X(a, STATIC,   SINGULAR, BOOL,     is_encrypted,      3) \
+X(a, STATIC,   SINGULAR, BYTES,    sealed,            4)
 #define aethermesh_TextMessage_CALLBACK NULL
 #define aethermesh_TextMessage_DEFAULT NULL
+
+#define aethermesh_NodeIdentity_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BYTES,    x25519_public,     1) \
+X(a, STATIC,   SINGULAR, BYTES,    ed25519_public,    2) \
+X(a, STATIC,   SINGULAR, UINT32,   key_epoch,         3) \
+X(a, STATIC,   SINGULAR, BYTES,    signature,         4) \
+X(a, STATIC,   SINGULAR, UENUM,    trust,             5)
+#define aethermesh_NodeIdentity_CALLBACK NULL
+#define aethermesh_NodeIdentity_DEFAULT NULL
 
 #define aethermesh_Telemetry_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   battery_level,     1) \
@@ -683,7 +833,13 @@ X(a, STATIC,   SINGULAR, FLOAT,    battery_voltage,   9) \
 X(a, STATIC,   SINGULAR, UINT32,   position_precision,  10) \
 X(a, STATIC,   SINGULAR, STRING,   node_name,        11) \
 X(a, STATIC,   SINGULAR, UINT32,   lora_sf,          12) \
-X(a, STATIC,   SINGULAR, UINT32,   region,           13)
+X(a, STATIC,   SINGULAR, UINT32,   region,           13) \
+X(a, STATIC,   SINGULAR, UENUM,    gps_state,        14) \
+X(a, STATIC,   SINGULAR, UENUM,    position_source,  15) \
+X(a, STATIC,   SINGULAR, UINT32,   gps_satellites_used,  16) \
+X(a, STATIC,   SINGULAR, UINT32,   gps_satellites_in_view,  17) \
+X(a, STATIC,   SINGULAR, UINT32,   gps_hdop_x10,     18) \
+X(a, STATIC,   SINGULAR, UINT32,   gps_fix_age_secs,  19)
 #define aethermesh_Telemetry_CALLBACK NULL
 #define aethermesh_Telemetry_DEFAULT NULL
 
@@ -699,7 +855,9 @@ X(a, STATIC,   REPEATED, UINT32,   return_node_ids,   8) \
 X(a, STATIC,   REPEATED, SINT32,   return_rssi,       9) \
 X(a, STATIC,   REPEATED, SINT32,   return_snr_quarter_db,  10) \
 X(a, STATIC,   SINGULAR, BOOL,     forward_truncated,  11) \
-X(a, STATIC,   SINGULAR, BOOL,     return_truncated,  12)
+X(a, STATIC,   SINGULAR, BOOL,     return_truncated,  12) \
+X(a, STATIC,   SINGULAR, BYTES,    forward_hops,     13) \
+X(a, STATIC,   SINGULAR, BYTES,    return_hops,      14)
 #define aethermesh_TraceRoute_CALLBACK NULL
 #define aethermesh_TraceRoute_DEFAULT NULL
 
@@ -753,7 +911,11 @@ X(a, STATIC,   SINGULAR, UINT32,   rebroadcast_txdelay_x100,  21) \
 X(a, STATIC,   SINGULAR, BOOL,     request_report,   22) \
 X(a, STATIC,   SINGULAR, UINT32,   apply_mask,       23) \
 X(a, STATIC,   SINGULAR, STRING,   node_short_name,  24) \
-X(a, STATIC,   SINGULAR, UINT32,   gps_duty_interval_secs,  25)
+X(a, STATIC,   SINGULAR, UINT32,   gps_duty_interval_secs,  25) \
+X(a, STATIC,   SINGULAR, BOOL,     position_privacy_supported,  26) \
+X(a, STATIC,   SINGULAR, BOOL,     channel_position_disabled,  27) \
+X(a, STATIC,   SINGULAR, UINT32,   channel_precision_m,  28) \
+X(a, STATIC,   SINGULAR, UINT32,   max_hop_limit,    29)
 #define aethermesh_NodeConfig_CALLBACK NULL
 #define aethermesh_NodeConfig_DEFAULT NULL
 
@@ -784,7 +946,9 @@ extern const pb_msgdesc_t aethermesh_RangeTestControl_msg;
 extern const pb_msgdesc_t aethermesh_OtaControl_msg;
 extern const pb_msgdesc_t aethermesh_OtaData_msg;
 extern const pb_msgdesc_t aethermesh_OtaStatus_msg;
+extern const pb_msgdesc_t aethermesh_PositionPrivacy_msg;
 extern const pb_msgdesc_t aethermesh_TextMessage_msg;
+extern const pb_msgdesc_t aethermesh_NodeIdentity_msg;
 extern const pb_msgdesc_t aethermesh_Telemetry_msg;
 extern const pb_msgdesc_t aethermesh_TraceRoute_msg;
 extern const pb_msgdesc_t aethermesh_RouteDiscovery_msg;
@@ -802,7 +966,9 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_OtaControl_fields &aethermesh_OtaControl_msg
 #define aethermesh_OtaData_fields &aethermesh_OtaData_msg
 #define aethermesh_OtaStatus_fields &aethermesh_OtaStatus_msg
+#define aethermesh_PositionPrivacy_fields &aethermesh_PositionPrivacy_msg
 #define aethermesh_TextMessage_fields &aethermesh_TextMessage_msg
+#define aethermesh_NodeIdentity_fields &aethermesh_NodeIdentity_msg
 #define aethermesh_Telemetry_fields &aethermesh_Telemetry_msg
 #define aethermesh_TraceRoute_fields &aethermesh_TraceRoute_msg
 #define aethermesh_RouteDiscovery_fields &aethermesh_RouteDiscovery_msg
@@ -821,16 +987,18 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_ConfigResult_size             49
 #define aethermesh_DeliveryStatus_size           34
 #define aethermesh_MeshDiagnostics_size          170
-#define aethermesh_MeshPacket_size               418
-#define aethermesh_NodeConfig_size               183
+#define aethermesh_MeshPacket_size               589
+#define aethermesh_NodeConfig_size               203
+#define aethermesh_NodeIdentity_size             142
 #define aethermesh_OtaControl_size               108
 #define aethermesh_OtaData_size                  233
 #define aethermesh_OtaStatus_size                49
+#define aethermesh_PositionPrivacy_size          8
 #define aethermesh_RangeTestControl_size         2
 #define aethermesh_RouteDiscovery_size           14
-#define aethermesh_Telemetry_size                130
-#define aethermesh_TextMessage_size              205
-#define aethermesh_TraceRoute_size               312
+#define aethermesh_Telemetry_size                162
+#define aethermesh_TextMessage_size              400
+#define aethermesh_TraceRoute_size               476
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -24,13 +24,19 @@ PB_BIND(aethermesh_OtaData, aethermesh_OtaData, AUTO)
 PB_BIND(aethermesh_OtaStatus, aethermesh_OtaStatus, AUTO)
 
 
-PB_BIND(aethermesh_TextMessage, aethermesh_TextMessage, AUTO)
+PB_BIND(aethermesh_PositionPrivacy, aethermesh_PositionPrivacy, AUTO)
+
+
+PB_BIND(aethermesh_TextMessage, aethermesh_TextMessage, 2)
+
+
+PB_BIND(aethermesh_NodeIdentity, aethermesh_NodeIdentity, AUTO)
 
 
 PB_BIND(aethermesh_Telemetry, aethermesh_Telemetry, AUTO)
 
 
-PB_BIND(aethermesh_TraceRoute, aethermesh_TraceRoute, AUTO)
+PB_BIND(aethermesh_TraceRoute, aethermesh_TraceRoute, 2)
 
 
 PB_BIND(aethermesh_RouteDiscovery, aethermesh_RouteDiscovery, AUTO)
@@ -52,6 +58,12 @@ PB_BIND(aethermesh_AuthRequest, aethermesh_AuthRequest, AUTO)
 
 
 PB_BIND(aethermesh_AuthResponse, aethermesh_AuthResponse, AUTO)
+
+
+
+
+
+
 
 
 

@@ -9,6 +9,8 @@ aethermesh.TraceRoute.forward_snr_quarter_db max_count:8
 aethermesh.TraceRoute.return_node_ids max_count:8
 aethermesh.TraceRoute.return_rssi max_count:8
 aethermesh.TraceRoute.return_snr_quarter_db max_count:8
+aethermesh.TraceRoute.forward_hops max_size:80
+aethermesh.TraceRoute.return_hops max_size:80
 aethermesh.NodeConfig.node_name max_size:17
 aethermesh.NodeConfig.node_short_name max_size:5
 aethermesh.AuthRequest.password max_size:32
@@ -22,3 +24,7 @@ aethermesh.OtaData.data max_size:224
 aethermesh.OtaStatus.message max_size:40
 aethermesh.MeshPacket.auth_tag max_size:17
 aethermesh.ConfigResult.message max_size:40
+aethermesh.TextMessage.sealed max_size:192
+aethermesh.NodeIdentity.x25519_public max_size:32
+aethermesh.NodeIdentity.ed25519_public max_size:32
+aethermesh.NodeIdentity.signature max_size:64
