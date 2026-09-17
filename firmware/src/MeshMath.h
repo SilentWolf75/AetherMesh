@@ -185,23 +185,137 @@ inline uint32_t radioBusyRetryDelayMs(uint32_t jitterMs) {
     return 120u + (jitterMs > 180u ? 180u : jitterMs);
 }
 
-// Multi-hearer channel ACK spacing: deterministic slot from node id so a few
-// hearers do not all CAD-collide in the same random window. Slot WIDTH must
-// cover typical ACK airtime, but SLOT_COUNT × WIDTH must stay short — a 12×
-// 1.8s grid pinned SF11 radios for ~20–45s (insurance + recovery), filled the
-// 8-deep rebroadcast queue with ACKs, and dropped channel text / insurance.
-// Four slots + modest widths keep collisions rare without deafening the mesh.
-// MeshRouter now emits ONE ACK attempt (no recovery wave), prioritizes local
-// text above ACKs, caps pending local ACKs, and treats overheard rebroadcasts
-// of our own channel text as Meshtastic-style implicit HEARD.
+// LoRa time on air, Semtech SX126x formula for how this firmware configures the
+// radio: 125 kHz bandwidth on every profile, coding rate 4/5, explicit header,
+// CRC on, and low-data-rate optimisation when a symbol lasts >= 16 ms (SF11/12).
+constexpr uint32_t LORA_BANDWIDTH_HZ = 125000;
+
+// SF<=8 needs a longer preamble for reliable CAD/preamble detect (MeshCore style).
+inline uint32_t loraPreambleSymbols(uint8_t sf) {
+    return sf <= 8 ? 32u : 16u;
+}
+
+inline uint32_t loraAirtimeMs(uint8_t sf, uint32_t payloadBytes) {
+    if (sf < 6) sf = 6;
+    if (sf > 12) sf = 12;
+    const double symbolS = (double)(1u << sf) / (double)LORA_BANDWIDTH_HZ;
+    const int lowDataRate = symbolS >= 0.016 ? 1 : 0;
+    const int numerator = 8 * (int)payloadBytes - 4 * sf + 28 + 16;
+    const int denominator = 4 * (sf - 2 * lowDataRate);
+    const int blocks = numerator > 0 ? (numerator + denominator - 1) / denominator : 0;
+    const double symbols = (double)loraPreambleSymbols(sf) + 4.25 + 8.0 + blocks * 5.0;
+    return (uint32_t)ceil(symbols * symbolS * 1000.0);
+}
+
+// Upper bound for an encoded ACK MeshPacket (session id, hop_start, next hop and
+// ACK RSSI/SNR included). Host test worstCaseAckFitsTimingBudget keeps it honest.
+constexpr uint32_t CHANNEL_ACK_FRAME_BYTES = 80; // worst-case encoded ACK is 72 (router_tests)
+
+// Multi-hearer channel receipts: each hearer sends ONE ACK in a slot chosen from
+// its node id, so a few hearers do not collide with each other, and the
+// originator's insurance copy waits until every slot's ACK has finished.
+//
+// All timing derives from real airtime. The old hand-tuned tables used 1.2 s
+// slots and a 5 s insurance cap at SF12, where one ACK takes ~3.1 s and the
+// channel message itself ~3.2 s: hearers' ACKs overlapped each other and landed
+// while the originator was transmitting its insurance copy (half-duplex, deaf),
+// so channel text almost never showed HEARD on the Max range profile.
+// Periodic telemetry is the mesh's background load. A 114-byte frame takes
+// ~4.7 s on air at SF12, so the stock 60 s interval puts a single node at ~8%
+// duty and four nodes at ~30% — channel receipts and text then spend their lives
+// deferred behind beacons. Stretch the interval so one node's telemetry stays
+// inside a small share of the channel; fast SFs keep the configured value.
+constexpr uint32_t TELEMETRY_DUTY_PERCENT = 2;
+constexpr uint32_t TELEMETRY_FRAME_BYTES = 120;
+
+inline uint32_t telemetryIntervalSecFor(uint8_t sf, uint32_t configuredSec,
+                                        uint32_t frameBytes = TELEMETRY_FRAME_BYTES) {
+    const uint32_t airMs = loraAirtimeMs(sf, frameBytes);
+    const uint32_t floorSec = (airMs * (100u / TELEMETRY_DUTY_PERCENT) + 999u) / 1000u;
+    return configuredSec < floorSec ? floorSec : configuredSec;
+}
+
+// Neighbor freshness has to follow the beacon cadence. Telemetry is what keeps
+// a direct neighbor "live", so stretching the beacon interval for airtime would
+// otherwise age every neighbor out between beacons and push directed traffic
+// back into flooding. Allow ~2.5 missed beacons before a neighbor goes stale and
+// ~3 before the route is dropped.
+inline uint32_t neighborSoftAgeMsFor(uint32_t beaconIntervalSec, uint32_t baseSoftAgeMs) {
+    const uint32_t scaled = beaconIntervalSec * 2500u;
+    return scaled > baseSoftAgeMs ? scaled : baseSoftAgeMs;
+}
+
+inline uint32_t routeTimeoutMsFor(uint32_t beaconIntervalSec, uint32_t baseTimeoutMs,
+                                  uint32_t softAgeMs) {
+    uint32_t scaled = beaconIntervalSec * 3000u;
+    if (scaled < baseTimeoutMs) scaled = baseTimeoutMs;
+    // A route must always outlive the soft-stale window it is judged against.
+    if (scaled <= softAgeMs) scaled = softAgeMs + 60000u;
+    return scaled;
+}
+
+// Channel flood relays. Every hearer of a channel broadcast rebroadcasts it, and
+// the old SNR-only backoff (500-2000 ms) put all of them on air at once at SF11/12,
+// where one copy takes 1.7-3.2 s: relays collided with each other and, being
+// half-duplex, were deaf to the other hearers' ACKs. Relays now take an
+// airtime-wide slot, so the first one is heard (and cancels the rest) before the
+// next slot opens.
+constexpr uint32_t CHANNEL_FLOOD_SLOT_COUNT = 3;
+constexpr uint32_t CHANNEL_FLOOD_LEAD_CAP_MS = 500;
+constexpr uint32_t CHANNEL_FLOOD_GUARD_MS = 120;
+
+// Slot depends on the packet too, so two nodes that share a slot for one message
+// separate on the next instead of colliding every time.
+inline uint32_t channelFloodSlotIndex(uint32_t nodeId, uint32_t packetId) {
+    uint32_t mixed = nodeId ^ (packetId * 0x9E3779B1u);
+    mixed ^= mixed >> 16;
+    mixed *= 0x7FEB352Du;
+    mixed ^= mixed >> 15;
+    mixed *= 0x846CA68Bu;
+    mixed ^= mixed >> 16;
+    return mixed % CHANNEL_FLOOD_SLOT_COUNT;
+}
+
+inline uint32_t channelFloodSlotWidthMs(uint8_t sf, uint32_t messageBytes) {
+    return loraAirtimeMs(sf, messageBytes) + CHANNEL_FLOOD_LEAD_CAP_MS + CHANNEL_FLOOD_GUARD_MS;
+}
+
+// Lead-in inside a slot keeps the SNR preference: the best hearer of two that
+// share a slot still starts first.
+inline uint32_t channelFloodLeadInMs(float snr, uint32_t txdelayX100) {
+    uint32_t lead = rebroadcastDelayMs(snr, txdelayX100) / 4;
+    return lead > CHANNEL_FLOOD_LEAD_CAP_MS ? CHANNEL_FLOOD_LEAD_CAP_MS : lead;
+}
+
+inline uint32_t channelFloodDelayMs(uint8_t sf, float snr, uint32_t txdelayX100,
+                                    uint32_t nodeId, uint32_t packetId,
+                                    uint32_t messageBytes) {
+    return channelFloodSlotIndex(nodeId, packetId) * channelFloodSlotWidthMs(sf, messageBytes) +
+           channelFloodLeadInMs(snr, txdelayX100);
+}
+
+// Time from the end of reception until the last possible relay copy has finished.
+// messageBytes == 0 means "no relay wave to wait for" (used by the ACK helpers'
+// default argument so existing 3-argument callers keep the old behavior).
+inline uint32_t channelFloodWindowMs(uint8_t sf, uint32_t messageBytes) {
+    if (messageBytes == 0) return 0;
+    return (CHANNEL_FLOOD_SLOT_COUNT - 1u) * channelFloodSlotWidthMs(sf, messageBytes) +
+           CHANNEL_FLOOD_LEAD_CAP_MS + loraAirtimeMs(sf, messageBytes);
+}
+
 constexpr uint32_t CHANNEL_ACK_SLOT_COUNT = 4;
-// Hard caps so SF bumps cannot recreate multi-tens-of-seconds ACK holds.
-constexpr uint32_t CHANNEL_ACK_MAX_DELAY_CAP_MS = 4000;
-// Insurance only needs to clear the primary ACK window (no recovery wave).
-constexpr uint32_t CHANNEL_INSURANCE_DELAY_CAP_MS = 5000;
-// Kept for unit tests / alt-slot busy retry; channel path no longer schedules
-// a second recovery ACK into the TX queue.
-constexpr uint32_t CHANNEL_ACK_RECOVERY_DELAY_CAP_MS = 12000;
+// Safety net only; derived windows stay far below it for every SF.
+constexpr uint32_t CHANNEL_TIMING_SANITY_CAP_MS = 60000;
+// Kept for the busy-retry alt-slot helper and its tests.
+constexpr uint32_t CHANNEL_ACK_RECOVERY_DELAY_CAP_MS = CHANNEL_TIMING_SANITY_CAP_MS;
+
+// Channel receipts only mean something while every hearer can own a slot.
+// Past that, hearers share slots, transmit over each other, and the count the
+// originator sees is both wrong and expensive — so a crowded node stays quiet
+// and lets its relay of the message be the receipt (implicit HEARD).
+inline bool shouldSendChannelReceipt(uint32_t liveNeighbors) {
+    return liveNeighbors <= CHANNEL_ACK_SLOT_COUNT;
+}
 
 inline uint32_t channelAckSlotIndex(uint32_t nodeId) {
     // Murmur-inspired mix — plain (id ^ id>>8) clustered sequential ESP MAC
@@ -225,23 +339,18 @@ inline uint32_t channelAckAltSlotIndex(uint32_t nodeId) {
     return mixed % CHANNEL_ACK_SLOT_COUNT;
 }
 
-inline uint32_t channelAckSlotWidthMs(uint8_t sf) {
-    // >= typical small-ACK airtime at this SF so adjacent slots do not overlap,
-    // but keep the full slot grid short enough that insurance/recovery stay
-    // under CHANNEL_*_DELAY_CAP_MS (see CHANNEL_ACK_SLOT_COUNT notes).
-    if (sf >= 12) return 1200;
-    if (sf >= 11) return 700;
-    if (sf >= 10) return 500;
-    if (sf >= 9) return 350;
-    return 250;
-}
-
 inline uint32_t channelAckJitterCapMs(uint8_t sf) {
     if (sf >= 12) return 200;
     if (sf >= 11) return 180;
     if (sf >= 10) return 140;
     if (sf >= 9) return 120;
     return 100;
+}
+
+// One slot = a full ACK on air + jitter + a small guard, so adjacent slots never
+// overlap at the originator.
+inline uint32_t channelAckSlotWidthMs(uint8_t sf) {
+    return loraAirtimeMs(sf, CHANNEL_ACK_FRAME_BYTES) + channelAckJitterCapMs(sf) + 60u;
 }
 
 inline uint32_t channelAckBaseDelayMs(uint8_t sf) {
@@ -253,69 +362,55 @@ inline uint32_t channelAckBaseDelayMs(uint8_t sf) {
 }
 
 inline uint32_t channelInsuranceJitterCapMs(uint8_t sf) {
-    // Keep insurance near the old 1.8–3.2s cadence once the ACK window clears;
-    // large jitter on top of SF11/12 airtime margin recreated long deaf windows.
-    if (sf >= 12) return 800;
     if (sf >= 11) return 800;
     if (sf >= 10) return 600;
     return 500;
 }
 
-// Typical ACK / insurance airtime margin past the last slotted start time.
+// Time for the last ACK to finish once it starts (airtime + guard).
 inline uint32_t channelAckAirtimeMarginMs(uint8_t sf) {
-    if (sf >= 12) return 3200;
-    if (sf >= 11) return 2200;
-    if (sf >= 10) return 1200;
-    return 700;
+    return loraAirtimeMs(sf, CHANNEL_ACK_FRAME_BYTES) + 100u;
 }
 
-// Initial delay before transmitting a locally-originated ACK.
-// delay = base(SF) + (nodeId-slot)*slotWidth + small random.
-inline uint32_t channelAckDelayMs(uint8_t sf, uint32_t nodeId, uint32_t jitterMs) {
+// Delay a hearer applies after it finishes receiving the message.
+// delay = base(SF) + slot * slotWidth + small random.
+inline uint32_t channelAckDelayMs(uint8_t sf, uint32_t nodeId, uint32_t jitterMs,
+                                  uint32_t messageBytes = 0) {
     uint32_t jitterCap = channelAckJitterCapMs(sf);
     uint32_t j = jitterMs > jitterCap ? jitterCap : jitterMs;
-    return channelAckBaseDelayMs(sf) +
+    // Wait out the relay wave first: an ACK sent under a 3.2 s relay copy is lost.
+    return channelFloodWindowMs(sf, messageBytes) + channelAckBaseDelayMs(sf) +
            channelAckSlotIndex(nodeId) * channelAckSlotWidthMs(sf) + j;
 }
 
-// Worst-case first-ACK deadline (last slot + full jitter). Used so insurance
-// TX clears the entire primary hearer ACK window.
-inline uint32_t channelAckMaxDelayMs(uint8_t sf) {
-    uint32_t d = channelAckBaseDelayMs(sf) +
-                 (CHANNEL_ACK_SLOT_COUNT - 1u) * channelAckSlotWidthMs(sf) +
-                 channelAckJitterCapMs(sf);
-    if (d > CHANNEL_ACK_MAX_DELAY_CAP_MS) d = CHANNEL_ACK_MAX_DELAY_CAP_MS;
-    return d;
+// Latest ACK start, relative to the end of reception at the hearer.
+inline uint32_t channelAckMaxDelayMs(uint8_t sf, uint32_t messageBytes = 0) {
+    return channelFloodWindowMs(sf, messageBytes) + channelAckBaseDelayMs(sf) +
+           (CHANNEL_ACK_SLOT_COUNT - 1u) * channelAckSlotWidthMs(sf) +
+           channelAckJitterCapMs(sf);
 }
 
-// Delay before the originator's single channel-text insurance TX. Must clear
-// the primary hearer ACK window (max slotted delay + typical ACK airtime) so
-// the originator is in RX when first-wave HEARD ACKs arrive. Recovery ACKs
-// are scheduled after this window (see channelAckRecoveryDelayMs).
-// jitterMs is caller entropy.
-inline uint32_t channelInsuranceDelayMs(uint8_t sf, uint32_t jitterMs) {
+// Delay from the originator queueing its channel text to its single insurance
+// TX. Hearers start their ACK timers only once the message has finished on air,
+// so the window is: message airtime + latest ACK start + ACK airtime.
+inline uint32_t channelInsuranceDelayMs(uint8_t sf, uint32_t jitterMs, uint32_t messageBytes) {
     uint32_t jitterCap = channelInsuranceJitterCapMs(sf);
-    uint32_t base = channelAckMaxDelayMs(sf) + channelAckAirtimeMarginMs(sf);
     uint32_t j = jitterMs > jitterCap ? jitterCap : jitterMs;
-    uint32_t d = base + j;
-    if (d > CHANNEL_INSURANCE_DELAY_CAP_MS) d = CHANNEL_INSURANCE_DELAY_CAP_MS;
-    return d;
+    uint32_t d = loraAirtimeMs(sf, messageBytes) + channelAckMaxDelayMs(sf, messageBytes) +
+                 channelAckAirtimeMarginMs(sf) + j;
+    return d > CHANNEL_TIMING_SANITY_CAP_MS ? CHANNEL_TIMING_SANITY_CAP_MS : d;
 }
 
 // Second ACK attempt after the originator insurance TX should have finished.
-// Uses the alternate slot mixer so primary same-slot colliders (hidden
-// terminal: CAD clear, RF collide at originator) separate on the retry.
-// Unique-hearer aggregation makes a duplicate ACK harmless.
+// Uses the alternate slot mixer so primary same-slot colliders separate.
 inline uint32_t channelAckRecoveryDelayMs(uint8_t sf, uint32_t nodeId,
-                                          uint32_t jitterMs) {
+                                          uint32_t jitterMs, uint32_t messageBytes = 128) {
     uint32_t afterInsurance =
-        channelInsuranceDelayMs(sf, channelInsuranceJitterCapMs(sf));
-    // Originator was TX during insurance — wait one more airtime before the
-    // recovery wave so it is back in RX.
-    uint32_t postInsuranceRx = channelAckAirtimeMarginMs(sf);
+        channelInsuranceDelayMs(sf, channelInsuranceJitterCapMs(sf), messageBytes) +
+        loraAirtimeMs(sf, messageBytes);
     uint32_t jitterCap = channelAckJitterCapMs(sf);
     uint32_t j = jitterMs > jitterCap ? jitterCap : jitterMs;
-    uint32_t d = afterInsurance + postInsuranceRx +
+    uint32_t d = afterInsurance + channelAckAirtimeMarginMs(sf) +
                  channelAckAltSlotIndex(nodeId) * channelAckSlotWidthMs(sf) + j;
     if (d > CHANNEL_ACK_RECOVERY_DELAY_CAP_MS) d = CHANNEL_ACK_RECOVERY_DELAY_CAP_MS;
     return d;
@@ -453,6 +548,9 @@ inline uint32_t restampNextHopId(uint32_t localNextHopId, bool useDirected) {
 // At SF11/12 a Phase-3 half-ACK timer (~1.5s) would TX during the ACK window.
 inline uint32_t earlyProbeMinDelayMs(uint8_t sf) {
     uint32_t floor = channelAckBaseDelayMs(sf) + channelAckAirtimeMarginMs(sf);
+    // Never shorter than the field-proven direct-message floors.
+    const uint32_t legacyMargin = sf >= 12 ? 3200u : sf >= 11 ? 2200u : sf >= 10 ? 1200u : 700u;
+    if (floor < channelAckBaseDelayMs(sf) + legacyMargin) floor = channelAckBaseDelayMs(sf) + legacyMargin;
     if (floor < 900u) floor = 900u;
     return floor;
 }
@@ -669,6 +767,102 @@ inline void blurPosition(float latIn, float lonIn, uint32_t radiusM,
 
     latOut = (float)latSnapped;
     lonOut = (float)lonSnapped;
+}
+
+// Prefer the coarser of node-configured blur and a channel privacy floor so
+// a DM / telemetry path cannot be finer than the channel allows.
+inline uint32_t effectiveBlurRadiusM(uint32_t nodePrecisionM, uint32_t channelFloorM) {
+    return nodePrecisionM > channelFloorM ? nodePrecisionM : channelFloorM;
+}
+
+// MeshCore-style LoRa preamble: 32 symbols at SF≤8 so CAD/preamble detect
+// still works at short symbols; 16 at SF9–12 to keep airtime down. The
+// RadioLib default of 8 was missing packets at SF7/8.
+inline uint16_t preambleLengthForSf(uint8_t sf) {
+    return (uint16_t)loraPreambleSymbols(sf);
+}
+
+// Meshtastic next-hop lesson: only treat a relayer of *our* packet as a
+// bidirectional neighbor when hop_limit dropped by exactly one (they heard
+// us directly). A smaller remaining hop_limit means they overheard a copy.
+inline bool isDirectRelayerCredit(uint32_t heardHopLimit, uint32_t originatedHopLimit) {
+    if (originatedHopLimit == 0) return false;
+    return heardHopLimit + 1u == originatedHopLimit;
+}
+
+// Flood loop: our own forwarded copy coming back with prev_hop still us
+// (mutated packet_id / missing restamp). Originator loopback is sender==us.
+inline bool isEchoLoop(uint32_t senderId, uint32_t prevHopId, uint32_t localNodeId) {
+    return localNodeId != 0 && prevHopId == localNodeId && senderId != localNodeId;
+}
+
+// Extended range: hop_limit may be 1–16. Firmware before extended range drops
+// anything above 8, so 8 stays the ceiling wherever older nodes may relay.
+constexpr uint32_t MAX_HOP_LIMIT = 16u;
+constexpr uint32_t LEGACY_MAX_HOP_LIMIT = 8u;
+// Fixed reply budget older firmware used for every ACK/pong/response.
+constexpr uint32_t BASE_REPLY_HOP_LIMIT = 4u;
+// Extra hops a reply gets beyond the request's path, for asymmetric links.
+constexpr uint32_t REPLY_HOP_MARGIN = 2u;
+
+// hop_limit is 0–16. 0 is terminal (do not relay). >16 is malformed.
+inline bool hopLimitIsSane(uint32_t hopLimit) {
+    return hopLimit <= MAX_HOP_LIMIT;
+}
+
+// hop_start 0 = legacy sender. Otherwise it bounds hop_limit: a remaining
+// hop_limit above what the originator started with was rewound on the path.
+inline bool hopStartIsSane(uint32_t hopStart, uint32_t hopLimit) {
+    if (hopStart == 0) return true;
+    return hopStart <= MAX_HOP_LIMIT && hopLimit <= hopStart;
+}
+
+// Transmissions a packet took to reach us (1 = heard the originator directly),
+// or 0 when the sender did not record hop_start.
+inline uint32_t transmissionsTaken(uint32_t hopStart, uint32_t hopLimit) {
+    if (hopStart == 0 || hopLimit > hopStart) return 0;
+    return hopStart - hopLimit + 1u;
+}
+
+// hop_limit for a reply (ACK, pong, route/trace/config response) to a packet
+// that arrived with hopStart/hopLimit. Older firmware sent every reply with 4,
+// so a request that needed more hops could arrive while its ACK could not.
+inline uint32_t replyHopLimit(uint32_t hopStart, uint32_t hopLimit, uint32_t configuredHopLimit) {
+    const uint32_t taken = transmissionsTaken(hopStart, hopLimit);
+    if (taken == 0) {
+        // Legacy sender, or an older relay dropped hop_start: follow our own
+        // configured reach, never below the old fixed budget, and never above
+        // what legacy relays accept.
+        uint32_t want = configuredHopLimit > BASE_REPLY_HOP_LIMIT ? configuredHopLimit : BASE_REPLY_HOP_LIMIT;
+        return want > LEGACY_MAX_HOP_LIMIT ? LEGACY_MAX_HOP_LIMIT : want;
+    }
+    uint32_t want = taken + REPLY_HOP_MARGIN;
+    if (want < BASE_REPLY_HOP_LIMIT) want = BASE_REPLY_HOP_LIMIT;
+    // Stay within the originator's own budget: a request limited to 8 hops may
+    // have crossed legacy relays that would drop a longer reply.
+    const uint32_t ceiling = hopStart > BASE_REPLY_HOP_LIMIT ? hopStart : BASE_REPLY_HOP_LIMIT;
+    return want > ceiling ? ceiling : want;
+}
+
+// hop_limit for a packet the phone asked this node to transmit. Apps hardcoded
+// 4 for chat and 7 for traceroute, so the node's configured hop limit had no
+// effect on phone traffic. 0/1 mean "do not relay" (direct range-test pings,
+// local-only frames) and pass through. Discovery traffic (traceroute) keeps a
+// longer requested reach.
+inline uint32_t phoneOriginHopLimit(uint32_t requested, uint32_t configured, bool discovery) {
+    if (requested <= 1u) return requested;
+    uint32_t hops = configured == 0 ? BASE_REPLY_HOP_LIMIT : configured;
+    if (discovery && requested > hops) hops = requested;
+    return hops > MAX_HOP_LIMIT ? MAX_HOP_LIMIT : hops;
+}
+
+// Same attempt with a *higher* hop_limit than first sighting is a replay
+// that rewound TTL (loop amplification). A higher retry_count is a genuine
+// originator retransmit and may restore the original hop_limit.
+inline bool isHopLimitInflation(uint32_t firstHopLimit, uint32_t newHopLimit,
+                                uint32_t firstRetry, uint32_t newRetry) {
+    if (newRetry > firstRetry) return false;
+    return newHopLimit > firstHopLimit;
 }
 
 } // namespace meshmath

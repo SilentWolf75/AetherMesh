@@ -162,11 +162,11 @@ void test_channel_ack_delay_scales_with_sf_and_clamps_jitter() {
     TEST_ASSERT_EQUAL_UINT32(1000, channelAckDelayMs(12, 0, 0));
     TEST_ASSERT_EQUAL_UINT32(1200, channelAckDelayMs(12, 0, 9999));
     TEST_ASSERT_EQUAL_UINT32(780, channelAckDelayMs(11, 0, 180));
-    // Slot width covers small-ACK airtime without recreating 20s+ grids.
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(11) >= 700);
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(11) <= 900);
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(12) >= 1200);
-    TEST_ASSERT_TRUE(channelAckSlotWidthMs(12) <= 1500);
+    // A slot holds one whole ACK plus jitter, so adjacent hearers never overlap.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        TEST_ASSERT_TRUE(channelAckSlotWidthMs(sf) >=
+                         loraAirtimeMs(sf, CHANNEL_ACK_FRAME_BYTES) + channelAckJitterCapMs(sf));
+    }
     // Distinct node ids that map to distinct slots stay spaced by slot width.
     uint32_t idA = 1;
     uint32_t idB = 3;
@@ -189,28 +189,153 @@ void test_channel_ack_busy_retry_scales_with_sf() {
     TEST_ASSERT_EQUAL_UINT32(1300, channelAckBusyRetryDelayMs(12, 9999));
 }
 
+void test_channel_flood_slots_never_overlap() {
+    // Field bug: every hearer relayed a channel broadcast after the same
+    // 500-2000 ms SNR backoff. At SF12 one copy is ~3.2 s on air, so the relays
+    // transmitted over each other and were deaf to each other's ACKs, and the
+    // originator credited only one hearer.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        for (uint32_t bytes = 40; bytes <= 200; bytes += 53) {
+            const uint32_t width = channelFloodSlotWidthMs(sf, bytes);
+            // A slot holds one whole relay copy plus the SNR lead-in.
+            TEST_ASSERT_TRUE(width >= loraAirtimeMs(sf, bytes) + CHANNEL_FLOOD_LEAD_CAP_MS);
+            // Consecutive slots are separated by more than one copy on air.
+            for (uint32_t slot = 0; slot + 1 < CHANNEL_FLOOD_SLOT_COUNT; slot++) {
+                const uint32_t earliestNext = (slot + 1) * width;
+                const uint32_t latestInSlot = slot * width + CHANNEL_FLOOD_LEAD_CAP_MS;
+                TEST_ASSERT_TRUE(earliestNext >= latestInSlot + loraAirtimeMs(sf, bytes));
+            }
+            // The window covers the last slot's copy finishing.
+            TEST_ASSERT_TRUE(channelFloodWindowMs(sf, bytes) >=
+                             (CHANNEL_FLOOD_SLOT_COUNT - 1u) * width + loraAirtimeMs(sf, bytes));
+        }
+    }
+    // Zero bytes = "no relay wave"; keeps the old 3-argument ACK timing.
+    TEST_ASSERT_EQUAL_UINT32(0, channelFloodWindowMs(12, 0));
+    TEST_ASSERT_EQUAL_UINT32(channelAckDelayMs(12, 0x1234u, 0),
+                             channelAckDelayMs(12, 0x1234u, 0, 0));
+}
+
+void test_channel_flood_slot_assignment_spreads_and_reshuffles() {
+    // Sequential node ids (ESP MAC suffixes) must not pile into one slot.
+    uint32_t counts[CHANNEL_FLOOD_SLOT_COUNT] = {0};
+    for (uint32_t id = 0x14D32280u; id < 0x14D32280u + 60u; id++) {
+        counts[channelFloodSlotIndex(id, 7u)]++;
+    }
+    for (uint32_t slot = 0; slot < CHANNEL_FLOOD_SLOT_COUNT; slot++) {
+        TEST_ASSERT_TRUE(counts[slot] >= 10);
+    }
+    // Two nodes sharing a slot for one packet separate on a later one.
+    uint32_t sharedPackets = 0;
+    for (uint32_t packetId = 1; packetId <= 40; packetId++) {
+        if (channelFloodSlotIndex(0xAABBCCDDu, packetId) ==
+            channelFloodSlotIndex(0x11223344u, packetId)) {
+            sharedPackets++;
+        }
+    }
+    TEST_ASSERT_TRUE(sharedPackets < 40);
+}
+
+void test_channel_ack_waits_out_the_relay_wave() {
+    // An ACK sent while another hearer is relaying the same message is lost.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        for (uint32_t bytes = 40; bytes <= 200; bytes += 53) {
+            for (uint32_t id = 0; id < 8; id++) {
+                TEST_ASSERT_TRUE(channelAckDelayMs(sf, 0x1000u + id, 0, bytes) >=
+                                 channelFloodWindowMs(sf, bytes));
+            }
+            TEST_ASSERT_TRUE(channelAckMaxDelayMs(sf, bytes) > channelAckMaxDelayMs(sf, 0));
+        }
+    }
+}
+
+void test_route_aging_follows_beacon_cadence() {
+    const uint32_t baseSoft = 200000u;   // ROUTE_SOFT_AGE_MS
+    const uint32_t baseTimeout = 600000u; // ROUTE_TIMEOUT_MS
+    // Fast cadence keeps the historical fixed windows.
+    TEST_ASSERT_EQUAL_UINT32(baseSoft, neighborSoftAgeMsFor(60, baseSoft));
+    TEST_ASSERT_EQUAL_UINT32(baseTimeout,
+                             routeTimeoutMsFor(60, baseTimeout, baseSoft));
+    // Stretched SF12 beacons must not age neighbors out between beacons.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        const uint32_t beacon = telemetryIntervalSecFor(sf, 60);
+        const uint32_t soft = neighborSoftAgeMsFor(beacon, baseSoft);
+        const uint32_t timeout = routeTimeoutMsFor(beacon, baseTimeout, soft);
+        TEST_ASSERT_TRUE(soft >= beacon * 2000u);    // survives a missed beacon
+        TEST_ASSERT_TRUE(timeout > soft);            // route outlives soft-stale
+        TEST_ASSERT_TRUE(timeout >= beacon * 2500u);
+    }
+}
+
+void test_telemetry_interval_respects_airtime_budget() {
+    // Fast SFs keep the configured cadence.
+    TEST_ASSERT_EQUAL_UINT32(60, telemetryIntervalSecFor(7, 60));
+    TEST_ASSERT_EQUAL_UINT32(60, telemetryIntervalSecFor(9, 60));
+    // SF11/12 stretch: a 120-byte beacon is seconds of airtime, and four nodes
+    // beaconing every 60 s at SF12 filled ~30% of the channel, starving receipts.
+    TEST_ASSERT_TRUE(telemetryIntervalSecFor(11, 60) > 100);
+    TEST_ASSERT_TRUE(telemetryIntervalSecFor(12, 60) > 200);
+    // Never below the configured interval, and one node stays inside its budget.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        uint32_t sec = telemetryIntervalSecFor(sf, 60);
+        TEST_ASSERT_TRUE(sec >= 60);
+        TEST_ASSERT_TRUE(loraAirtimeMs(sf, TELEMETRY_FRAME_BYTES) * 100u <=
+                         sec * 1000u * TELEMETRY_DUTY_PERCENT);
+    }
+    // A user asking for a slower beacon is always honored.
+    TEST_ASSERT_EQUAL_UINT32(3600, telemetryIntervalSecFor(12, 3600));
+}
+
+void test_channel_receipts_stop_when_slots_run_out() {
+    // Receipts are unconditional in the app now, so the radio bounds them:
+    // one slot per hearer, or nobody answers and the relay is the receipt.
+    for (uint32_t neighbors = 0; neighbors <= CHANNEL_ACK_SLOT_COUNT; neighbors++) {
+        TEST_ASSERT_TRUE(shouldSendChannelReceipt(neighbors));
+    }
+    TEST_ASSERT_FALSE(shouldSendChannelReceipt(CHANNEL_ACK_SLOT_COUNT + 1));
+    TEST_ASSERT_FALSE(shouldSendChannelReceipt(50));
+    // Every hearer that does answer owns a distinct slot start.
+    for (uint32_t a = 0; a < CHANNEL_ACK_SLOT_COUNT; a++) {
+        for (uint32_t b = a + 1; b < CHANNEL_ACK_SLOT_COUNT; b++) {
+            TEST_ASSERT_TRUE(b * channelAckSlotWidthMs(12) >=
+                             a * channelAckSlotWidthMs(12) + loraAirtimeMs(12, CHANNEL_ACK_FRAME_BYTES));
+        }
+    }
+}
+
+void test_lora_airtime_matches_semtech_reference() {
+    // Reference values from the Semtech time-on-air formula, computed
+    // independently in Python (125 kHz, CR 4/5, explicit header, CRC, LDRO at SF11/12).
+    TEST_ASSERT_UINT32_WITHIN(1, 143, loraAirtimeMs(7, 64));
+    TEST_ASSERT_UINT32_WITHIN(1, 423, loraAirtimeMs(9, 64));
+    TEST_ASSERT_UINT32_WITHIN(1, 764, loraAirtimeMs(10, 64));
+    TEST_ASSERT_UINT32_WITHIN(1, 1692, loraAirtimeMs(11, 64));
+    TEST_ASSERT_UINT32_WITHIN(1, 3056, loraAirtimeMs(12, 64));
+    TEST_ASSERT_UINT32_WITHIN(1, 3219, loraAirtimeMs(12, 70));
+    TEST_ASSERT_UINT32_WITHIN(1, 3412, loraAirtimeMs(11, 160));
+    TEST_ASSERT_UINT32_WITHIN(1, 6169, loraAirtimeMs(12, 160));
+}
+
 void test_channel_insurance_delay_clears_ack_window() {
-    // Insurance must start after max slotted channelAckDelayMs for the same SF.
-    TEST_ASSERT_TRUE(channelInsuranceDelayMs(11, 0) > channelAckMaxDelayMs(11));
-    TEST_ASSERT_TRUE(channelInsuranceDelayMs(12, 0) > channelAckMaxDelayMs(12));
-    // SF11: 600 + 3*700 + 180 = 2880 (under 4s cap)
-    TEST_ASSERT_EQUAL_UINT32(600 + 3 * 700 + 180, channelAckMaxDelayMs(11));
-    // SF12 raw would be 1000 + 3*1200 + 200 = 4800 → capped at 4000
-    TEST_ASSERT_EQUAL_UINT32(CHANNEL_ACK_MAX_DELAY_CAP_MS, channelAckMaxDelayMs(12));
-    // SF11 raw 2880+2200=5080 → capped (no recovery wave; insurance only clears primary ACKs)
-    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(11, 0));
-    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(11, 9999));
-    // SF12 insurance base 4000+3200=7200 → capped
-    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(12, 0));
-    TEST_ASSERT_EQUAL_UINT32(CHANNEL_INSURANCE_DELAY_CAP_MS, channelInsuranceDelayMs(12, 9999));
-    // Recovery delay helpers remain for busy-retry alt-slot math / tests only.
+    // Field bug (SF12 "Max range"): insurance at +5 s landed on hearers' ACKs.
+    // Hearers start their ACK timer when the message ENDS on air; the originator
+    // queues insurance when it STARTS sending. The insurance copy must begin only
+    // after the latest ACK has finished, for every SF and message size.
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        for (uint32_t bytes = 20; bytes <= 255; bytes += 47) {
+            const uint32_t lastAckEnds = loraAirtimeMs(sf, bytes) +
+                                         channelAckMaxDelayMs(sf, bytes) +
+                                         loraAirtimeMs(sf, CHANNEL_ACK_FRAME_BYTES);
+            TEST_ASSERT_TRUE(channelInsuranceDelayMs(sf, 0, bytes) > lastAckEnds);
+            TEST_ASSERT_TRUE(channelInsuranceDelayMs(sf, 9999, bytes) <= CHANNEL_TIMING_SANITY_CAP_MS);
+        }
+    }
+    // The measured field timeline: 3.2 s message, ACK slots, then insurance.
+    TEST_ASSERT_TRUE(channelInsuranceDelayMs(12, 0, 70) > 3219u + channelAckMaxDelayMs(12) + 3056u);
+    // Recovery ACK still lands after the insurance copy has finished.
     uint32_t recovery0 = channelAckRecoveryDelayMs(11, 0, 0);
-    TEST_ASSERT_TRUE(recovery0 > channelInsuranceDelayMs(11, 9999));
-    TEST_ASSERT_TRUE(recovery0 <= CHANNEL_ACK_RECOVERY_DELAY_CAP_MS);
+    TEST_ASSERT_TRUE(recovery0 > channelInsuranceDelayMs(11, 9999, 128) + loraAirtimeMs(11, 128));
     TEST_ASSERT_TRUE(channelAckRecoveryDelayMs(12, 0, 9999) <= CHANNEL_ACK_RECOVERY_DELAY_CAP_MS);
-    // Hard caps keep SF11/12 from pinning radios for tens of seconds.
-    TEST_ASSERT_TRUE(channelAckMaxDelayMs(11) <= CHANNEL_ACK_MAX_DELAY_CAP_MS);
-    TEST_ASSERT_TRUE(channelInsuranceDelayMs(11, 9999) <= CHANNEL_INSURANCE_DELAY_CAP_MS);
 }
 
 void test_deadline_order_handles_millis_wrap() {
@@ -497,11 +622,10 @@ void test_channel_ack_base_delay_steps_and_ordering() {
 }
 
 void test_channel_ack_airtime_margin_steps_and_ordering() {
-    TEST_ASSERT_EQUAL_UINT32(700, channelAckAirtimeMarginMs(9));
-    TEST_ASSERT_EQUAL_UINT32(1200, channelAckAirtimeMarginMs(10));
-    TEST_ASSERT_EQUAL_UINT32(2200, channelAckAirtimeMarginMs(11));
-    TEST_ASSERT_EQUAL_UINT32(3200, channelAckAirtimeMarginMs(12));
-    TEST_ASSERT_EQUAL_UINT32(3200, channelAckAirtimeMarginMs(13));
+    for (uint8_t sf = 7; sf <= 12; sf++) {
+        TEST_ASSERT_TRUE(channelAckAirtimeMarginMs(sf) > loraAirtimeMs(sf, CHANNEL_ACK_FRAME_BYTES));
+    }
+    TEST_ASSERT_EQUAL_UINT32(channelAckAirtimeMarginMs(12), channelAckAirtimeMarginMs(13)); // clamped SF
     for (uint8_t sf = 8; sf <= 13; sf++) {
         TEST_ASSERT_TRUE(channelAckAirtimeMarginMs(sf) >= channelAckAirtimeMarginMs(sf - 1));
     }
@@ -553,6 +677,84 @@ void test_clampf_bounds() {
     TEST_ASSERT_EQUAL_FLOAT(10.0f, clampf(10.0f, 0.0f, 10.0f));
     // Negative ranges (SNR clamps) behave the same way.
     TEST_ASSERT_EQUAL_FLOAT(-20.0f, clampf(-100.0f, -20.0f, 10.0f));
+}
+
+void test_preamble_length_is_sf_aware() {
+    TEST_ASSERT_EQUAL_UINT16(32, preambleLengthForSf(7));
+    TEST_ASSERT_EQUAL_UINT16(32, preambleLengthForSf(8));
+    TEST_ASSERT_EQUAL_UINT16(16, preambleLengthForSf(9));
+    TEST_ASSERT_EQUAL_UINT16(16, preambleLengthForSf(11));
+    TEST_ASSERT_EQUAL_UINT16(16, preambleLengthForSf(12));
+}
+
+void test_direct_relayer_credit_requires_one_hop_decrement() {
+    TEST_ASSERT_TRUE(isDirectRelayerCredit(3, 4));
+    TEST_ASSERT_FALSE(isDirectRelayerCredit(2, 4)); // overheard a copy
+    TEST_ASSERT_FALSE(isDirectRelayerCredit(4, 4)); // not decremented
+    TEST_ASSERT_FALSE(isDirectRelayerCredit(3, 0));
+    TEST_ASSERT_TRUE(isDirectRelayerCredit(0, 1));
+}
+
+void test_flood_loop_helpers() {
+    TEST_ASSERT_TRUE(isEchoLoop(0xAA, 0x11, 0x11));
+    TEST_ASSERT_FALSE(isEchoLoop(0x11, 0x11, 0x11)); // originator loopback
+    TEST_ASSERT_FALSE(isEchoLoop(0xAA, 0x22, 0x11));
+    TEST_ASSERT_FALSE(isEchoLoop(0xAA, 0x11, 0));
+    TEST_ASSERT_TRUE(hopLimitIsSane(0));
+    TEST_ASSERT_TRUE(hopLimitIsSane(8));
+    TEST_ASSERT_TRUE(hopLimitIsSane(9));
+    TEST_ASSERT_TRUE(hopLimitIsSane(16));
+    TEST_ASSERT_FALSE(hopLimitIsSane(17));
+    TEST_ASSERT_TRUE(isHopLimitInflation(2, 4, 0, 0));
+    TEST_ASSERT_FALSE(isHopLimitInflation(2, 4, 0, 1)); // genuine retry
+    TEST_ASSERT_FALSE(isHopLimitInflation(4, 3, 0, 0));
+}
+
+void test_hop_start_sanity() {
+    TEST_ASSERT_TRUE(hopStartIsSane(0, 16));   // legacy sender
+    TEST_ASSERT_TRUE(hopStartIsSane(12, 12));
+    TEST_ASSERT_TRUE(hopStartIsSane(12, 1));
+    TEST_ASSERT_FALSE(hopStartIsSane(4, 6));   // hop_limit rewound above start
+    TEST_ASSERT_FALSE(hopStartIsSane(17, 3));
+}
+
+void test_transmissions_taken() {
+    TEST_ASSERT_EQUAL_UINT32(1, transmissionsTaken(8, 8));   // heard originator directly
+    TEST_ASSERT_EQUAL_UINT32(5, transmissionsTaken(12, 8));
+    TEST_ASSERT_EQUAL_UINT32(0, transmissionsTaken(0, 3));   // unknown
+    TEST_ASSERT_EQUAL_UINT32(0, transmissionsTaken(4, 6));   // malformed
+}
+
+void test_reply_hop_limit_covers_the_request_path() {
+    // Direct neighbor: never below the old fixed budget.
+    TEST_ASSERT_EQUAL_UINT32(4, replyHopLimit(8, 8, 4));
+    // 7 transmissions + margin 2 = 9, capped at the originator's start of 8
+    // so legacy relays that carried the request still carry the reply.
+    TEST_ASSERT_EQUAL_UINT32(8, replyHopLimit(8, 2, 4));
+    // Extended range: 10 transmissions + 2.
+    TEST_ASSERT_EQUAL_UINT32(12, replyHopLimit(16, 7, 4));
+    TEST_ASSERT_EQUAL_UINT32(16, replyHopLimit(16, 1, 4));
+    // Legacy sender: follow configured reach, 4..8.
+    TEST_ASSERT_EQUAL_UINT32(4, replyHopLimit(0, 3, 2));
+    TEST_ASSERT_EQUAL_UINT32(6, replyHopLimit(0, 3, 6));
+    TEST_ASSERT_EQUAL_UINT32(8, replyHopLimit(0, 3, 16));
+}
+
+void test_phone_origin_hop_limit_applies_node_setting() {
+    TEST_ASSERT_EQUAL_UINT32(0, phoneOriginHopLimit(0, 12, false));  // local only
+    TEST_ASSERT_EQUAL_UINT32(1, phoneOriginHopLimit(1, 12, false));  // direct ping
+    TEST_ASSERT_EQUAL_UINT32(12, phoneOriginHopLimit(4, 12, false)); // chat follows setting
+    TEST_ASSERT_EQUAL_UINT32(2, phoneOriginHopLimit(4, 2, false));   // ...both ways
+    TEST_ASSERT_EQUAL_UINT32(7, phoneOriginHopLimit(7, 4, true));    // trace keeps reach
+    TEST_ASSERT_EQUAL_UINT32(12, phoneOriginHopLimit(7, 12, true));
+    TEST_ASSERT_EQUAL_UINT32(4, phoneOriginHopLimit(6, 0, false));   // unset config
+    TEST_ASSERT_EQUAL_UINT32(16, phoneOriginHopLimit(30, 20, true)); // clamped
+}
+
+void test_effective_blur_picks_coarser_radius() {
+    TEST_ASSERT_EQUAL_UINT32(200, effectiveBlurRadiusM(50, 200));
+    TEST_ASSERT_EQUAL_UINT32(200, effectiveBlurRadiusM(200, 50));
+    TEST_ASSERT_EQUAL_UINT32(0, effectiveBlurRadiusM(0, 0));
 }
 
 int main(int, char**) {
@@ -611,5 +813,20 @@ int main(int, char**) {
     RUN_TEST(test_channel_insurance_jitter_cap_steps_and_ordering);
     RUN_TEST(test_early_flood_gap_steps_and_ordering);
     RUN_TEST(test_clampf_bounds);
+    RUN_TEST(test_preamble_length_is_sf_aware);
+    RUN_TEST(test_direct_relayer_credit_requires_one_hop_decrement);
+    RUN_TEST(test_flood_loop_helpers);
+    RUN_TEST(test_lora_airtime_matches_semtech_reference);
+    RUN_TEST(test_channel_receipts_stop_when_slots_run_out);
+    RUN_TEST(test_telemetry_interval_respects_airtime_budget);
+    RUN_TEST(test_route_aging_follows_beacon_cadence);
+    RUN_TEST(test_channel_flood_slots_never_overlap);
+    RUN_TEST(test_channel_flood_slot_assignment_spreads_and_reshuffles);
+    RUN_TEST(test_channel_ack_waits_out_the_relay_wave);
+    RUN_TEST(test_hop_start_sanity);
+    RUN_TEST(test_transmissions_taken);
+    RUN_TEST(test_reply_hop_limit_covers_the_request_path);
+    RUN_TEST(test_phone_origin_hop_limit_applies_node_setting);
+    RUN_TEST(test_effective_blur_picks_coarser_radius);
     return UNITY_END();
 }
