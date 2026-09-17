@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.silentwolf75.aethermesh.data.SettingsRebootPolicy
 import java.util.*
 
 enum class BleConnectionPhase {
@@ -34,8 +35,6 @@ class BleConnectionManager(private val context: Context) {
 
     companion object {
         private const val TAG = "BleConnManager"
-        private const val PREF_PAIRED_MAC = "paired_mac"
-        private const val MAX_RECONNECT_ATTEMPTS = 12
         
         val SERVICE_UUID: UUID = UUID.fromString("a75e0001-8b01-4475-bf7d-9477b83e7953")
         val TX_CHAR_UUID: UUID = UUID.fromString("a75e0002-8b01-4475-bf7d-9477b83e7953")
@@ -112,7 +111,7 @@ class BleConnectionManager(private val context: Context) {
 
     init {
         // Auto-connect is deferred until BLUETOOTH_CONNECT is granted (Android 12+).
-        val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+        val savedMac = prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
         if (savedMac != null) {
             pendingAutoConnectMac = savedMac
             if (hasBleConnectPermission()) {
@@ -125,7 +124,7 @@ class BleConnectionManager(private val context: Context) {
 
     /** Call after runtime BLE permissions are granted (e.g. from MainActivity). */
     fun onPermissionsGranted() {
-        val mac = pendingAutoConnectMac ?: prefs.getString(PREF_PAIRED_MAC, null) ?: return
+        val mac = pendingAutoConnectMac ?: prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null) ?: return
         pendingAutoConnectMac = null
         if (!isConnected) {
             scheduleAutoConnect(mac)
@@ -138,7 +137,7 @@ class BleConnectionManager(private val context: Context) {
             if (!isConnected) {
                 connect(macAddress)
             }
-        }, 1500)
+        }, BleConnectPolicy.AUTO_CONNECT_DELAY_MS)
     }
 
     private fun hasBleConnectPermission(): Boolean {
@@ -218,11 +217,11 @@ class BleConnectionManager(private val context: Context) {
                 val deviceName = scanRecord?.deviceName ?: safeDeviceName(result.device)
                 val advertisesOurService =
                     scanRecord?.serviceUuids?.contains(ParcelUuid(SERVICE_UUID)) == true
-                val nameMatches = deviceName?.startsWith("AetherMesh-") == true
+                val nameMatches = BleConnectPolicy.matchesAdvertName(deviceName)
 
                 if (advertisesOurService || nameMatches) {
                     // Fall back to a generic label if the advert has no readable name yet.
-                    val label = deviceName ?: "AetherMesh Node"
+                    val label = BleConnectPolicy.scanDisplayName(deviceName)
                     onDeviceDiscovered?.invoke(label, result.device.address, result.rssi)
                 }
             }
@@ -296,7 +295,7 @@ class BleConnectionManager(private val context: Context) {
             // Allow stack to settle down before opening connection to new device
             handler.postDelayed({
                 performConnect(macAddress)
-            }, 500)
+            }, BleConnectPolicy.DEVICE_SWITCH_SETTLE_MS)
         } else {
             performConnect(macAddress)
         }
@@ -319,7 +318,7 @@ class BleConnectionManager(private val context: Context) {
                 scheduleReconnect(macAddress)
             }
         }
-        handler.postDelayed(connectionTimeoutRunnable!!, 15_000)
+        handler.postDelayed(connectionTimeoutRunnable!!, BleConnectPolicy.CONNECT_WATCHDOG_MS)
     }
 
     private fun performConnect(macAddress: String) {
@@ -330,7 +329,7 @@ class BleConnectionManager(private val context: Context) {
         }
 
         userWantsDisconnect = false
-        prefs.edit().putString(PREF_PAIRED_MAC, macAddress).apply()
+        prefs.edit().putString(BleConnectPolicy.PREF_PAIRED_MAC, macAddress).apply()
         setPhase(if (reconnectAttempt > 0) BleConnectionPhase.Reconnecting else BleConnectionPhase.Connecting)
 
         val device = bluetoothAdapter.getRemoteDevice(macAddress)
@@ -344,7 +343,7 @@ class BleConnectionManager(private val context: Context) {
 
     private fun scheduleReconnect(macAddress: String, delayOverrideMs: Long? = null) {
         if (userWantsDisconnect || suppressReconnect) return
-        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+        if (reconnectAttempt >= BleConnectPolicy.MAX_RECONNECT_ATTEMPTS) {
             Log.w(TAG, "Giving up auto-reconnect after $reconnectAttempt attempts")
             reconnectGaveUp = true
             setPhase(BleConnectionPhase.Disconnected)
@@ -373,10 +372,13 @@ class BleConnectionManager(private val context: Context) {
      * @param closeAfterMs when to close the current GATT (before/at reboot)
      * @param reconnectAfterMs when to start a fresh connect (from now)
      */
-    fun prepareForNodeReboot(closeAfterMs: Long = 1_200L, reconnectAfterMs: Long = 5_000L) {
+    fun prepareForNodeReboot(
+        closeAfterMs: Long = SettingsRebootPolicy.CLOSE_AFTER_MS,
+        reconnectAfterMs: Long = SettingsRebootPolicy.RECONNECT_AFTER_MS
+    ) {
         if (suppressReconnect) return
         val mac = getConnectedDeviceAddress()
-            ?: prefs.getString(PREF_PAIRED_MAC, null)
+            ?: prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
             ?: return
 
         cancelPostRebootPlan()
@@ -387,7 +389,7 @@ class BleConnectionManager(private val context: Context) {
         userWantsDisconnect = false
         reconnectGaveUp = false
         // Keep paired MAC; unlike user disconnect we must come back.
-        prefs.edit().putString(PREF_PAIRED_MAC, mac).apply()
+        prefs.edit().putString(BleConnectPolicy.PREF_PAIRED_MAC, mac).apply()
         setPhase(BleConnectionPhase.Reconnecting)
         Log.d(TAG, "prepareForNodeReboot: close in ${closeAfterMs}ms, reconnect in ${reconnectAfterMs}ms ($mac)")
 
@@ -408,7 +410,10 @@ class BleConnectionManager(private val context: Context) {
             reconnectAttempt = 0
             connect(mac)
         }
-        handler.postDelayed(postRebootConnectRunnable!!, reconnectAfterMs.coerceAtLeast(closeAfterMs + 500L))
+        handler.postDelayed(
+            postRebootConnectRunnable!!,
+            BleConnectPolicy.postRebootConnectDelay(closeAfterMs, reconnectAfterMs)
+        )
     }
 
     /** Close GATT without clearing the paired MAC; used for reboot / forced refresh. */
@@ -454,7 +459,7 @@ class BleConnectionManager(private val context: Context) {
      */
     fun forceRefreshConnection(reconnectDelayMs: Long = 800L) {
         val mac = getConnectedDeviceAddress()
-            ?: prefs.getString(PREF_PAIRED_MAC, null)
+            ?: prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
             ?: return
         Log.w(TAG, "forceRefreshConnection to $mac in ${reconnectDelayMs}ms")
         cancelPostRebootPlan()
@@ -470,7 +475,7 @@ class BleConnectionManager(private val context: Context) {
             if (!isConnected && !userWantsDisconnect && !suppressReconnect) {
                 connect(mac)
             }
-        }, reconnectDelayMs.coerceAtLeast(200L))
+        }, BleConnectPolicy.forceRefreshDelay(reconnectDelayMs))
     }
 
     // Set during a bootloader DFU update: our auto-reconnect must not fight the
@@ -505,7 +510,7 @@ class BleConnectionManager(private val context: Context) {
         suppressReconnect = false
         reconnectAttempt = 0
         reconnectGaveUp = false
-        val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+        val savedMac = prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
         if (savedMac != null && !isConnected) {
             // Give the freshly flashed node a moment to boot before connecting
             handler.postDelayed({
@@ -533,7 +538,7 @@ class BleConnectionManager(private val context: Context) {
         }
         
         // Clear paired MAC when user explicitly disconnects so we don't auto-connect next time
-        prefs.edit().remove(PREF_PAIRED_MAC).apply()
+        prefs.edit().remove(BleConnectPolicy.PREF_PAIRED_MAC).apply()
         
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
@@ -555,29 +560,15 @@ class BleConnectionManager(private val context: Context) {
     }
 
     fun getPairedMac(): String? {
-        return prefs.getString(PREF_PAIRED_MAC, null)
+        return prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
     }
 
     fun parseNodeIdFromMac(mac: String): Long {
-        return try {
-            val parts = mac.split(":")
-            if (parts.size >= 4) {
-                val b0 = parts[0].toInt(16)
-                val b1 = parts[1].toInt(16)
-                val b2 = parts[2].toInt(16)
-                val b3 = parts[3].toInt(16)
-                
-                (b3.toLong() and 0xFFL shl 24) or
-                (b2.toLong() and 0xFFL shl 16) or
-                (b1.toLong() and 0xFFL shl 8) or
-                (b0.toLong() and 0xFFL)
-            } else {
-                0L
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing node ID from MAC $mac: ${e.message}")
-            0L
+        val id = com.silentwolf75.aethermesh.data.MeshNodeId.fromMac(mac)
+        if (id == 0L && mac.isNotBlank()) {
+            Log.e(TAG, "Error parsing node ID from MAC $mac")
         }
+        return id
     }
 
     // Write flow control: even WRITE_TYPE_NO_RESPONSE writes must wait for
@@ -704,7 +695,7 @@ class BleConnectionManager(private val context: Context) {
             }
             
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d(TAG, "Connected to GATT server. Requesting MTU 256...")
+                Log.d(TAG, "Connected to GATT server. Requesting MTU ${BleConnectPolicy.REQUESTED_MTU}...")
                 val discoverRunnable = object : Runnable {
                     override fun run() {
                         if (mtuTimeoutRunnable != null) {
@@ -715,8 +706,8 @@ class BleConnectionManager(private val context: Context) {
                     }
                 }
                 mtuTimeoutRunnable = discoverRunnable
-                handler.postDelayed(discoverRunnable, 800)
-                gatt.requestMtu(256)
+                handler.postDelayed(discoverRunnable, BleConnectPolicy.MTU_FALLBACK_DISCOVER_MS)
+                gatt.requestMtu(BleConnectPolicy.REQUESTED_MTU)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(TAG, "Disconnected from GATT server. Closing GATT to release system resources...")
                 mtuTimeoutRunnable?.let {
@@ -755,7 +746,7 @@ class BleConnectionManager(private val context: Context) {
                 // racing an early reconnect against a rebooting MCU is what
                 // left the prior fix half-working.
                 if (!userWantsDisconnect && !suppressReconnect && !rebootPlanActive) {
-                    val savedMac = prefs.getString(PREF_PAIRED_MAC, null)
+                    val savedMac = prefs.getString(BleConnectPolicy.PREF_PAIRED_MAC, null)
                     if (savedMac != null) {
                         scheduleReconnect(savedMac)
                     }
@@ -860,7 +851,7 @@ class BleConnectionManager(private val context: Context) {
             setPhase(BleConnectionPhase.Connected)
             
             // Save MAC address to preferences for auto-reconnection
-            prefs.edit().putString(PREF_PAIRED_MAC, gatt.device.address).apply()
+            prefs.edit().putString(BleConnectPolicy.PREF_PAIRED_MAC, gatt.device.address).apply()
             
             // Extract Node ID from device name (AetherMesh-XXXX) or fallback/verify with MAC address
             try {

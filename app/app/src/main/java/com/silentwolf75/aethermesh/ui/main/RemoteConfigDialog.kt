@@ -41,34 +41,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silentwolf75.aethermesh.data.ConfigApplyMask
+import com.silentwolf75.aethermesh.data.LocalConfigSavePolicy
 import com.silentwolf75.aethermesh.data.MeshNode
-import com.silentwolf75.aethermesh.proto.ConfigResult
+import com.silentwolf75.aethermesh.data.MeshReplyPolicy
+import com.silentwolf75.aethermesh.data.NodeSettingsPrefs
+import com.silentwolf75.aethermesh.data.RadioRegionPolicy
+import com.silentwolf75.aethermesh.data.RemoteConfigHydratePolicy
+import com.silentwolf75.aethermesh.data.RemoteConfigResultAction
+import com.silentwolf75.aethermesh.data.RemoteConfigResultPolicy
+import com.silentwolf75.aethermesh.data.RemoteConfigSnapshot
 import com.silentwolf75.aethermesh.proto.NodeConfig
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.components.aetherTextFieldColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
-
-private data class RemoteBaseline(
-    val name: String,
-    val sf: Int,
-    val bw: Float,
-    val txPower: Int,
-    val region: Int,
-    val role: Int,
-    val telemetry: Int,
-    val screen: Int,
-    val powerSave: Boolean,
-    val posPrec: Int,
-    val gpsMode: Int,
-    val gpsDutySecs: Int,
-    val fixed: Boolean,
-    val lat: Float,
-    val lon: Float,
-    val alt: Int,
-    val hop: Int,
-    val txdelay: Int
-)
 
 @Composable
 fun RemoteConfigDialog(
@@ -80,57 +66,103 @@ fun RemoteConfigDialog(
     val context = LocalContext.current
     val spanish = appLanguage == "Spanish"
     val remotePrefs = remember(node.nodeId) {
-        context.getSharedPreferences("node_settings_${node.nodeId}", Context.MODE_PRIVATE)
+        context.getSharedPreferences(NodeSettingsPrefs.prefsName(node.nodeId), Context.MODE_PRIVATE)
     }
 
     var remoteName by remember(node.nodeId) {
-        mutableStateOf(remotePrefs.getString("node_name", null) ?: node.name)
+        mutableStateOf(remotePrefs.getString(NodeSettingsPrefs.KEY_NODE_NAME, null) ?: node.name)
     }
     var remotePassword by remember(node.nodeId) { mutableStateOf("") }
     var remoteSF by remember(node.nodeId) {
         mutableIntStateOf(
             when {
-                remotePrefs.contains("lora_sf") -> remotePrefs.getInt("lora_sf", 11)
+                remotePrefs.contains(NodeSettingsPrefs.KEY_LORA_SF) ->
+                    NodeSettingsPrefs.readLoraSf(remotePrefs)
                 node.loraSf in 7..12 -> node.loraSf
-                else -> 11
+                else -> NodeSettingsPrefs.DEFAULT_SF
             }
         )
     }
-    var remoteBW by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("lora_bw", 125f)) }
-    var remoteTxPower by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("lora_tx_power", 22)) }
+    var remoteBW by remember(node.nodeId) {
+        mutableFloatStateOf(remotePrefs.getFloat(NodeSettingsPrefs.KEY_LORA_BW, NodeSettingsPrefs.DEFAULT_BW))
+    }
+    var remoteTxPower by remember(node.nodeId) {
+        mutableIntStateOf(
+            remotePrefs.getInt(NodeSettingsPrefs.KEY_LORA_TX_POWER, NodeSettingsPrefs.DEFAULT_TX_POWER)
+        )
+    }
     var remoteRegion by remember(node.nodeId) {
         mutableIntStateOf(
             when {
-                remotePrefs.contains("region") -> remotePrefs.getInt("region", 0)
+                remotePrefs.contains(NodeSettingsPrefs.KEY_REGION) ->
+                    remotePrefs.getInt(NodeSettingsPrefs.KEY_REGION, 0)
                 node.region >= 0 -> node.region
                 else -> 0
             }
         )
     }
-    var remoteRole by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("node_role", 0).coerceIn(0, 1)) }
-    var remoteTelemetryInterval by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("telemetry_interval", 60)) }
-    var remotePositionPrecision by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("position_precision", 0)) }
-    var remoteGpsMode by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("gps_mode", 0).coerceIn(0, 2)) }
-    var remoteGpsDutySecs by remember(node.nodeId) {
-        mutableIntStateOf(snapGpsDutyIntervalSecs(remotePrefs.getInt("gps_duty_interval_secs", 900)))
+    var remoteRole by remember(node.nodeId) {
+        mutableIntStateOf(remotePrefs.getInt(NodeSettingsPrefs.KEY_NODE_ROLE, 0).coerceIn(0, 1))
     }
-    var remoteScreenTimeout by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("screen_timeout", 30)) }
-    var remotePowerSave by remember(node.nodeId) { mutableStateOf(remotePrefs.getBoolean("power_save_mode", false)) }
-    var remoteFixedPosition by remember(node.nodeId) { mutableStateOf(remotePrefs.getBoolean("fixed_position", false)) }
-    var remoteFixedLat by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("fixed_latitude", 0f)) }
-    var remoteFixedLon by remember(node.nodeId) { mutableFloatStateOf(remotePrefs.getFloat("fixed_longitude", 0f)) }
-    var remoteFixedAlt by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("fixed_altitude", 0)) }
-    var remoteHop by remember(node.nodeId) { mutableIntStateOf(remotePrefs.getInt("mesh_hop_limit", 4).coerceIn(1, 8)) }
+    var remoteTelemetryInterval by remember(node.nodeId) {
+        mutableIntStateOf(
+            remotePrefs.getInt(
+                NodeSettingsPrefs.KEY_TELEMETRY_INTERVAL,
+                NodeSettingsPrefs.DEFAULT_TELEMETRY_SECS
+            )
+        )
+    }
+    var remotePositionPrecision by remember(node.nodeId) {
+        mutableIntStateOf(remotePrefs.getInt(NodeSettingsPrefs.KEY_POSITION_PRECISION, 0))
+    }
+    var remoteGpsMode by remember(node.nodeId) {
+        mutableIntStateOf(remotePrefs.getInt(NodeSettingsPrefs.KEY_GPS_MODE, 0).coerceIn(0, 2))
+    }
+    var remoteGpsDutySecs by remember(node.nodeId) {
+        mutableIntStateOf(
+            snapGpsDutyIntervalSecs(
+                remotePrefs.getInt(NodeSettingsPrefs.KEY_GPS_DUTY_SECS, NodeSettingsPrefs.DEFAULT_GPS_DUTY_SECS)
+            )
+        )
+    }
+    var remoteScreenTimeout by remember(node.nodeId) {
+        mutableIntStateOf(
+            remotePrefs.getInt(NodeSettingsPrefs.KEY_SCREEN_TIMEOUT, NodeSettingsPrefs.DEFAULT_SCREEN_TIMEOUT)
+        )
+    }
+    var remotePowerSave by remember(node.nodeId) {
+        mutableStateOf(remotePrefs.getBoolean(NodeSettingsPrefs.KEY_POWER_SAVE, false))
+    }
+    var remoteFixedPosition by remember(node.nodeId) {
+        mutableStateOf(remotePrefs.getBoolean(NodeSettingsPrefs.KEY_FIXED_POSITION, false))
+    }
+    var remoteFixedLat by remember(node.nodeId) {
+        mutableFloatStateOf(remotePrefs.getFloat(NodeSettingsPrefs.KEY_FIXED_LAT, 0f))
+    }
+    var remoteFixedLon by remember(node.nodeId) {
+        mutableFloatStateOf(remotePrefs.getFloat(NodeSettingsPrefs.KEY_FIXED_LON, 0f))
+    }
+    var remoteFixedAlt by remember(node.nodeId) {
+        mutableIntStateOf(remotePrefs.getInt(NodeSettingsPrefs.KEY_FIXED_ALT, 0))
+    }
+    var remoteHop by remember(node.nodeId) {
+        mutableIntStateOf(
+            remotePrefs.getInt(NodeSettingsPrefs.KEY_MESH_HOP_LIMIT, NodeSettingsPrefs.DEFAULT_MESH_HOPS)
+                .coerceIn(1, NodeSettingsPrefs.readMaxHopLimit(remotePrefs))
+        )
+    }
     var remoteTxdelay by remember(node.nodeId) {
-        mutableIntStateOf(remotePrefs.getInt("rebroadcast_txdelay_x100", 100).coerceIn(50, 200))
+        mutableIntStateOf(
+            remotePrefs.getInt(
+                NodeSettingsPrefs.KEY_REBROADCAST_TXDELAY,
+                NodeSettingsPrefs.DEFAULT_TXDELAY_X100
+            ).coerceIn(50, 200)
+        )
     }
 
-    var baseline by remember(node.nodeId) { mutableStateOf<RemoteBaseline?>(null) }
+    var baseline by remember(node.nodeId) { mutableStateOf<RemoteConfigSnapshot?>(null) }
     var statusText by remember(node.nodeId) {
-        mutableStateOf(
-            if (spanish) "Introduce la contraseña y carga los ajustes del nodo."
-            else "Enter password and load live settings from the node."
-        )
+        mutableStateOf(RemoteConfigResultPolicy.promptEnterPassword(spanish))
     }
     var busy by remember(node.nodeId) { mutableStateOf(false) }
     var pendingPacketId by remember(node.nodeId) { mutableIntStateOf(0) }
@@ -138,91 +170,64 @@ fun RemoteConfigDialog(
     var awaitingApply by remember(node.nodeId) { mutableStateOf(false) }
     val isBleConnected by viewModel.isBleConnected.collectAsStateWithLifecycle()
 
-    fun hydrateFromConfig(cfg: NodeConfig) {
-        remoteName = cfg.nodeName.ifBlank { remoteName }
-        if (cfg.loraSf in 7..12) remoteSF = cfg.loraSf
-        if (cfg.loraBw > 0f) remoteBW = cfg.loraBw
-        if (cfg.loraTxPower != 0) remoteTxPower = cfg.loraTxPower
-        remoteRegion = cfg.region
-        remoteRole = cfg.nodeRole.coerceIn(0, 1)
-        if (cfg.telemetryInterval > 0) remoteTelemetryInterval = cfg.telemetryInterval
-        remoteScreenTimeout = cfg.screenTimeoutSecs
-        remotePowerSave = cfg.powerSaveMode
-        remotePositionPrecision = cfg.positionPrecision
-        remoteGpsMode = cfg.gpsMode.coerceIn(0, 2)
-        remoteGpsDutySecs = snapGpsDutyIntervalSecs(cfg.gpsDutyIntervalSecs)
-        remoteFixedPosition = cfg.fixedPosition
-        remoteFixedLat = cfg.fixedLatitude
-        remoteFixedLon = cfg.fixedLongitude
-        remoteFixedAlt = cfg.fixedAltitude
-        remoteHop = if (cfg.meshHopLimit in 1..8) cfg.meshHopLimit else 4
-        remoteTxdelay = when {
-            cfg.rebroadcastTxdelayX100 in 50..200 -> cfg.rebroadcastTxdelayX100
-            else -> 100
-        }
-        baseline = RemoteBaseline(
-            name = remoteName,
-            sf = remoteSF,
-            bw = remoteBW,
-            txPower = remoteTxPower,
-            region = remoteRegion,
-            role = remoteRole,
-            telemetry = remoteTelemetryInterval,
-            screen = remoteScreenTimeout,
-            powerSave = remotePowerSave,
-            posPrec = remotePositionPrecision,
-            gpsMode = remoteGpsMode,
-            gpsDutySecs = remoteGpsDutySecs,
-            fixed = remoteFixedPosition,
-            lat = remoteFixedLat,
-            lon = remoteFixedLon,
-            alt = remoteFixedAlt,
-            hop = remoteHop,
-            txdelay = remoteTxdelay
-        )
-    }
+    fun currentSnapshot(trimName: Boolean = false): RemoteConfigSnapshot = RemoteConfigSnapshot(
+        name = if (trimName) remoteName.trim() else remoteName,
+        sf = remoteSF,
+        bw = remoteBW,
+        txPower = remoteTxPower,
+        region = remoteRegion,
+        role = remoteRole,
+        telemetry = remoteTelemetryInterval,
+        screen = remoteScreenTimeout,
+        powerSave = remotePowerSave,
+        posPrec = remotePositionPrecision,
+        gpsMode = remoteGpsMode,
+        gpsDutySecs = remoteGpsDutySecs,
+        fixed = remoteFixedPosition,
+        lat = remoteFixedLat,
+        lon = remoteFixedLon,
+        alt = remoteFixedAlt,
+        hop = remoteHop,
+        txdelay = remoteTxdelay
+    )
 
-    fun computeMask(base: RemoteBaseline): Int {
-        var mask = 0
-        if (remoteName.trim() != base.name) mask = mask or ConfigApplyMask.NAME
-        if (remoteSF != base.sf) mask = mask or ConfigApplyMask.SF
-        if (remoteBW != base.bw) mask = mask or ConfigApplyMask.BW
-        if (remoteTxPower != base.txPower) mask = mask or ConfigApplyMask.TX
-        if (remoteRegion != base.region) mask = mask or ConfigApplyMask.REGION
-        if (remoteRole != base.role) mask = mask or ConfigApplyMask.ROLE
-        if (remoteTelemetryInterval != base.telemetry) mask = mask or ConfigApplyMask.TELEMETRY
-        if (remoteScreenTimeout != base.screen) mask = mask or ConfigApplyMask.SCREEN
-        if (remotePowerSave != base.powerSave) mask = mask or ConfigApplyMask.POWER_SAVE
-        if (remotePositionPrecision != base.posPrec) mask = mask or ConfigApplyMask.POS_PREC
-        if (remoteGpsMode != base.gpsMode || remoteGpsDutySecs != base.gpsDutySecs) {
-            mask = mask or ConfigApplyMask.GPS_MODE
-        }
-        if (remoteFixedPosition != base.fixed || remoteFixedLat != base.lat ||
-            remoteFixedLon != base.lon || remoteFixedAlt != base.alt
-        ) {
-            mask = mask or ConfigApplyMask.FIXED
-        }
-        if (remoteHop != base.hop) mask = mask or ConfigApplyMask.HOP
-        if (remoteTxdelay != base.txdelay) mask = mask or ConfigApplyMask.TXDELAY
-        return mask
+    fun hydrateFromConfig(cfg: NodeConfig) {
+        val next = RemoteConfigHydratePolicy.merge(currentSnapshot(), cfg)
+        remoteName = next.name
+        remoteSF = next.sf
+        remoteBW = next.bw
+        remoteTxPower = next.txPower
+        remoteRegion = next.region
+        remoteRole = next.role
+        remoteTelemetryInterval = next.telemetry
+        remoteScreenTimeout = next.screen
+        remotePowerSave = next.powerSave
+        remotePositionPrecision = next.posPrec
+        remoteGpsMode = next.gpsMode
+        remoteGpsDutySecs = next.gpsDutySecs
+        remoteFixedPosition = next.fixed
+        remoteFixedLat = next.lat
+        remoteFixedLon = next.lon
+        remoteFixedAlt = next.alt
+        remoteHop = next.hop
+        remoteTxdelay = next.txdelay
+        baseline = next
     }
 
     fun requestLive() {
         if (remotePassword.isBlank()) {
-            AppUiFeedback.show(
-                if (spanish) "Contraseña requerida" else "Password required"
-            )
+            AppUiFeedback.show(RemoteConfigResultPolicy.passwordRequired(spanish))
             return
         }
         busy = true
         awaitingReport = true
         awaitingApply = false
-        statusText = if (spanish) "Solicitando ajustes al nodo…" else "Requesting settings from node…"
+        statusText = RemoteConfigResultPolicy.requestingSettings(spanish)
         val id = viewModel.requestRemoteConfigReport(node.nodeId, remotePassword.trim())
         if (id == null) {
             busy = false
             awaitingReport = false
-            statusText = if (spanish) "No se pudo enviar la solicitud." else "Could not send request."
+            statusText = RemoteConfigResultPolicy.requestSendFailed(spanish)
         } else {
             pendingPacketId = id
         }
@@ -231,34 +236,23 @@ fun RemoteConfigDialog(
     fun applyRemoteConfig() {
         val base = baseline
         if (base == null) {
-            AppUiFeedback.show(
-                if (spanish) "Carga primero los ajustes del nodo."
-                else "Load live settings from the node first."
-            )
+            AppUiFeedback.show(RemoteConfigResultPolicy.loadBaselineFirst(spanish))
             return
         }
         val roleToSend = remoteRole.coerceIn(0, 1)
-        val latLonOk = remoteFixedLat in -90f..90f &&
-            remoteFixedLon in -180f..180f &&
-            !(remoteFixedLat == 0f && remoteFixedLon == 0f)
-        if (remoteFixedPosition && !latLonOk) {
-            AppUiFeedback.show(
-                if (spanish) "Posición fija inválida — usa coordenadas reales (no 0,0)."
-                else "Invalid fixed position — use real coordinates (not 0,0)."
-            )
+        if (!LocalConfigSavePolicy.isAllowed(remoteFixedPosition, remoteFixedLat, remoteFixedLon)) {
+            AppUiFeedback.show(LocalConfigSavePolicy.invalidFixedMessage(spanish))
             return
         }
-        val mask = computeMask(base)
+        val mask = ConfigApplyMask.diff(base, currentSnapshot(trimName = true))
         if (mask == 0) {
-            AppUiFeedback.show(
-                if (spanish) "Sin cambios que aplicar." else "No changes to apply."
-            )
+            AppUiFeedback.show(RemoteConfigResultPolicy.noChanges(spanish))
             return
         }
         busy = true
         awaitingApply = true
         awaitingReport = false
-        statusText = if (spanish) "Enviando cambios…" else "Sending changes…"
+        statusText = RemoteConfigResultPolicy.sendingChanges(spanish)
         val id = viewModel.sendRemoteConfig(
             nodeId = node.nodeId,
             name = remoteName.trim(),
@@ -285,7 +279,7 @@ fun RemoteConfigDialog(
         if (id == null) {
             busy = false
             awaitingApply = false
-            statusText = if (spanish) "No se pudo enviar." else "Could not send."
+            statusText = RemoteConfigResultPolicy.applySendFailed(spanish)
         } else {
             pendingPacketId = id
             // Prefs are written only after ConfigResult APPLIED / APPLIED_REBOOTING.
@@ -294,24 +288,24 @@ fun RemoteConfigDialog(
 
     fun persistRemotePrefs() {
         remotePrefs.edit().apply {
-            putString("node_name", remoteName.trim())
-            putInt("lora_sf", remoteSF)
-            putFloat("lora_bw", remoteBW)
-            putInt("lora_tx_power", remoteTxPower)
-            putInt("region", remoteRegion)
-            putInt("node_role", remoteRole.coerceIn(0, 1))
-            putInt("telemetry_interval", remoteTelemetryInterval)
-            putInt("screen_timeout", remoteScreenTimeout)
-            putBoolean("power_save_mode", remotePowerSave)
-            putInt("position_precision", remotePositionPrecision)
-            putInt("gps_mode", remoteGpsMode)
-            putInt("gps_duty_interval_secs", remoteGpsDutySecs)
-            putBoolean("fixed_position", remoteFixedPosition)
-            putFloat("fixed_latitude", remoteFixedLat)
-            putFloat("fixed_longitude", remoteFixedLon)
-            putInt("fixed_altitude", remoteFixedAlt)
-            putInt("mesh_hop_limit", remoteHop)
-            putInt("rebroadcast_txdelay_x100", remoteTxdelay)
+            putString(NodeSettingsPrefs.KEY_NODE_NAME, remoteName.trim())
+            putInt(NodeSettingsPrefs.KEY_LORA_SF, remoteSF)
+            putFloat(NodeSettingsPrefs.KEY_LORA_BW, remoteBW)
+            putInt(NodeSettingsPrefs.KEY_LORA_TX_POWER, remoteTxPower)
+            putInt(NodeSettingsPrefs.KEY_REGION, remoteRegion)
+            putInt(NodeSettingsPrefs.KEY_NODE_ROLE, remoteRole.coerceIn(0, 1))
+            putInt(NodeSettingsPrefs.KEY_TELEMETRY_INTERVAL, remoteTelemetryInterval)
+            putInt(NodeSettingsPrefs.KEY_SCREEN_TIMEOUT, remoteScreenTimeout)
+            putBoolean(NodeSettingsPrefs.KEY_POWER_SAVE, remotePowerSave)
+            putInt(NodeSettingsPrefs.KEY_POSITION_PRECISION, remotePositionPrecision)
+            putInt(NodeSettingsPrefs.KEY_GPS_MODE, remoteGpsMode)
+            putInt(NodeSettingsPrefs.KEY_GPS_DUTY_SECS, remoteGpsDutySecs)
+            putBoolean(NodeSettingsPrefs.KEY_FIXED_POSITION, remoteFixedPosition)
+            putFloat(NodeSettingsPrefs.KEY_FIXED_LAT, remoteFixedLat)
+            putFloat(NodeSettingsPrefs.KEY_FIXED_LON, remoteFixedLon)
+            putInt(NodeSettingsPrefs.KEY_FIXED_ALT, remoteFixedAlt)
+            putInt(NodeSettingsPrefs.KEY_MESH_HOP_LIMIT, remoteHop)
+            putInt(NodeSettingsPrefs.KEY_REBROADCAST_TXDELAY, remoteTxdelay)
             apply()
         }
     }
@@ -320,10 +314,18 @@ fun RemoteConfigDialog(
         viewModel.remoteConfigReport
             .filter { it.nodeId == node.nodeId }
             .collect { report ->
+                if (!RemoteConfigResultPolicy.acceptLiveReport(
+                        awaitingReport = awaitingReport,
+                        reportNodeId = report.nodeId,
+                        expectedNodeId = node.nodeId
+                    )
+                ) {
+                    return@collect
+                }
                 hydrateFromConfig(report.config)
                 busy = false
                 awaitingReport = false
-                statusText = if (spanish) "Ajustes cargados del nodo." else "Live settings loaded."
+                statusText = RemoteConfigResultPolicy.liveSettingsLoaded(spanish)
             }
     }
 
@@ -331,63 +333,31 @@ fun RemoteConfigDialog(
         viewModel.remoteConfigResult
             .filter { it.nodeId == node.nodeId }
             .collect { event ->
-                if (pendingPacketId != 0 && event.requestPacketId != 0 &&
-                    event.requestPacketId != pendingPacketId
-                ) {
-                    return@collect
-                }
-                busy = false
-                awaitingReport = false
-                awaitingApply = false
-                statusText = when (event.status) {
-                    ConfigResult.Status.REPORT_OK ->
-                        if (spanish) "Informe enviado por el nodo…" else "Node sent report…"
-                    ConfigResult.Status.APPLIED ->
-                        if (spanish) "Aplicado (sin reinicio)." else "Applied (no reboot)."
-                    ConfigResult.Status.APPLIED_REBOOTING ->
-                        if (spanish) "Aplicado — el nodo se reinicia." else "Applied — node rebooting."
-                    ConfigResult.Status.AUTH_FAILED ->
-                        if (spanish) "Autenticación fallida." else "Authentication failed."
-                    ConfigResult.Status.REJECTED_ROLE2 ->
-                        if (spanish) "Rol Repetidor rechazado (sin BLE)." else "Repeater role rejected (no BLE)."
-                    ConfigResult.Status.REJECTED_FIXED_POS ->
-                        if (spanish) "Posición fija rechazada." else "Fixed position rejected."
-                    else -> event.message.ifBlank {
-                        if (spanish) "Respuesta: ${event.status}" else "Result: ${event.status}"
-                    }
-                }
-                if (event.status == ConfigResult.Status.APPLIED_REBOOTING ||
-                    event.status == ConfigResult.Status.APPLIED
-                ) {
-                    // Capture applied values as the new baseline so a second
-                    // Apply doesn't re-send the same mask after success.
-                    baseline = RemoteBaseline(
-                        name = remoteName.trim(),
-                        sf = remoteSF,
-                        bw = remoteBW,
-                        txPower = remoteTxPower,
-                        region = remoteRegion,
-                        role = remoteRole,
-                        telemetry = remoteTelemetryInterval,
-                        screen = remoteScreenTimeout,
-                        powerSave = remotePowerSave,
-                        posPrec = remotePositionPrecision,
-                        gpsMode = remoteGpsMode,
-                        gpsDutySecs = remoteGpsDutySecs,
-                        fixed = remoteFixedPosition,
-                        lat = remoteFixedLat,
-                        lon = remoteFixedLon,
-                        alt = remoteFixedAlt,
-                        hop = remoteHop,
-                        txdelay = remoteTxdelay
+                when (
+                    val action = RemoteConfigResultPolicy.decide(
+                        pendingPacketId = pendingPacketId,
+                        requestPacketId = event.requestPacketId,
+                        status = event.status,
+                        message = event.message,
+                        spanish = spanish
                     )
-                    persistRemotePrefs()
-                    AppUiFeedback.show(statusText)
-                } else if (event.status == ConfigResult.Status.AUTH_FAILED ||
-                    event.status == ConfigResult.Status.REJECTED_ROLE2 ||
-                    event.status == ConfigResult.Status.REJECTED_FIXED_POS
                 ) {
-                    AppUiFeedback.show(statusText)
+                    RemoteConfigResultAction.IgnoreStale -> return@collect
+                    is RemoteConfigResultAction.Handle -> {
+                        busy = false
+                        awaitingReport = false
+                        awaitingApply = false
+                        statusText = action.statusText
+                        if (action.persistBaseline) {
+                            // Capture applied values as the new baseline so a second
+                            // Apply doesn't re-send the same mask after success.
+                            baseline = currentSnapshot(trimName = true)
+                            persistRemotePrefs()
+                        }
+                        if (action.showFeedback) {
+                            AppUiFeedback.show(statusText)
+                        }
+                    }
                 }
             }
     }
@@ -397,24 +367,18 @@ fun RemoteConfigDialog(
             busy = false
             awaitingReport = false
             awaitingApply = false
-            statusText = if (spanish)
-                "Desconectado — solicitud cancelada."
-            else
-                "Disconnected — request cancelled."
+            statusText = RemoteConfigResultPolicy.disconnectCancelled(spanish)
         }
     }
 
-    LaunchedEffect(busy, awaitingReport, awaitingApply, pendingPacketId) {
+    LaunchedEffect(busy, awaitingReport, awaitingApply, pendingPacketId, remoteSF) {
         if (!busy) return@LaunchedEffect
-        delay(45_000)
+        delay(MeshReplyPolicy.timeoutMs(remoteSF))
         if (busy && (awaitingReport || awaitingApply)) {
             busy = false
             awaitingReport = false
             awaitingApply = false
-            statusText = if (spanish)
-                "Tiempo agotado — sin respuesta del nodo."
-            else
-                "Timed out — no response from node."
+            statusText = MeshReplyPolicy.remoteTimedOut(spanish)
             AppUiFeedback.show(statusText)
         }
     }
@@ -548,8 +512,14 @@ fun RemoteConfigDialog(
                 Text(if (spanish) "Región" else "Region", color = TextMuted, fontSize = 11.sp)
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("US915", remoteRegion == 0) { remoteRegion = 0 }
-                    Chip("EU868", remoteRegion == 1) { remoteRegion = 1 }
+                    Chip(
+                        RadioRegionPolicy.shortLabel(RadioRegionPolicy.US915),
+                        remoteRegion == RadioRegionPolicy.US915
+                    ) { remoteRegion = RadioRegionPolicy.US915 }
+                    Chip(
+                        RadioRegionPolicy.shortLabel(RadioRegionPolicy.EU868),
+                        remoteRegion == RadioRegionPolicy.EU868
+                    ) { remoteRegion = RadioRegionPolicy.EU868 }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

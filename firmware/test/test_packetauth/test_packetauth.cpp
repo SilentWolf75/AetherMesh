@@ -129,6 +129,118 @@ void test_verifyConfig_v3_rejects_wrong_password() {
     TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
 }
 
+void test_setControlPassword_skips_derivation_for_unchanged_password() {
+    packetauth::setControlPassword(PASSWORD);
+    const uint32_t afterFirst = packetauth::controlKeyDerivationCount();
+    // saveSettings() passes the same password on every unrelated settings save.
+    packetauth::setControlPassword(PASSWORD);
+    packetauth::setControlPassword(PASSWORD);
+    TEST_ASSERT_EQUAL_UINT32(afterFirst, packetauth::controlKeyDerivationCount());
+}
+
+void test_setControlPassword_rederives_after_password_change() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    packet.protocol_version = 3;
+    setAuthTagFromHex(&packet, V3_TAG_HEX);
+
+    packetauth::setControlPassword("not-admin-key");
+    TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+    const uint32_t before = packetauth::controlKeyDerivationCount();
+
+    packetauth::setControlPassword(PASSWORD);
+    TEST_ASSERT_EQUAL_UINT32(before + 1, packetauth::controlKeyDerivationCount());
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+
+    // Changing away must invalidate the cached key, not keep accepting it.
+    packetauth::setControlPassword("not-admin-key");
+    TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void test_setControlPassword_clear_then_same_password_rederives() {
+    aethermesh_MeshPacket packet;
+    fillPublishedFixture(&packet);
+    packet.protocol_version = 3;
+    setAuthTagFromHex(&packet, V3_TAG_HEX);
+
+    packetauth::setControlPassword(PASSWORD);
+    packetauth::setControlPassword(nullptr);
+    TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+    const uint32_t before = packetauth::controlKeyDerivationCount();
+    packetauth::setControlPassword(PASSWORD);
+    TEST_ASSERT_EQUAL_UINT32(before + 1, packetauth::controlKeyDerivationCount());
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+}
+
+static void fillV3Fixture(aethermesh_MeshPacket* packet) {
+    fillPublishedFixture(packet);
+    packet->protocol_version = 3;
+    setAuthTagFromHex(packet, V3_TAG_HEX);
+}
+
+void test_incremental_derivation_matches_published_vector() {
+    aethermesh_MeshPacket packet;
+    fillV3Fixture(&packet);
+
+    packetauth::beginControlPassword(PASSWORD);
+    uint32_t passes = 0;
+    while (!packetauth::serviceControlKey(7777)) {
+        TEST_ASSERT_TRUE(packetauth::controlKeyPending());
+        // A half-derived key must never verify anything.
+        TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+        passes++;
+    }
+    TEST_ASSERT_FALSE(packetauth::controlKeyPending());
+    TEST_ASSERT_EQUAL_UINT32(15, passes); // 120000 iterations in 7777-sized slices
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void test_begin_with_same_password_keeps_progress() {
+    aethermesh_MeshPacket packet;
+    fillV3Fixture(&packet);
+
+    packetauth::beginControlPassword(PASSWORD);
+    TEST_ASSERT_FALSE(packetauth::serviceControlKey(60000));
+    // saveSettings() during boot derivation re-sends the same password.
+    packetauth::beginControlPassword(PASSWORD);
+    TEST_ASSERT_TRUE(packetauth::serviceControlKey(60000));
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void test_password_change_mid_derivation_restarts_with_new_password() {
+    aethermesh_MeshPacket packet;
+    fillV3Fixture(&packet);
+    const uint32_t before = packetauth::controlKeyDerivationCount();
+
+    packetauth::beginControlPassword("not-admin-key");
+    TEST_ASSERT_FALSE(packetauth::serviceControlKey(90000));
+    packetauth::beginControlPassword(PASSWORD);
+    // The abandoned derivation's progress must not carry over.
+    TEST_ASSERT_FALSE(packetauth::serviceControlKey(30000));
+    TEST_ASSERT_TRUE(packetauth::serviceControlKey(120000));
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+    TEST_ASSERT_EQUAL_UINT32(before + 1, packetauth::controlKeyDerivationCount());
+}
+
+void test_changing_password_invalidates_ready_key_immediately() {
+    aethermesh_MeshPacket packet;
+    fillV3Fixture(&packet);
+
+    packetauth::setControlPassword(PASSWORD);
+    TEST_ASSERT_TRUE(packetauth::verifyConfig(packet, nullptr));
+    packetauth::beginControlPassword("not-admin-key");
+    TEST_ASSERT_TRUE(packetauth::controlKeyPending());
+    TEST_ASSERT_FALSE(packetauth::verifyConfig(packet, nullptr));
+}
+
+void test_clearing_password_cancels_pending_derivation() {
+    packetauth::beginControlPassword(PASSWORD);
+    TEST_ASSERT_FALSE(packetauth::serviceControlKey(10));
+    packetauth::beginControlPassword(nullptr);
+    TEST_ASSERT_FALSE(packetauth::controlKeyPending());
+    TEST_ASSERT_TRUE(packetauth::serviceControlKey(1));
+}
+
 void setUp(void) {
     packetauth::setRefuseLegacyControl(false);
     packetauth::setControlPassword(nullptr);
@@ -143,5 +255,13 @@ int main(int argc, char** argv) {
     RUN_TEST(test_verifyConfig_v2_accepts_published_tag);
     RUN_TEST(test_verifyConfig_v3_accepts_published_tag);
     RUN_TEST(test_verifyConfig_v3_rejects_wrong_password);
+    RUN_TEST(test_setControlPassword_skips_derivation_for_unchanged_password);
+    RUN_TEST(test_setControlPassword_rederives_after_password_change);
+    RUN_TEST(test_setControlPassword_clear_then_same_password_rederives);
+    RUN_TEST(test_incremental_derivation_matches_published_vector);
+    RUN_TEST(test_begin_with_same_password_keeps_progress);
+    RUN_TEST(test_password_change_mid_derivation_restarts_with_new_password);
+    RUN_TEST(test_changing_password_invalidates_ready_key_immediately);
+    RUN_TEST(test_clearing_password_cancels_pending_derivation);
     return UNITY_END();
 }

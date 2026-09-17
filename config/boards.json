@@ -1,0 +1,153 @@
+[
+  {
+    "id": "heltec-v3",
+    "env": "heltec_v3",
+    "flasherId": "heltec-v3",
+    "stem": "heltec-v3",
+    "label": "Heltec V3",
+    "modelAliases": [
+      "heltec v3",
+      "heltec-v3"
+    ],
+    "fileAliases": [
+      "heltec-v3"
+    ],
+    "updateFormat": "esp-bin",
+    "usbSource": "firmware.bin",
+    "otaSource": "firmware.bin"
+  },
+  {
+    "id": "heltec-v4",
+    "env": "heltec_v4",
+    "flasherId": "heltec-v4",
+    "stem": "heltec-v4",
+    "label": "Heltec V4",
+    "modelAliases": [
+      "heltec"
+    ],
+    "fileAliases": [
+      "heltec-v4"
+    ],
+    "updateFormat": "esp-bin",
+    "usbSource": "firmware.bin",
+    "otaSource": "firmware.bin"
+  },
+  {
+    "id": "t-deck",
+    "env": "lilygo_t_deck",
+    "flasherId": "lilygo-t-deck",
+    "stem": "t-deck",
+    "label": "LILYGO T-Deck",
+    "modelAliases": [
+      "t-deck",
+      "tdeck"
+    ],
+    "fileAliases": [
+      "t-deck",
+      "tdeck"
+    ],
+    "updateFormat": "esp-bin",
+    "usbSource": "firmware.bin",
+    "otaSource": "firmware.bin"
+  },
+  {
+    "id": "crowpanel-35",
+    "env": "elecrow_crowpanel_35",
+    "flasherId": "elecrow-crowpanel-35",
+    "stem": "crowpanel-35",
+    "label": "Elecrow CrowPanel 3.5",
+    "modelAliases": [
+      "crowpanel"
+    ],
+    "fileAliases": [
+      "crowpanel"
+    ],
+    "updateFormat": "esp-bin",
+    "usbSource": "firmware.bin",
+    "otaSource": "firmware.bin"
+  },
+  {
+    "id": "seeed-t1000-e",
+    "env": "seeed_t1000_e",
+    "flasherId": "seeed-t1000-e",
+    "stem": "t1000-e",
+    "label": "SenseCAP T1000-E",
+    "modelAliases": [
+      "t1000"
+    ],
+    "fileAliases": [
+      "t1000"
+    ],
+    "updateFormat": "nordic-dfu",
+    "usbSource": "firmware.hex",
+    "otaSource": "firmware.zip"
+  },
+  {
+    "id": "lilygo-t-echo",
+    "env": "lilygo_t_echo",
+    "flasherId": "lilygo-t-echo",
+    "stem": "t-echo",
+    "label": "LILYGO T-Echo",
+    "modelAliases": [
+      "t-echo",
+      "techo"
+    ],
+    "fileAliases": [
+      "t-echo",
+      "techo"
+    ],
+    "updateFormat": "nordic-dfu",
+    "usbSource": "firmware.hex",
+    "otaSource": "firmware.zip"
+  },
+  {
+    "id": "rak19026",
+    "env": "rak19026",
+    "flasherId": "rak19026",
+    "stem": "rak19026",
+    "label": "RAK19026",
+    "modelAliases": [
+      "19026"
+    ],
+    "fileAliases": [
+      "19026"
+    ],
+    "updateFormat": "nordic-dfu",
+    "usbSource": "firmware.hex",
+    "otaSource": "firmware.zip"
+  },
+  {
+    "id": "rak3401-1w",
+    "env": "rak3401_1w",
+    "flasherId": "rak3401-1w",
+    "stem": "rak3401-1w",
+    "label": "RAK3401 1W",
+    "modelAliases": [
+      "3401",
+      "rak 1w"
+    ],
+    "fileAliases": [
+      "rak3401"
+    ],
+    "updateFormat": "nordic-dfu",
+    "usbSource": "firmware.hex",
+    "otaSource": "firmware.zip"
+  },
+  {
+    "id": "rak4631",
+    "env": "rak4631",
+    "flasherId": "rak4631",
+    "stem": "rak4631",
+    "label": "RAK4631",
+    "modelAliases": [
+      "rak",
+      "wisblock"
+    ],
+    "fileAliases": [
+      "rak4631"
+    ],
+    "updateFormat": "nordic-dfu",
+    "usbSource": "firmware.hex",
+    "otaSource": "firmware.zip"
+  }
+]

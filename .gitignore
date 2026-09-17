@@ -50,3 +50,10 @@ ota-images/
 node_modules/
 playwright-report/
 test-results/
+
+# ===== iOS =====
+ios/**/.build/
+ios/**/.swiftpm/
+# XcodeGen output; regenerate with `xcodegen generate` in ios/
+ios/AetherMesh.xcodeproj/
+ios/AetherMesh/Info.plist

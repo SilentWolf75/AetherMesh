@@ -45,6 +45,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
+import com.silentwolf75.aethermesh.data.FirmwareFreshnessPolicy
 import com.silentwolf75.aethermesh.ui.main.AccentCyan
 import com.silentwolf75.aethermesh.ui.main.AccentMint
 import com.silentwolf75.aethermesh.ui.main.MainScreen
@@ -308,9 +309,7 @@ private fun NodeDetailsRoute(
         onStartRangeTest = if (!sameMeshNodeId(node.nodeId, viewModel.connectedNodeId)) {
             { viewModel.requestRangeTestDialog(node.nodeId) }
         } else null,
-        awaitingFirmware = firmwareFreshness.awaitingFreshTelemetry &&
-            (firmwareFreshness.connectedNodeId == 0L ||
-                sameMeshNodeId(firmwareFreshness.connectedNodeId, node.nodeId)),
+        awaitingFirmware = FirmwareFreshnessPolicy.isChecking(firmwareFreshness, node.nodeId),
         queuedCount = viewModel.countQueuedMessagesForRecipient(node.nodeId),
         routerQueueDepth = if (sameMeshNodeId(node.nodeId, viewModel.connectedNodeId))
             meshDiagnostics?.rebroadcastQueueDepth ?: 0 else 0

@@ -89,6 +89,24 @@ void test_seen_cache_survives_millis_rollover() {
     TEST_ASSERT_TRUE(cache.hasSeen(afterWrap, 0xAA, 7, TTL));
 }
 
+void test_seen_cache_detects_hop_limit_inflation() {
+    SeenCache<8> cache;
+    cache.reset();
+    cache.markSeen(1000, 0xAA, 7, 0, 2);
+
+    TEST_ASSERT_TRUE(cache.isHopInflation(1100, 0xAA, 7, 4, 0, TTL));
+    TEST_ASSERT_FALSE(cache.isHopInflation(1100, 0xAA, 7, 1, 0, TTL));
+    // Originator retry may restore the original hop_limit.
+    TEST_ASSERT_FALSE(cache.isHopInflation(1100, 0xAA, 7, 4, 1, TTL));
+    TEST_ASSERT_FALSE(cache.isHopInflation(1100, 0xBB, 7, 4, 0, TTL));
+
+    cache.noteBestHop(1200, 0xAA, 7, 0, 5, TTL);
+    TEST_ASSERT_EQUAL_UINT32(5, cache.storedHopLimit(1200, 0xAA, 7, TTL));
+    // Lower remaining hop must not erase the best shorter-path observation.
+    cache.noteBestHop(1300, 0xAA, 7, 0, 1, TTL);
+    TEST_ASSERT_EQUAL_UINT32(5, cache.storedHopLimit(1300, 0xAA, 7, TTL));
+}
+
 // ------------------------------------------------------------- route updates
 
 static RouteEntry makeRoute(uint32_t target, uint32_t nextHop, uint8_t metric,
@@ -185,6 +203,32 @@ void test_oldest_route_index_is_rollover_safe() {
     TEST_ASSERT_TRUE(entries[1].timestamp < entries[0].timestamp);
 }
 
+void test_reply_hop_table_learns_latest_budget_per_sender() {
+    ReplyHopTable table;
+    TEST_ASSERT_EQUAL_UINT8(0, table.lookup(0xA));
+    table.observe(100, 0xA, 12);
+    table.observe(200, 0xB, 4);
+    TEST_ASSERT_EQUAL_UINT8(12, table.lookup(0xA));
+    table.observe(300, 0xA, 6); // path got shorter
+    TEST_ASSERT_EQUAL_UINT8(6, table.lookup(0xA));
+    table.observe(400, 0, 9);   // ignored
+    table.observe(400, 0xC, 0); // ignored
+    TEST_ASSERT_EQUAL_UINT8(0, table.lookup(0));
+    TEST_ASSERT_EQUAL_UINT8(0, table.lookup(0xC));
+}
+
+void test_reply_hop_table_evicts_least_recent_sender() {
+    ReplyHopTable table;
+    for (uint32_t i = 0; i < (uint32_t)ReplyHopTable::CAPACITY; i++) {
+        table.observe(1000 + i, 0x100 + i, 5);
+    }
+    table.observe(5000, 0x100, 7); // refresh the oldest so 0x101 becomes oldest
+    table.observe(6000, 0x999, 9);
+    TEST_ASSERT_EQUAL_UINT8(7, table.lookup(0x100));
+    TEST_ASSERT_EQUAL_UINT8(0, table.lookup(0x101));
+    TEST_ASSERT_EQUAL_UINT8(9, table.lookup(0x999));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -195,11 +239,14 @@ int main(int, char**) {
     RUN_TEST(test_reobserving_refreshes_slot_instead_of_consuming_one);
     RUN_TEST(test_seen_cache_evicts_in_ring_order_when_full);
     RUN_TEST(test_seen_cache_survives_millis_rollover);
+    RUN_TEST(test_seen_cache_detects_hop_limit_inflation);
     RUN_TEST(test_same_next_hop_refreshes_primary);
     RUN_TEST(test_promotion_demotes_previous_primary_to_backup);
     RUN_TEST(test_worse_alternate_becomes_backup_without_disturbing_primary);
     RUN_TEST(test_hearing_known_backup_refreshes_its_timestamp);
     RUN_TEST(test_oldest_route_index_picks_least_recently_refreshed);
     RUN_TEST(test_oldest_route_index_is_rollover_safe);
+    RUN_TEST(test_reply_hop_table_learns_latest_budget_per_sender);
+    RUN_TEST(test_reply_hop_table_evicts_least_recent_sender);
     return UNITY_END();
 }

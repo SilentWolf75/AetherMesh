@@ -1,8 +1,8 @@
 # Flashing AetherMesh Firmware
 
 The GitHub Pages workflow builds the current web flasher bundle for Heltec V4,
-Heltec V3, RAK4631, RAK3401 1W, RAK19026, LILYGO T-Echo, LILYGO T-Deck, Elecrow
-CrowPanel 3.5, and the Android APK.
+Heltec V3, RAK4631, RAK3401 1W, RAK19026, LILYGO T-Echo, SenseCAP T1000-E,
+LILYGO T-Deck, Elecrow CrowPanel 3.5, and the Android APK.
 
 The local staging helper is older and currently stages the Heltec V4 app/USB
 images plus the RAK4631 DFU zip into `ota-images\`, named by the current git
@@ -129,6 +129,59 @@ lilygo_t_echo
 The web flasher provides a UF2 build for the T-Echo. Use the board bootloader's
 mounted USB drive and drag the UF2 file onto it.
 
+## SenseCAP Card Tracker T1000-E
+
+Credit-card tracker (nRF52840 + Semtech LR1110 + Mediatek AG3335). PlatformIO
+env:
+
+```text
+seeed_t1000_e
+```
+
+Seeed's docs (Meshtastic-oriented, same hardware) are useful for flash recovery:
+
+- [Get started / flash](https://wiki.seeedstudio.com/sensecap_t1000_e/)
+- [Tracker introduction / pins](https://wiki.seeedstudio.com/t1000_e_intro/)
+- [Open-source LoRaWAN examples](https://wiki.seeedstudio.com/open_source_lorawan/)
+  (SES/Arduino LoRaWAN — **not** AetherMesh; same DFU/bootloader)
+
+AetherMesh stays on our mesh stack (not LoRaWAN / SES examples). Flash only
+`seeed_t1000_e` builds onto the **Meshtastic-capable** T1000-E SKU — Seeed
+sells a separate LoRaWAN SKU; do not cross-flash those factory images. Wrong
+nRF52 UF2 images can brick the unit. Do **not** use generic NRF-OTA tools from
+their FAQ.
+
+Hardware notes from Seeed (pins already in `variants/Seeed_T1000-E`):
+
+- LED on P0.24, PWM buzzer on P0.25
+- Press once to power on (rising tone; LED ~1s)
+- Charge with a normal USB charger — not a fast-charge brick
+
+### USB / UF2
+
+1. Connect the magnetic charging cable to the PC.
+2. Enter DFU: hold the button, then quickly seat / double-tap the cable until
+   the green LED stays solid and a mass-storage drive named **T1000-E** mounts
+   (serial may show as `T1000-E xxx`).
+3. Drag `aethermesh-t1000-e-<hash>.uf2` onto that drive (app base `0x27000`,
+   SoftDevice S140 7.3.0). Wait for the drive to disappear / reboot.
+4. Or: `pio run -e seeed_t1000_e -t upload` (adafruit-nrfutil / 1200 bps touch).
+
+Hard reset if the unit is wedged: unplug, hold button, plug in, hold ~3s,
+release. Bootloader recovery uses Seeed's
+`t1000_e_bootloader-…_s140_7.3.0.zip` via adafruit-nrfutil serial DFU — do not
+substitute another nRF52 board UF2.
+
+### App DFU
+
+Use the Nordic DFU zip from Pages / a local build:
+
+```text
+aethermesh-t1000-e-<hash>.zip
+```
+
+Same phone path as RAK: Settings → Firmware Update → pick the zip.
+
 ## Web Flasher
 
 [https://silentwolf75.github.io/AetherMesh/](https://silentwolf75.github.io/AetherMesh/)
@@ -143,6 +196,7 @@ The browser flasher is for first-time setup and recovery. It currently presents:
 - RAK3401 1W / nRF52
 - RAK19026 / nRF52
 - LILYGO T-Echo / nRF52
+- SenseCAP T1000-E / nRF52 + LR1110
 
 Desktop Chrome, Edge, or Opera is required for Web Serial flashing. For nRF52
 boards, the page provides UF2 downloads for drag-and-drop bootloader flashing.

@@ -51,9 +51,18 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silentwolf75.aethermesh.data.ChatMessage
+import com.silentwolf75.aethermesh.data.ChatSendPolicy
 import com.silentwolf75.aethermesh.data.ChannelConfig
 import com.silentwolf75.aethermesh.data.FirmwareCatalog
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.AppUiPrefs
+import com.silentwolf75.aethermesh.data.NodeSettingsFormPolicy
+import com.silentwolf75.aethermesh.data.NodeSettingsPrefs
+import com.silentwolf75.aethermesh.data.PhoneLocationShare
+import com.silentwolf75.aethermesh.data.RangeTestPolicy
+import com.silentwolf75.aethermesh.data.RelativeTimePolicy
+import com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy
+import com.silentwolf75.aethermesh.data.VoltageTrendPolicy
 import com.silentwolf75.aethermesh.data.TraceRouteState
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.components.*
@@ -82,8 +91,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 /** Matches firmware/app chat payload caps (UTF-8 bytes). Encrypted fits under GCM+base64. */
-const val CHAT_MAX_PLAIN_UTF8_BYTES = 127
-const val CHAT_MAX_ENCRYPTED_UTF8_BYTES = 76
+const val CHAT_MAX_PLAIN_UTF8_BYTES = ChatSendPolicy.MAX_TEXT
+const val CHAT_MAX_ENCRYPTED_UTF8_BYTES = ChatSendPolicy.MAX_ENCRYPTED
 
 private const val NODE_STALE_MS = 5 * 60 * 1000L
 
@@ -95,44 +104,20 @@ fun isNodeStale(lastActive: Long): Boolean {
  * Relative last-heard label used across Nodes / Map / Chat / Details.
  * Prefer “just now” then “Xm ago” (not “Ns ago”) for a consistent feel.
  */
-fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    if (lastActive <= 0L) return if (spanish) "nunca" else "never"
-    val elapsedSeconds = ((System.currentTimeMillis() - lastActive).coerceAtLeast(0L)) / 1000L
-    return when {
-        elapsedSeconds < 60L -> if (spanish) "ahora" else "just now"
-        elapsedSeconds < 3600L -> {
-            val m = elapsedSeconds / 60L
-            if (spanish) "hace ${m}m" else "${m}m ago"
-        }
-        elapsedSeconds < 86_400L -> {
-            val h = elapsedSeconds / 3600L
-            if (spanish) "hace ${h}h" else "${h}h ago"
-        }
-        else -> {
-            val d = elapsedSeconds / 86_400L
-            if (spanish) "hace ${d}d" else "${d}d ago"
-        }
-    }
-}
+fun formatLastHeard(lastActive: Long, appLanguage: String = "English"): String =
+    RelativeTimePolicy.lastHeard(
+        lastActive,
+        appLanguage == "Spanish",
+        System.currentTimeMillis()
+    )
 
 /** Compact age for diagnostics tiles (same vocabulary as [formatLastHeard]). */
-fun formatRelativeAge(timestampMs: Long, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    if (timestampMs <= 0L) return if (spanish) "—" else "—"
-    val elapsedSeconds = ((System.currentTimeMillis() - timestampMs).coerceAtLeast(0L)) / 1000L
-    return when {
-        elapsedSeconds < 60L -> if (spanish) "ahora" else "just now"
-        elapsedSeconds < 3600L -> {
-            val m = elapsedSeconds / 60L
-            if (spanish) "hace ${m}m" else "${m}m ago"
-        }
-        else -> {
-            val h = (elapsedSeconds / 3600L).coerceAtLeast(1L)
-            if (spanish) "hace ${h}h" else "${h}h ago"
-        }
-    }
-}
+fun formatRelativeAge(timestampMs: Long, appLanguage: String = "English"): String =
+    RelativeTimePolicy.relativeAge(
+        timestampMs,
+        appLanguage == "Spanish",
+        System.currentTimeMillis()
+    )
 
 /** Bumps so relative “last heard” labels stay fresh without new telemetry. */
 @Composable
@@ -147,112 +132,58 @@ fun rememberRelativeTimeTick(intervalMs: Long = 30_000L): Long {
     return tick
 }
 
-fun formatUptime(seconds: Long, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    val d = seconds / 86400
-    val h = (seconds % 86400) / 3600
-    val m = (seconds % 3600) / 60
-    val s = seconds % 60
-    return when {
-        d > 0 -> if (spanish) "${d} días ${h} h" else "${d}d ${h}h"
-        h > 0 -> if (spanish) "${h} h ${m} m" else "${h}h ${m}m"
-        m > 0 -> if (spanish) "${m} m ${s} s" else "${m}m ${s}s"
-        else -> if (spanish) "${s} s" else "${s}s"
-    }
-}
+fun formatUptime(seconds: Long, appLanguage: String = "English"): String =
+    RelativeTimePolicy.uptime(seconds, appLanguage == "Spanish")
 
 /** Firmware low-voltage safe enter threshold (LiPo pack volts). Phone UI matches. */
-const val LOW_VOLTAGE_SAFE_ENTER_V = 3.50f
+const val LOW_VOLTAGE_SAFE_ENTER_V = VoltageTrendPolicy.LOW_VOLTAGE_SAFE_ENTER_V
 
-fun isLowVoltageSafeHint(voltage: Float, isCharging: Boolean): Boolean {
-    return voltage > 0f && voltage < LOW_VOLTAGE_SAFE_ENTER_V && !isCharging
-}
+fun isLowVoltageSafeHint(voltage: Float, isCharging: Boolean): Boolean =
+    VoltageTrendPolicy.isLowVoltageSafeHint(voltage, isCharging)
 
 /** Whole days since last heard (0 if within 24h or never). */
-fun daysSinceHeard(lastActive: Long): Long {
-    if (lastActive <= 0L) return 0L
-    val elapsed = (System.currentTimeMillis() - lastActive).coerceAtLeast(0L)
-    return elapsed / 86_400_000L
-}
+fun daysSinceHeard(lastActive: Long): Long =
+    RelativeTimePolicy.daysSinceHeard(lastActive, System.currentTimeMillis())
 
-fun formatDaysSinceHeard(lastActive: Long, appLanguage: String = "English"): String? {
-    val d = daysSinceHeard(lastActive)
-    if (d < 1L) return null
-    val spanish = appLanguage == "Spanish"
-    return if (spanish) {
-        if (d == 1L) "1 día sin oír" else "$d días sin oír"
-    } else {
-        if (d == 1L) "1 day since heard" else "$d days since heard"
-    }
-}
+fun formatDaysSinceHeard(lastActive: Long, appLanguage: String = "English"): String? =
+    RelativeTimePolicy.daysSinceHeardLabel(
+        lastActive,
+        appLanguage == "Spanish",
+        System.currentTimeMillis()
+    )
 
-enum class VoltageTrend { UNKNOWN, RISING, FALLING, FLAT }
+typealias VoltageTrend = com.silentwolf75.aethermesh.data.VoltageTrend
 
-fun voltageTrend(history: List<com.silentwolf75.aethermesh.data.TelemetrySample>): VoltageTrend {
-    val samples = history.filter { it.voltage > 0f }
-    if (samples.size < 2) return VoltageTrend.UNKNOWN
-    val newest = samples.takeLast(minOf(12, samples.size))
-    val first = newest.first().voltage
-    val last = newest.last().voltage
-    val delta = last - first
-    return when {
-        delta >= 0.04f -> VoltageTrend.RISING
-        delta <= -0.04f -> VoltageTrend.FALLING
-        else -> VoltageTrend.FLAT
-    }
-}
+fun voltageTrend(history: List<com.silentwolf75.aethermesh.data.TelemetrySample>): VoltageTrend =
+    VoltageTrendPolicy.trend(history)
 
-fun formatVoltageTrend(history: List<com.silentwolf75.aethermesh.data.TelemetrySample>, appLanguage: String): String? {
-    val spanish = appLanguage == "Spanish"
-    val samples = history.filter { it.voltage > 0f }
-    if (samples.size < 2) return null
-    val newest = samples.takeLast(minOf(12, samples.size))
-    val first = newest.first().voltage
-    val last = newest.last().voltage
-    val delta = last - first
-    val arrow = when {
-        delta >= 0.04f -> "↑"
-        delta <= -0.04f -> "↓"
-        else -> "→"
-    }
-    val label = when {
-        delta >= 0.04f -> if (spanish) "subiendo" else "rising"
-        delta <= -0.04f -> if (spanish) "bajando" else "falling"
-        else -> if (spanish) "estable" else "flat"
-    }
-    return "$arrow ${"%.2f".format(last)} V ($label ${"%+.2f".format(delta)} V)"
-}
+fun formatVoltageTrend(history: List<com.silentwolf75.aethermesh.data.TelemetrySample>, appLanguage: String): String? =
+    VoltageTrendPolicy.format(history, appLanguage == "Spanish")
 
-fun formatGpsLockAge(lastPositionAt: Long, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    if (lastPositionAt <= 0L) {
-        return if (spanish) "Sin fijación GPS" else "No GPS lock yet"
-    }
-    val age = formatLastHeard(lastPositionAt, appLanguage)
-    return if (spanish) "GPS: $age" else "GPS $age"
-}
+fun formatGpsLockAge(lastPositionAt: Long, appLanguage: String = "English"): String =
+    RelativeTimePolicy.gpsLockAge(
+        lastPositionAt,
+        appLanguage == "Spanish",
+        System.currentTimeMillis()
+    )
 
 /** gps_mode: 0 on, 1 off, 2 duty. Returns null when prefs unknown. */
-fun formatGpsDutyStatus(gpsMode: Int?, dutyIntervalSecs: Int, appLanguage: String = "English"): String? {
-    if (gpsMode == null || gpsMode !in 0..2) return null
-    val spanish = appLanguage == "Spanish"
-    val mins = ((dutyIntervalSecs.coerceAtLeast(60) + 59) / 60)
-    return when (gpsMode) {
-        0 -> if (spanish) "GPS: siempre encendido" else "GPS: always on"
-        1 -> if (spanish) "GPS: apagado" else "GPS: off"
-        else -> if (spanish) "GPS: periódico (${mins} min)" else "GPS: duty (${mins} min)"
-    }
-}
+fun formatGpsDutyStatus(gpsMode: Int?, dutyIntervalSecs: Int, appLanguage: String = "English"): String? =
+    RelativeTimePolicy.gpsDutyStatus(gpsMode, dutyIntervalSecs, appLanguage == "Spanish")
 
 fun readCachedGpsMode(context: android.content.Context, nodeId: Long): Pair<Int?, Int> {
-    val prefs = context.getSharedPreferences("node_settings_$nodeId", android.content.Context.MODE_PRIVATE)
-    val mode = if (prefs.contains("gps_mode")) prefs.getInt("gps_mode", 0).coerceIn(0, 2) else null
-    val duty = prefs.getInt("gps_duty_interval_secs", 900).let {
-        when {
-            it <= 0 -> 900
-            else -> it.coerceIn(300, 3600)
-        }
+    val prefs = context.getSharedPreferences(
+        NodeSettingsPrefs.prefsName(nodeId),
+        android.content.Context.MODE_PRIVATE
+    )
+    val mode = if (prefs.contains(NodeSettingsPrefs.KEY_GPS_MODE)) {
+        prefs.getInt(NodeSettingsPrefs.KEY_GPS_MODE, 0).coerceIn(0, 2)
+    } else {
+        null
     }
+    val duty = RelativeTimePolicy.clampDutySecs(
+        prefs.getInt(NodeSettingsPrefs.KEY_GPS_DUTY_SECS, RelativeTimePolicy.DEFAULT_DUTY_SECS)
+    )
     return mode to duty
 }
 
@@ -320,59 +251,17 @@ fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): D
     return r * c
 }
 
-/** Snap GPS duty interval to Settings chip values (5 / 15 / 30 / 60 min). */
-fun snapGpsDutyIntervalSecs(secs: Int): Int {
-    val options = intArrayOf(300, 900, 1800, 3600)
-    val clamped = when {
-        secs <= 0 -> 900
-        else -> secs.coerceIn(300, 3600)
-    }
-    return options.minBy { kotlin.math.abs(it - clamped) }
-}
+fun snapGpsDutyIntervalSecs(secs: Int): Int =
+    NodeSettingsFormPolicy.snapGpsDutyIntervalSecs(secs)
 
-fun hasValidPosition(latitude: Number, longitude: Number): Boolean {
-    val lat = latitude.toDouble()
-    val lon = longitude.toDouble()
-    return lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0 &&
-        !(lat == 0.0 && lon == 0.0)
-}
+fun hasValidPosition(latitude: Number, longitude: Number): Boolean =
+    PhoneLocationShare.isValidFix(latitude.toDouble(), longitude.toDouble())
 
-fun rangeTestFailureShort(reason: String?, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    return when (reason) {
-        "ble_send_fail" -> if (spanish) "fallo BLE" else "BLE fail"
-        "auth_blocked" -> if (spanish) "auth" else "auth"
-        "test_stopped" -> if (spanish) "detenido" else "stopped"
-        "self_target" -> if (spanish) "mismo nodo" else "self"
-        else -> if (spanish) "timeout" else "timeout"
-    }
-}
+fun rangeTestFailureShort(reason: String?, appLanguage: String = "English"): String =
+    RangeTestPolicy.failureShort(reason, AppUiPrefs.isSpanish(appLanguage))
 
-fun rangeTestFailureLabel(reason: String?, appLanguage: String = "English"): String {
-    val spanish = appLanguage == "Spanish"
-    return when (reason) {
-        "ble_send_fail" -> if (spanish)
-            "Fallo al escribir por BLE — revisa el enlace."
-        else
-            "BLE write failed — check the phone↔node link."
-        "auth_blocked" -> if (spanish)
-            "Bloqueado: autentica el dispositivo."
-        else
-            "Blocked — unlock/authenticate the device."
-        "test_stopped" -> if (spanish)
-            "Prueba detenida."
-        else
-            "Test stopped."
-        "self_target" -> if (spanish)
-            "Ese es el nodo conectado por BLE — conéctate a otro nodo para probar este."
-        else
-            "That's the BLE-connected node — connect to a different node to range-test this one."
-        else -> if (spanish)
-            "Sin respuesta (timeout)."
-        else
-            "No reply (timeout)."
-    }
-}
+fun rangeTestFailureLabel(reason: String?, appLanguage: String = "English"): String =
+    RangeTestPolicy.failureLabel(reason, AppUiPrefs.isSpanish(appLanguage))
 
 fun calculateBearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): String {
     val dLon = Math.toRadians(lon2 - lon1)
@@ -699,71 +588,8 @@ fun exportAllPacketsToCsv(context: Context, messages: List<ChatMessage>, appLang
 }
 
 /** Localize GitHub OTA status strings produced by [MainScreenViewModel]. */
-fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String {
-    if (appLanguage != "Spanish" || status.isBlank()) return status
-    return when {
-        status == FirmwareCatalog.OFFLINE_CATALOG_STATUS || status.startsWith("Offline —") ->
-            "Sin conexión — el catálogo OTA necesita datos del teléfono (Wi‑Fi/móvil). La malla sigue local. Usa un .bin/.zip local, o activa datos y pulsa Buscar."
-        status.startsWith("Checking GitHub Releases") ->
-            "Consultando GitHub Releases (estable)…"
-        status.startsWith("Checking GitHub Pages") ->
-            "Consultando GitHub Pages (último)…"
-        status.startsWith("Checking GitHub") -> "Consultando GitHub por firmware…"
-        status.startsWith("Found ") && status.contains("(stable") -> {
-            val name = status.substringAfter("Found ").substringBefore(" (stable")
-            val tag = status.substringAfter("(stable ").removeSuffix(")")
-            "Encontrado $name (estable $tag)"
-        }
-        status.startsWith("Found ") && status.contains("(latest") -> {
-            val name = status.substringAfter("Found ").substringBefore(" (latest")
-            val rest = status.substringAfter("(latest").removeSuffix(")")
-            "Encontrado $name (último$rest)"
-        }
-        status.startsWith("Found ") -> "Encontrado ${status.removePrefix("Found ")}"
-        status == "No OTA builds published yet." -> "Aún no hay builds OTA publicados."
-        status == "No OTA package matches this node model." ->
-            "Ningún paquete OTA coincide con este modelo de nodo."
-        status.startsWith("No GitHub Release assets yet") ->
-            status.replace(
-                "No GitHub Release assets yet — using latest Pages build:",
-                "Aún no hay assets en GitHub Releases — usando el build Pages más reciente:"
-            )
-        status.startsWith("No stable GitHub Release for this board yet.") ->
-            "Aún no hay Release estable para esta placa. " +
-                localizeGithubFirmwareStatus(
-                    status.removePrefix("No stable GitHub Release for this board yet. ").trim(),
-                    appLanguage
-                )
-        status.startsWith("No stable Release asset matches") ->
-            "Ningún asset de Release estable coincide con esta placa" +
-                status.substringAfter("this board")
-        status.startsWith("Stable Releases found, but node model") ->
-            "Hay Releases estables, pero el modelo del nodo es desconocido — elige un archivo local o espera la telemetría."
-        status.startsWith("Connect a known board") ->
-            "Conecta una placa conocida para elegir automáticamente, o elige un archivo local."
-        status.startsWith("Releases unavailable") ->
-            "Releases no disponibles" + status.removePrefix("Releases unavailable")
-        status.startsWith("OTA catalog not on GitHub Pages") ->
-            "El catálogo OTA aún no está en GitHub Pages. Usa un .bin local por ahora, o reintenta tras el redespliegue."
-        status.startsWith("OTA catalog not published") ->
-            "Catálogo OTA no publicado aún."
-        status.startsWith("Could not reach GitHub Releases:") ->
-            "No se pudo contactar GitHub Releases:${status.removePrefix("Could not reach GitHub Releases:")}"
-        status.startsWith("Could not reach GitHub:") ->
-            "No se pudo contactar GitHub:${status.removePrefix("Could not reach GitHub:")}"
-        status.startsWith("Downloading… ") ->
-            "Descargando… ${status.removePrefix("Downloading… ")}"
-        status.startsWith("Downloading ") ->
-            "Descargando ${status.removePrefix("Downloading ")}"
-        status.startsWith("Verified ") ->
-            "Verificado ${status.removePrefix("Verified ")}"
-        status.startsWith("Downloaded ") && status.contains("(size OK)") ->
-            "Descargado ${status.removePrefix("Downloaded ").removeSuffix(" (size OK)")} (tamaño OK)"
-        status.startsWith("Download failed") ->
-            "Error de descarga${status.removePrefix("Download failed")}"
-        else -> status
-    }
-}
+fun localizeGithubFirmwareStatus(status: String, appLanguage: String): String =
+    GithubFirmwareStatusPolicy.localize(status, appLanguage == "Spanish")
 
 fun exportBreadcrumbsToKml(
     context: Context,

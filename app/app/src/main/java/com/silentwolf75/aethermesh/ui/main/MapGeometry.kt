@@ -59,6 +59,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silentwolf75.aethermesh.data.ChatMessage
 import com.silentwolf75.aethermesh.data.ChannelConfig
 import com.silentwolf75.aethermesh.data.MeshNode
+import com.silentwolf75.aethermesh.data.MeshNodeId
 import com.silentwolf75.aethermesh.data.TraceRouteState
 import com.silentwolf75.aethermesh.ui.AppUiFeedback
 import com.silentwolf75.aethermesh.ui.components.*
@@ -223,17 +224,10 @@ fun stabilizeMapPoint(
     return prev
 }
 
-/** Resolve the BLE-connected radio in the node list despite provisional ID mismatches. */
 /** True when two IDs refer to the same node (full 32-bit or BLE-name 16-bit form). */
-fun sameMeshNodeId(a: Long, b: Long): Boolean {
-    if (a == 0L || b == 0L) return false
-    val a32 = a and 0xFFFFFFFFL
-    val b32 = b and 0xFFFFFFFFL
-    if (a32 == b32) return true
-    // Pre-auth BLE often only knows the 16-bit suffix from "AetherMesh-XXXX".
-    return (a32 and 0xFFFFL) == (b32 and 0xFFFFL)
-}
+fun sameMeshNodeId(a: Long, b: Long): Boolean = MeshNodeId.same(a, b)
 
+/** Resolve the BLE-connected radio in the node list despite provisional ID mismatches. */
 fun resolveConnectedMeshNode(
     nodes: List<MeshNode>,
     connectedId: Long,
@@ -392,60 +386,128 @@ fun createBadgeMarkerDrawable(
     label: String,
     colorInt: Int,
     isActive: Boolean = true,
-    isPingMarker: Boolean = false
+    isPingMarker: Boolean = false,
+    hops: Int = 0
 ): BitmapDrawable {
     val density = context.resources.displayMetrics.density
-    
+    val ink = 0xFF061018.toInt()
+    val mint = 0xFFC8F547.toInt()
+    val steel = 0xFF7AD4FF.toInt()
+    val muted = 0xFF7E90A8.toInt()
+    val fill = if (isActive) {
+        colorInt
+    } else {
+        android.graphics.Color.argb(
+            120,
+            android.graphics.Color.red(colorInt),
+            android.graphics.Color.green(colorInt),
+            android.graphics.Color.blue(colorInt)
+        )
+    }
+    val border = when {
+        !isActive -> muted
+        hops == 1 -> mint
+        hops > 1 -> steel
+        else -> ink
+    }
+
     val textPaint = Paint().apply {
         isAntiAlias = true
-        this.color = android.graphics.Color.WHITE
-        textSize = 12f * density
+        this.color = ink
+        textSize = if (isPingMarker) 11f * density else 12f * density
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         textAlign = Paint.Align.CENTER
     }
-    
     val textWidth = textPaint.measureText(label)
-    
-    // Pill dimensions (compact and clean)
+
+    if (isPingMarker) {
+        val diameter = (textWidth + 14f * density).coerceAtLeast(22f * density)
+        val tip = 7f * density
+        val sizeW = (diameter + 8f * density).toInt()
+        val sizeH = (diameter + tip + 8f * density).toInt()
+        val bitmap = Bitmap.createBitmap(sizeW, sizeH, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bitmap)
+        val cx = sizeW / 2f
+        val cy = 4f * density + diameter / 2f
+        val circle = Paint().apply {
+            isAntiAlias = true
+            color = fill
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(cx, cy, diameter / 2f, circle)
+        val ring = Paint().apply {
+            isAntiAlias = true
+            color = border
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * density
+        }
+        canvas.drawCircle(cx, cy, diameter / 2f, ring)
+        val tipPath = android.graphics.Path().apply {
+            moveTo(cx - 5f * density, cy + diameter / 2f - 1f)
+            lineTo(cx + 5f * density, cy + diameter / 2f - 1f)
+            lineTo(cx, cy + diameter / 2f + tip)
+            close()
+        }
+        canvas.drawPath(tipPath, circle)
+        val textRect = Rect()
+        textPaint.getTextBounds(label, 0, label.length, textRect)
+        canvas.drawText(label, cx, cy - textRect.exactCenterY(), textPaint)
+        return BitmapDrawable(context.resources, bitmap)
+    }
+
     val pillWidth = (textWidth + 16f * density).coerceAtLeast(48f * density)
     val pillHeight = 24f * density
-    
-    val sizeW = pillWidth.toInt() + (8f * density).toInt()
-    val sizeH = pillHeight.toInt() + (8f * density).toInt()
-    
+    val pip = if (isActive && hops > 0) 8f * density else 0f
+    val sizeW = pillWidth.toInt() + (8f * density).toInt() + pip.toInt()
+    val sizeH = pillHeight.toInt() + (8f * density).toInt() + pip.toInt()
     val bitmap = Bitmap.createBitmap(sizeW, sizeH, Bitmap.Config.ARGB_8888)
     val canvas = AndroidCanvas(bitmap)
-    
-    val cx = sizeW / 2f
-    val cy = sizeH / 2f
-    
-    val left = cx - pillWidth / 2f
-    val right = cx + pillWidth / 2f
-    val top = cy - pillHeight / 2f
-    val bottom = cy + pillHeight / 2f
-    val pillRect = RectF(left, top, right, bottom)
-    
+    val cx = sizeW / 2f - pip / 2f
+    val cy = sizeH / 2f - pip / 2f
+    val pillRect = RectF(
+        cx - pillWidth / 2f,
+        cy - pillHeight / 2f,
+        cx + pillWidth / 2f,
+        cy + pillHeight / 2f
+    )
     val pillBgPaint = Paint().apply {
         isAntiAlias = true
-        this.color = colorInt
+        color = fill
         style = Paint.Style.FILL
     }
     canvas.drawRoundRect(pillRect, 6f * density, 6f * density, pillBgPaint)
-    
     val pillBorderPaint = Paint().apply {
         isAntiAlias = true
-        this.color = android.graphics.Color.WHITE
+        color = border
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
     }
     canvas.drawRoundRect(pillRect, 6f * density, 6f * density, pillBorderPaint)
-    
-    // Draw text centered
     val textRect = Rect()
     textPaint.getTextBounds(label, 0, label.length, textRect)
-    val textY = cy - textRect.exactCenterY()
-    canvas.drawText(label, cx, textY, textPaint)
-    
+    canvas.drawText(label, cx, cy - textRect.exactCenterY(), textPaint)
+    if (isActive && hops > 0) {
+        val pipR = 7f * density
+        val pipCx = pillRect.right - 2f * density
+        val pipCy = pillRect.bottom - 2f * density
+        val pipFill = Paint().apply {
+            isAntiAlias = true
+            color = if (hops == 1) mint else steel
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(pipCx, pipCy, pipR, pipFill)
+        val pipText = Paint().apply {
+            isAntiAlias = true
+            color = ink
+            textSize = 8f * density
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+        val hopLabel = if (hops > 9) "9+" else "$hops"
+        val hopBounds = Rect()
+        pipText.getTextBounds(hopLabel, 0, hopLabel.length, hopBounds)
+        canvas.drawText(hopLabel, pipCx, pipCy - hopBounds.exactCenterY(), pipText)
+    }
     return BitmapDrawable(context.resources, bitmap)
 }
 

@@ -30,15 +30,14 @@ class DeliveryRetryInstrumentedTest {
     @Before
     fun setup() {
         context = InstrumentationRegistry.getInstrumentation().targetContext
-        context.deleteDatabase("aethermesh.db")
-        db = DatabaseHelper(context)
+        // null creates a private in-memory SQLite database. Never touch app data.
+        db = DatabaseHelper(context, databaseName = null)
         store = OutboundDeliveryStore(db)
     }
 
     @After
     fun close() {
         db.close()
-        context.deleteDatabase("aethermesh.db")
     }
 
     @Test

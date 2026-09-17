@@ -1,6 +1,20 @@
 #include "RadioManager.h"
+#include "MeshMath.h"
 #include "Version.h"
 #include <SPI.h>
+
+#if defined(SEEED_T1000_E)
+#include "t1000_e_rfswitch.h"
+#define RADIO_IRQ_TX_DONE RADIOLIB_LR11X0_IRQ_TX_DONE
+#define RADIO_IRQ_RX_DONE RADIOLIB_LR11X0_IRQ_RX_DONE
+#define RADIO_IRQ_CRC_ERR RADIOLIB_LR11X0_IRQ_CRC_ERR
+#define RADIO_IRQ_HEADER_ERR RADIOLIB_LR11X0_IRQ_HEADER_ERR
+#else
+#define RADIO_IRQ_TX_DONE RADIOLIB_SX126X_IRQ_TX_DONE
+#define RADIO_IRQ_RX_DONE RADIOLIB_SX126X_IRQ_RX_DONE
+#define RADIO_IRQ_CRC_ERR RADIOLIB_SX126X_IRQ_CRC_ERR
+#define RADIO_IRQ_HEADER_ERR RADIOLIB_SX126X_IRQ_HEADER_ERR
+#endif
 
 // Volatile flag for ISR
 static volatile bool operationDone = false;
@@ -80,6 +94,13 @@ RadioManager::RadioManager() {
     pinBusy = 17; // P0.17
     pinDio1 = 20; // P0.20
     txPower = 20;
+#elif defined(SEEED_T1000_E)
+    // Identity Arduino pin map: P0.n = n, P1.n = 32+n
+    pinNss = 12;  // P0.12
+    pinRst = 42;  // P1.10
+    pinBusy = 7;  // P0.07 (DIO2 / BUSY)
+    pinDio1 = 33; // P1.01 (IRQ)
+    txPower = 20;
 #elif defined(RAK4631) || defined(RAK3401_1W)
     // Predefined pins in RAK Arduino BSP
     pinNss = 42;  // PIN_LORA_NSS
@@ -148,6 +169,10 @@ bool RadioManager::init() {
     Serial.println("Lilygo T-Echo: Setting up SPI pins (23, 19, 22)...");
     SPI.setPins(23, 19, 22); // MISO=23, SCK=19, MOSI=22
     SPI.begin();
+#elif defined(SEEED_T1000_E)
+    Serial.println("Seeed T1000-E: Setting up LR1110 SPI (MISO=40, SCK=11, MOSI=41)...");
+    SPI.setPins(40, 11, 41); // MISO=P1.08, SCK=P0.11, MOSI=P1.09
+    SPI.begin();
 #elif defined(RAK4631) || defined(RAK3401_1W)
     Serial.println("RAK WisBlock: Enabling all power rails (Pins 17, 34, 37)...");
     pinMode(17, OUTPUT);
@@ -167,17 +192,26 @@ bool RadioManager::init() {
 #else
     Module* mod = new Module(pinNss, pinDio1, pinRst, pinBusy);
 #endif
-    radio = new SX1262(mod);
-    
-    // 3. Begin radio with default params
-#if defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);
-#elif defined(ELECROW_CROWPANEL_35)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 3.3, false);
-#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.6, false);
+#if defined(SEEED_T1000_E)
+    radio = new LR1110(mod);
 #else
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, 8, 1.8, false);
+    radio = new SX1262(mod);
+#endif
+    
+    // 3. Begin radio with default params. Preamble length is SF-aware
+    // (32 symbols at SF≤8, 16 otherwise) — RadioLib's 8-symbol default
+    // missed CAD/preamble detect at short SF.
+    const uint16_t preamble = meshmath::preambleLengthForSf(spreadingFactor);
+#if defined(SEEED_T1000_E)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.6);
+#elif defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.8, false);
+#elif defined(ELECROW_CROWPANEL_35)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 3.3, false);
+#elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.6, false);
+#else
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.8, false);
 #endif
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Radio initialization failed, code: ");
@@ -185,6 +219,10 @@ bool RadioManager::init() {
         return false;
     }
     
+#if defined(SEEED_T1000_E)
+    // LR1110 uses on-chip DIO5–DIO8 as the RF path switch (not SX1262 DIO2).
+    radio->setRfSwitchTable(T1000E_RFSWITCH_PINS, T1000E_RFSWITCH_TABLE);
+#else
     // 4. Configure DIO2 RF switch. Heltec V4 uses DIO2 for GC1109 CTX.
     state = radio->setDio2AsRfSwitch(true);
     if (state != RADIOLIB_ERR_NONE) {
@@ -192,6 +230,7 @@ bool RadioManager::init() {
         Serial.println(state);
         return false;
     }
+#endif
     
 #if defined(HELTEC_V4)
     // Apply undocumented SX1262 register 0x8B5 patch for GC1109/KCT8103L RX sensitivity improvement
@@ -240,7 +279,11 @@ void RadioManager::loop() {
                       frequency, (unsigned)spreadingFactor, (int)bandwidth, (int)txPower,
                       radio->getIrqStatus(),
                       (unsigned long)((millis() - lastRxActivityTime) / 1000),
+#if defined(SEEED_T1000_E)
+                      radio->getRSSI());
+#else
                       radio->getRSSI(false));
+#endif
     }
 
     // RX watchdog: with telemetry from each nearby node every ~60s, ~30s with
@@ -276,8 +319,8 @@ void RadioManager::loop() {
     static uint32_t lastRxPoll = 0;
     if (!processed && !isTransmitting && (millis() - lastRxPoll > 50)) {
         lastRxPoll = millis();
-        uint16_t irq = radio->getIrqStatus();
-        if (irq & (RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR | RADIOLIB_SX126X_IRQ_HEADER_ERR)) {
+        uint32_t irq = radio->getIrqStatus();
+        if (irq & (RADIO_IRQ_RX_DONE | RADIO_IRQ_CRC_ERR | RADIO_IRQ_HEADER_ERR)) {
             processed = true;
         }
     }
@@ -286,10 +329,10 @@ void RadioManager::loop() {
         return;
     }
     
-    uint16_t irq = radio->getIrqStatus();
+    uint32_t irq = radio->getIrqStatus();
     
     if (isTransmitting) {
-        if (irq & RADIOLIB_SX126X_IRQ_TX_DONE) {
+        if (irq & RADIO_IRQ_TX_DONE) {
             // Transmission finished for real
             isTransmitting = false;
             radio->finishTransmit();
@@ -319,7 +362,7 @@ void RadioManager::loop() {
         }
     } else {
         // We are in RX mode
-        if (irq & RADIOLIB_SX126X_IRQ_RX_DONE) {
+        if (irq & RADIO_IRQ_RX_DONE) {
             lastRxActivityTime = millis();
             size_t len = radio->getPacketLength();
             uint8_t* buffer = new uint8_t[len];
@@ -357,7 +400,7 @@ void RadioManager::loop() {
 #endif
                 radio->startReceive();
             }
-        } else if (irq & (RADIOLIB_SX126X_IRQ_CRC_ERR | RADIOLIB_SX126X_IRQ_HEADER_ERR)) {
+        } else if (irq & (RADIO_IRQ_CRC_ERR | RADIO_IRQ_HEADER_ERR)) {
             lastRxActivityTime = millis();
             float rssi = radio->getRSSI();
             float snr = radio->getSNR();
@@ -399,8 +442,8 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     }
     if (isTransmitting) {
         // Polling fallback check
-        uint16_t irq = radio->getIrqStatus();
-        if (irq & RADIOLIB_SX126X_IRQ_TX_DONE) {
+        uint32_t irq = radio->getIrqStatus();
+        if (irq & RADIO_IRQ_TX_DONE) {
             Serial.println("Radio busy status cleared via polling check during send request.");
             isTransmitting = false;
             radio->finishTransmit();
@@ -519,6 +562,7 @@ void RadioManager::setSpreadingFactor(uint8_t sf) {
     spreadingFactor = sf;
     if (radio) {
         radio->setSpreadingFactor(sf);
+        radio->setPreambleLength(meshmath::preambleLengthForSf(sf));
     }
 }
 
@@ -597,6 +641,13 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
     state = radio->setSpreadingFactor(spreadingFactor);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set spreading factor, code: ");
+        Serial.println(state);
+        allApplied = false;
+    }
+
+    state = radio->setPreambleLength(meshmath::preambleLengthForSf(spreadingFactor));
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.print("Failed to set preamble length, code: ");
         Serial.println(state);
         allApplied = false;
     }
