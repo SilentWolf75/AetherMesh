@@ -1134,6 +1134,7 @@
           <option value="rak3401-1w">RAK3401 1W (nRF52)</option>
           <option value="rak19026">RAK19026 (nRF52)</option>
           <option value="lilygo-t-echo">LILYGO T-Echo (nRF52)</option>
+          <option value="seeed-t1000-e">SenseCAP T1000-E (nRF52)</option>
           <option value="lilygo-t-deck">LILYGO T-Deck / ESP32-S3</option>
           <option value="elecrow-crowpanel-35">Elecrow CrowPanel 3.5 / ESP32-S3</option>
         </select>
@@ -1211,6 +1212,18 @@
             <span class="hardware-card-name">T-Echo</span>
           </div>
 
+          <!-- Seeed SenseCAP T1000-E -->
+          <div class="hardware-card" data-val="seeed-t1000-e">
+            <div class="hardware-card-header">
+              <span class="hardware-card-brand">Seeed</span>
+              <span class="hardware-card-cpu">nRF52840 + LR1110</span>
+            </div>
+            <div class="hardware-card-image">
+              <img src="./devices/t-echo.svg" alt="SenseCAP T1000-E" width="120" height="120" loading="lazy">
+            </div>
+            <span class="hardware-card-name">T1000-E</span>
+          </div>
+
           <!-- Lilygo T-Deck -->
           <div class="hardware-card" data-val="lilygo-t-deck">
             <div class="hardware-card-header">
@@ -1267,6 +1280,16 @@
           <h2>Select firmware</h2>
         </div>
         
+        <div class="field">
+          <label for="channel">Release channel</label>
+          <select id="channel">
+            <option value="stable">Stable — hardware-qualified releases</option>
+            <option value="beta">Beta — published to test, not yet qualified</option>
+            <option value="latest" selected>Latest — every change on main, untested</option>
+          </select>
+          <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
+        </div>
+
         <div class="field" style="display: flex; gap: 10px; align-items: flex-end;">
           <div style="flex: 1;">
             <label for="fw">Bundled build</label>

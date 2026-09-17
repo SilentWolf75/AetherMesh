@@ -24,6 +24,12 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
   channel controls, and background BLE service support.
 - Encrypted chat secrets stored outside the SQLite database, salted PBKDF2 key
   derivation for new encrypted messages, and authenticated AES-GCM payloads.
+- Per-node identity keys (X25519 for agreement, Ed25519 for signed
+  announcements), generated on the node and kept across firmware updates. Direct
+  messages are sealed to the recipient's key with ChaCha20-Poly1305, so relays
+  carry ciphertext they cannot read. Keys are trusted on first use: a key that
+  changes is reported in the app rather than accepted silently, with fingerprints
+  to compare in person.
 - Shared protobuf wire format across Android, BLE, and LoRa packets.
 - BLE configuration for radio settings, GPS/position behavior, node naming,
   security keys, and device preferences.
@@ -48,6 +54,7 @@ Android app <-> BLE <-> AetherMesh node <-> LoRa mesh <-> AetherMesh nodes
 | RAK3401 1W | nRF52840 | High-power RAK variant using the RAK4631 target base |
 | RAK19026 | nRF52840 | WisBlock display and power-management target with UF2 web flashing |
 | LILYGO T-Echo | nRF52840 | T-Echo firmware target and web flasher UF2 flow |
+| SenseCAP Card Tracker T1000-E | nRF52840 | LR1110 LoRa + AG3335 GPS; UF2 / Nordic DFU (`seeed_t1000_e`) |
 
 ## Repository Layout
 
@@ -114,6 +121,7 @@ rak19026
 lilygo_t_echo
 lilygo_t_deck
 elecrow_crowpanel_35
+seeed_t1000_e
 ```
 
 The firmware includes LoRa transport, routing, BLE GATT services, telemetry,
@@ -131,7 +139,7 @@ It supports the current target list in the UI:
 - Heltec V4 and Heltec V3 as merged ESP32-S3 USB images.
 - LILYGO T-Deck as a merged ESP32-S3 USB image.
 - Elecrow CrowPanel 3.5 TFT as a merged ESP32-S3 USB image.
-- RAK4631, RAK3401 1W, RAK19026, and LILYGO T-Echo as nRF52 UF2 drag-and-drop builds.
+- RAK4631, RAK3401 1W, RAK19026, LILYGO T-Echo, and SenseCAP T1000-E as nRF52 UF2 drag-and-drop builds.
 
 GitHub Actions builds the firmware and Android APK, writes a flasher manifest,
 verifies target parity and deterministic mesh scenarios, records artifact
@@ -189,13 +197,33 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
   using a `.bin` firmware file.
 - RAK boards use their bootloader DFU path and a `.zip` package from the
   Android app.
-- RAK4631, RAK3401 1W, RAK19026, and T-Echo can be installed from the web flasher with UF2
+- RAK4631, RAK3401 1W, RAK19026, T-Echo, and T1000-E can be installed from the web flasher with UF2
   drag-and-drop builds.
 - Heltec, T-Deck, and CrowPanel ESP32-S3 targets can be installed from the web
   flasher with merged USB images.
 - Do not flash firmware for one board family onto another board family.
 - Verify published files against `SHA256SUMS.txt`; the web flasher performs the
   same size and SHA-256 validation automatically.
+
+## Release Channels
+
+Three channels, from most to least vetted. Every one of them verifies a
+published SHA-256 before anything is written to a board.
+
+| Channel | What it is | Where it comes from |
+| --- | --- | --- |
+| Stable | Hardware-qualified releases | GitHub Releases, not pre-release |
+| Beta | Published on purpose to be tested, not yet qualified | GitHub pre-releases |
+| Latest | Every change on `main`, untested | GitHub Pages, continuous deploy |
+
+Pick a channel in the app under firmware updates, or in the browser flasher.
+Stable never serves a beta build and beta never serves a stable one: a channel
+that quietly falls back to another is worse than an empty channel.
+
+Maintainers publish a beta with the `Publish beta pre-release` workflow (CI must
+pass; the tag must contain `-beta.`) and a stable release with
+`Prepare qualified stable release`, which additionally requires hardware
+qualification evidence for the exact commit.
 
 ## Release Trust
 
@@ -209,7 +237,7 @@ this repository.
 ## Status
 
 AetherMesh is actively evolving hardware and app software. The Heltec, RAK,
-T-Echo, T-Deck, and CrowPanel targets are all present in the repository, with
+T-Echo, T1000-E, T-Deck, and CrowPanel targets are all present in the repository, with
 the T-Deck using a color screen UI and keyboard-driven interaction and the
 CrowPanel using a touch-ready color dashboard.
 

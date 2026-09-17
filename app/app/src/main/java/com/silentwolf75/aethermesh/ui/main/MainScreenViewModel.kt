@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.silentwolf75.aethermesh.ble.BleConnectPolicy
 import com.silentwolf75.aethermesh.data.AppPackageMigration
 import com.silentwolf75.aethermesh.data.AetherMeshRepository
 import com.silentwolf75.aethermesh.data.ChatMessage
@@ -42,6 +43,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     val authFailureTick: StateFlow<Int> = repository.authFailureTick
     val needsRegionSetup: StateFlow<Boolean> = repository.needsRegionSetup
     val deviceConfigSyncEpoch: StateFlow<Int> = repository.deviceConfigSyncEpoch
+    val channelPrivacyStatus = repository.channelPrivacyStatus
     val firmwareFreshness = repository.firmwareFreshness
 
     fun getMeshDiagnosticsHistory() = repository.getMeshDiagnosticsHistory()
@@ -215,7 +217,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
                     Log.d(TAG, "BLE Discovered: $name ($mac) rssi=$rssi")
                 } else {
                     val existing = currentList[index]
-                    val betterName = existing.name != name && name != "AetherMesh Node"
+                    val betterName = existing.name != name && name != BleConnectPolicy.FALLBACK_NODE_LABEL
                     // Update RSSI/name in place — never re-sort mid-scan.
                     currentList[index] = existing.copy(
                         name = if (betterName) name else existing.name,
@@ -449,9 +451,11 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
             val channel = _firmwareChannel.value
             _githubFirmwareStatus.value = when (channel) {
                 com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.STABLE ->
-                    "Checking GitHub Releases (stable)…"
+                    com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_RELEASES
+                com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.BETA ->
+                    com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_BETA
                 com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.LATEST ->
-                    "Checking GitHub Pages (latest)…"
+                    com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_PAGES
             }
             try {
                 val result = com.silentwolf75.aethermesh.data.FirmwareCatalog.fetchForModel(

@@ -1,0 +1,118 @@
+name: Publish beta pre-release
+
+# Beta is a deliberate publication, not the tip of main: it builds one chosen
+# commit, attaches the same artifacts and manifests the flasher and the app
+# already know how to verify, and marks the GitHub Release as a pre-release so
+# the stable channel never serves it.
+#
+# The stable channel additionally requires hardware qualification evidence
+# (see stable-release.yml). Beta requires CI to pass and nothing more, which is
+# exactly what makes it a beta.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Beta tag, e.g. v1.3.4-beta.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: Build artifacts and publish the pre-release
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reject a tag that is not a beta, or that already exists
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          # A stable-looking tag on this workflow would publish an unqualified
+          # build under a name people read as qualified.
+          case "$RELEASE_TAG" in
+            *-beta.*) ;;
+            *) echo "::error::Beta tags must contain -beta. (got $RELEASE_TAG)"; exit 1 ;;
+          esac
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists; pick a new one."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO + esptool
+        run: pip install --upgrade platformio esptool
+
+      - name: Build every supported board
+        working-directory: firmware
+        run: |
+          pio run -e heltec_v4
+          pio run -e heltec_v3
+          pio run -e rak4631
+          pio run -e rak3401_1w
+          pio run -e rak19026
+          pio run -e lilygo_t_echo
+          pio run -e lilygo_t_deck
+          pio run -e elecrow_crowpanel_35
+          pio run -e seeed_t1000_e
+
+      - name: Package artifacts with the manifests the clients verify against
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          HASH=$(git rev-parse --short=7 HEAD)
+          FW_VERSION=${RELEASE_TAG#v}
+          BOOT_APP0=$(find ~/.platformio/packages -path '*tools/partitions/boot_app0.bin' | head -n1)
+          curl -fsSL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2conv.py -o /tmp/uf2conv.py
+          curl -fsSL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2families.json -o /tmp/uf2families.json
+          python tools/package_firmware.py --hash "$HASH" --version "$FW_VERSION" \
+            --converter /tmp/uf2conv.py --boot-app0 "$BOOT_APP0" --output beta-artifacts
+          cd beta-artifacts && sha256sum * > SHA256SUMS.txt
+
+      - name: Attest the published builds
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: beta-artifacts/*
+
+      - name: Publish as a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          COMMIT=$(git rev-parse HEAD)
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          Beta build of commit $COMMIT.
+
+          This is a pre-release. CI passed, but it has not been through the
+          hardware qualification the stable channel requires, so treat it as
+          something to test rather than something to rely on.
+
+          In the app, choose the **Beta** firmware channel to receive it over the
+          air. \`manifest.json\` (USB) and \`ota-manifest.json\` (over the air)
+          carry the SHA-256 of every artifact, and both the flasher and the app
+          verify downloads against them.
+          NOTES
+          gh release create "$RELEASE_TAG" beta-artifacts/* \
+            --target "$COMMIT" \
+            --prerelease \
+            --title "Beta $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"

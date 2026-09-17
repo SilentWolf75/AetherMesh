@@ -79,9 +79,11 @@ object FirmwareCatalog {
     }
 
     enum class Channel {
-        /** Prefer non-prerelease GitHub Release assets for this board. */
+        /** Published GitHub Releases only — never a pre-release. */
         STABLE,
-        /** GitHub Pages ota-manifest (continuous deploy). */
+        /** GitHub pre-releases: shipped on purpose, not yet field-qualified. */
+        BETA,
+        /** GitHub Pages ota-manifest (continuous deploy of the tip). */
         LATEST
     }
 
@@ -142,69 +144,17 @@ object FirmwareCatalog {
         val candidates: List<Artifact> = emptyList()
     )
 
-    /** Map telemetry `node_model` strings to ota-manifest `board` ids. */
-    fun boardIdForModel(model: String?): String? {
-        if (model.isNullOrBlank()) return null
-        val m = model.lowercase()
-        return when {
-            m.contains("heltec") && m.contains("v3") -> "heltec-v3"
-            m.contains("heltec") -> "heltec-v4"
-            m.contains("t-deck") || m.contains("tdeck") -> "t-deck"
-            m.contains("crowpanel") -> "crowpanel-35"
-            m.contains("19026") -> "rak19026"
-            m.contains("1w") || m.contains("3401") -> "rak3401-1w"
-            m.contains("rak") -> "rak4631"
-            else -> null
-        }
-    }
+    /** Board metadata is generated from config/boards.json. */
+    fun boardIdForModel(model: String?): String? = BoardRegistry.forModel(model)?.id
 
-    /** PlatformIO / release env tag for a catalog board id. */
-    fun envTagForBoard(boardId: String?): String? = when (boardId?.lowercase()) {
-        "heltec-v4" -> "heltec_v4"
-        "heltec-v3" -> "heltec_v3"
-        "t-deck" -> "lilygo_t_deck"
-        "crowpanel-35" -> "elecrow_crowpanel_35"
-        "rak4631" -> "rak4631"
-        "rak3401-1w" -> "rak3401_1w"
-        "rak19026" -> "rak19026"
-        else -> null
-    }
+    fun envTagForBoard(boardId: String?): String? = BoardRegistry.forId(boardId)?.env
 
     fun matchesBoard(artifact: Artifact, boardId: String): Boolean {
-        if (artifact.board.equals(boardId, ignoreCase = true)) return true
-        val f = artifact.file.lowercase()
-        val env = envTagForBoard(boardId)?.lowercase()
-        if (env != null && (f.contains(env) || f.contains(env.replace('_', '-')))) return true
-        return when (boardId) {
-            "heltec-v4" -> f.contains("heltec-v4") ||
-                (f.contains("heltec") && f.contains("v4") && !f.contains("v3"))
-            "heltec-v3" -> f.contains("heltec-v3") ||
-                (f.contains("heltec") && f.contains("v3") && !f.contains("v4"))
-            "t-deck" -> f.contains("t-deck") || f.contains("tdeck")
-            "crowpanel-35" -> f.contains("crowpanel")
-            "rak4631" -> f.contains("rak4631") && !f.contains("rak3401") && !f.contains("19026")
-            "rak3401-1w" -> f.contains("rak3401") || f.contains("1w")
-            "rak19026" -> f.contains("rak19026") || f.contains("19026")
-            else -> false
-        }
+        if (artifact.board.isNotBlank()) return artifact.board.equals(boardId, ignoreCase = true)
+        return inferBoardFromFileName(artifact.file).equals(boardId, ignoreCase = true)
     }
 
-    /** Infer board id from a filename or release asset name. */
-    fun inferBoardFromFileName(fileName: String): String? {
-        val f = fileName.lowercase().replace('_', '-')
-        return when {
-            f.contains("heltec-v3") || (f.contains("heltec") && f.contains("v3") && !f.contains("v4")) ->
-                "heltec-v3"
-            f.contains("heltec-v4") || (f.contains("heltec") && f.contains("v4")) ->
-                "heltec-v4"
-            f.contains("t-deck") || f.contains("tdeck") -> "t-deck"
-            f.contains("crowpanel") -> "crowpanel-35"
-            f.contains("rak19026") || f.contains("19026") -> "rak19026"
-            f.contains("rak3401") || (f.contains("1w") && f.contains("rak")) -> "rak3401-1w"
-            f.contains("rak4631") || (f.contains("rak") && f.endsWith(".zip")) -> "rak4631"
-            else -> null
-        }
-    }
+    fun inferBoardFromFileName(fileName: String): String? = BoardRegistry.forFile(fileName)?.id
 
     /**
      * Refuse a package that clearly targets a different board than the connected node.
@@ -232,7 +182,8 @@ object FirmwareCatalog {
     ): CatalogResult = withContext(Dispatchers.IO) {
         val boardId = boardIdForModel(model)
         when (channel) {
-            Channel.STABLE -> fetchStable(boardId, model)
+            Channel.BETA -> fetchReleases(boardId, model, wantPrerelease = true)
+            Channel.STABLE -> fetchReleases(boardId, model, wantPrerelease = false)
             Channel.LATEST -> fetchLatest(boardId, model)
         }
     }
@@ -271,11 +222,29 @@ object FirmwareCatalog {
         return CatalogResult(match, Channel.LATEST, status, list)
     }
 
-    private fun fetchStable(boardId: String?, model: String?): CatalogResult {
+    private fun fetchReleases(
+        boardId: String?,
+        model: String?,
+        wantPrerelease: Boolean
+    ): CatalogResult {
+        val wanted = if (wantPrerelease) Channel.BETA else Channel.STABLE
+        val label = if (wantPrerelease) "beta" else "stable"
         return try {
             val releases = fetchGithubReleases()
-            val assets = releases.flatMap { it.toArtifacts() }
+            // Stable must never serve a pre-release, and beta must never serve a
+            // stable build as if it were one: a channel that quietly falls back
+            // to the other is worse than an empty channel.
+            val chosen = releases.filter { it.prerelease == wantPrerelease }
+            // Releases publish ota-manifest.json alongside the binaries. Without
+            // it the API gives no digest and a download can only be size-checked,
+            // so pull the digests in and verify the bytes like the Pages channel.
+            val digests = chosen.firstOrNull()?.let { digestsForRelease(it) }.orEmpty()
+            val assets = chosen.flatMap { it.toArtifacts() }
                 .filter { isBleOtaAssetName(it.file) }
+                .map { artifact ->
+                    val digest = digests[artifact.file]
+                    if (digest.isNullOrBlank()) artifact else artifact.copy(sha256 = digest)
+                }
             val match = when {
                 boardId != null -> assets.firstOrNull { matchesBoard(it, boardId) }
                 else -> null
@@ -283,42 +252,43 @@ object FirmwareCatalog {
             when {
                 match != null -> CatalogResult(
                     artifact = match,
-                    channel = Channel.STABLE,
-                    status = "Found ${match.name} (stable ${match.displayVersion ?: match.releaseTag ?: "release"})",
+                    channel = wanted,
+                    status = "Found ${match.name} ($label ${match.displayVersion ?: match.releaseTag ?: "release"})",
                     candidates = assets
                 )
                 assets.isEmpty() -> {
-                    // No Releases yet — fall back to Pages but keep Stable UX honest.
+                    // Nothing published on this channel yet. Offer the tip, but
+                    // say plainly that it is a different channel than the one asked for.
                     val tip = fetchLatest(boardId, model)
                     CatalogResult(
                         artifact = tip.artifact,
                         channel = Channel.LATEST,
                         status = if (tip.artifact != null)
-                            "No GitHub Release assets yet — using latest Pages build: ${tip.artifact.name}"
+                            "No $label release assets yet — using latest Pages build: ${tip.artifact.name}"
                         else
-                            "No stable GitHub Release for this board yet. ${tip.status}",
+                            "No $label GitHub Release for this board yet. ${tip.status}",
                         candidates = tip.candidates
                     )
                 }
                 boardId == null -> CatalogResult(
                     artifact = null,
-                    channel = Channel.STABLE,
-                    status = "Stable Releases found, but node model is unknown — pick a local file or wait for telemetry.",
+                    channel = wanted,
+                    status = "Releases found on the $label channel, but node model is unknown — pick a local file or wait for telemetry.",
                     candidates = assets
                 )
                 else -> CatalogResult(
                     artifact = null,
-                    channel = Channel.STABLE,
-                    status = "No stable Release asset matches this board (${envTagForBoard(boardId) ?: boardId}). See $GITHUB_RELEASES_WEB",
+                    channel = wanted,
+                    status = "No $label release asset matches this board (${envTagForBoard(boardId) ?: boardId}). See $GITHUB_RELEASES_WEB",
                     candidates = assets
                 )
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Stable Releases fetch failed: ${e.message}")
+            Log.w(TAG, "$label Releases fetch failed: ${e.message}")
             if (isOfflineNetworkError(e)) {
                 return CatalogResult(
                     artifact = null,
-                    channel = Channel.STABLE,
+                    channel = wanted,
                     status = OFFLINE_CATALOG_STATUS
                 )
             }
@@ -327,7 +297,7 @@ object FirmwareCatalog {
             } catch (e2: Exception) {
                 return CatalogResult(
                     artifact = null,
-                    channel = Channel.STABLE,
+                    channel = wanted,
                     status = if (isOfflineNetworkError(e2)) OFFLINE_CATALOG_STATUS
                     else "Could not reach GitHub Releases: ${e.message}"
                 )
@@ -335,7 +305,7 @@ object FirmwareCatalog {
             if (tip.status == OFFLINE_CATALOG_STATUS) {
                 return CatalogResult(
                     artifact = null,
-                    channel = Channel.STABLE,
+                    channel = wanted,
                     status = OFFLINE_CATALOG_STATUS
                 )
             }
@@ -383,6 +353,48 @@ object FirmwareCatalog {
     internal fun parseTagVersionParts(tag: String): List<Int>? {
         val m = Regex("""v?(\d+)\.(\d+)\.(\d+)""").find(tag.trim()) ?: return null
         return m.groupValues.drop(1).map { it.toInt() }
+    }
+
+    /**
+     * file name -> sha256, read from the release's own ota-manifest.json. An
+     * absent or unreadable manifest yields no digests rather than a failure:
+     * the download then falls back to the size check it had before.
+     */
+    private fun digestsForRelease(release: GhRelease): Map<String, String> {
+        val manifest = release.assets.firstOrNull { it.name == "ota-manifest.json" } ?: return emptyMap()
+        return try {
+            val text = readUrlText(manifest.downloadUrl)
+            val arr = JSONArray(text)
+            buildMap {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val file = obj.optString("file")
+                    val sha = obj.optString("sha256")
+                    if (file.isNotBlank() && sha.matches(Regex("[0-9a-fA-F]{64}"))) put(file, sha)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Release manifest unreadable (${release.tag}): ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun readUrlText(url: String): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            requestMethod = "GET"
+            useCaches = false
+            setRequestProperty("User-Agent", USER_AGENT)
+        }
+        try {
+            if (connection.responseCode !in 200..299) {
+                throw IllegalStateException("HTTP ${connection.responseCode}")
+            }
+            return connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun fetchGithubReleases(): List<GhRelease> {
@@ -457,11 +469,11 @@ object FirmwareCatalog {
                 name = if (name.isNotBlank()) "$name · ${a.name}" else a.name,
                 file = a.name,
                 size = a.size,
-                sha256 = "", // Releases API has no digest; size + payload magic still apply
+                sha256 = "", // filled in from the release manifest when it publishes one
                 kind = "ota",
                 board = board,
                 absoluteUrl = a.downloadUrl,
-                channel = Channel.STABLE,
+                channel = if (prerelease) Channel.BETA else Channel.STABLE,
                 releaseTag = tag,
                 version = ver
             )

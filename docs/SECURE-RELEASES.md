@@ -58,3 +58,20 @@ signing keys in-tree:
 - Firmware-side reject of images that fail signature / board-id header checks.
 - Attestation verify from the phone (optional; Pages already attests in CI).
 
+## Release Channels
+
+| Channel | Workflow | Gate |
+| --- | --- | --- |
+| Stable | `stable-release.yml` | Hardware qualification evidence for the exact commit, plus CI |
+| Beta | `beta-release.yml` | CI only — that is what makes it a beta |
+| Latest | `pages.yml` | CI on every push to `main` |
+
+Both release workflows attach `manifest.json` (USB images) and
+`ota-manifest.json` (over-the-air images) alongside the binaries. Those manifests
+carry the SHA-256 of every artifact, and both the browser flasher and the Android
+app refuse to install anything that does not match. A release published without
+its manifest is invisible to both clients by design, rather than being installed
+unverified.
+
+Beta tags must contain `-beta.`; the workflow refuses anything else, so an
+unqualified build cannot be published under a name people read as qualified.
