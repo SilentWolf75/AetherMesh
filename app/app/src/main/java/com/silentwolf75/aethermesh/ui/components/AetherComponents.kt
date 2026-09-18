@@ -1,5 +1,6 @@
 package com.silentwolf75.aethermesh.ui.components
 
+import com.silentwolf75.aethermesh.theme.contentColorFor
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -69,18 +70,8 @@ fun AetherSectionHeader(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .height(14.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(
-                        Brush.verticalGradient(listOf(AccentCyan, AccentMint))
-                    )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = title.uppercase(),
+                text = title,
                 style = SectionHeaderStyle,
                 color = AccentCyan
             )
@@ -89,11 +80,11 @@ fun AetherSectionHeader(
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(AccentCyanDim)
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(SurfaceRaised)
+                    .padding(horizontal = 9.dp, vertical = 2.dp)
             ) {
-                Text(trailing, color = AccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(trailing, color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -107,11 +98,11 @@ fun AetherCard(
     accentStripe: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(18.dp)
     Card(
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
         shape = shape,
-        border = BorderStroke(1.dp, BorderDark),
+        border = BorderStroke(1.dp, BorderDark.copy(alpha = 0.55f)),
         modifier = if (onClick != null) {
             modifier.fillMaxWidth().clickable(onClick = onClick)
         } else {
@@ -145,10 +136,10 @@ fun AetherListRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(SurfaceDark)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (leading != null) {
@@ -171,26 +162,20 @@ fun NodeBadge(
     muted: Boolean = false,
     hops: Int? = null
 ) {
-    val ring = when {
-        muted -> BorderDark
-        hops == 1 -> AccentMint
-        hops != null && hops > 1 -> AccentSteel
-        else -> color
-    }
     Box(modifier = modifier.padding(2.dp)) {
         Box(
             modifier = Modifier
-                .size(width = 48.dp, height = 34.dp)
-                .border(BorderStroke(1.5.dp, ring.copy(alpha = if (muted) 0.55f else 1f)), RoundedCornerShape(10.dp))
-                .clip(RoundedCornerShape(10.dp))
-                .background(if (muted) color.copy(alpha = 0.45f) else color),
+                .size(width = 52.dp, height = 32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (muted) color.copy(alpha = 0.40f) else color),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = shortName,
-                color = Color(0xFF061018),
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp
+                color = contentColorFor(color),
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                maxLines = 1
             )
         }
         if (hops != null && hops > 0 && !muted) {
@@ -205,7 +190,7 @@ fun NodeBadge(
             ) {
                 Text(
                     if (hops > 9) "9+" else "$hops",
-                    color = Color(0xFF061018),
+                    color = contentColorFor(if (hops == 1) AccentMint else AccentSteel),
                     fontSize = 7.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -289,7 +274,7 @@ fun SecureChip(modifier: Modifier = Modifier) {
             .background(AccentMintDim)
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
-        Text("SECURE", color = AccentMint, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        Text("Secure", color = AccentMint, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -312,24 +297,16 @@ fun ExpandableSectionHeader(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .height(14.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Brush.verticalGradient(listOf(AccentCyan, AccentSteel)))
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(title.uppercase(), style = SectionHeaderStyle, color = AccentCyan)
+            Text(title, style = SectionHeaderStyle, color = AccentCyan)
             if (badge != null) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(AccentMintDim)
-                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(SurfaceRaised)
+                        .padding(horizontal = 9.dp, vertical = 2.dp)
                 ) {
-                    Text(badge, color = AccentMint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(badge, color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -673,5 +650,54 @@ fun DeliveryTicks(
                 drawLine(color, androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.72f), androidx.compose.ui.geometry.Offset(size.width * 0.78f, size.height * 0.50f), stroke.width, cap = StrokeCap.Round)
             }
         }
+    }
+}
+
+/**
+ * One compact reading: a small icon and a value, optionally tinted. Used in
+ * rows of node metrics so every figure carries its own meaning at a glance.
+ */
+@Composable
+fun MetricPill(
+    icon: ImageVector?,
+    text: String,
+    modifier: Modifier = Modifier,
+    tint: Color = TextMuted,
+    textColor: Color = TextLight,
+    label: String? = null
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(SurfaceRaised.copy(alpha = 0.7f))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(14.dp))
+            Spacer(modifier = Modifier.width(5.dp))
+        }
+        if (label != null) {
+            Text(label, color = TextMuted, fontSize = 12.sp)
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+        Text(text, color = textColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+/** Small icon + muted text used in card footers (hardware, role, id). */
+@Composable
+fun FooterFact(icon: ImageVector, text: String, modifier: Modifier = Modifier) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text(
+            text,
+            color = TextMuted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
     }
 }

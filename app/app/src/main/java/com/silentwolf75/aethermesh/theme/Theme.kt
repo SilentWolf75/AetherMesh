@@ -1,50 +1,67 @@
 package com.silentwolf75.aethermesh.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
-/** Dark ink on bright azure / lime controls. */
-private val ColorOnBright = Color(0xFF061018)
+private fun AetherPalette.toColorScheme(dark: Boolean): ColorScheme {
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    return base.copy(
+        primary = brand,
+        onPrimary = onBrand,
+        primaryContainer = brand.copy(alpha = 0.18f).compositeOver(surface),
+        onPrimaryContainer = textPrimary,
+        secondary = info,
+        onSecondary = onBrand,
+        secondaryContainer = surfaceRaised,
+        onSecondaryContainer = textPrimary,
+        tertiary = success,
+        onTertiary = onBrand,
+        background = background,
+        onBackground = textPrimary,
+        surface = surface,
+        onSurface = textPrimary,
+        surfaceVariant = surfaceRaised,
+        onSurfaceVariant = textMuted,
+        surfaceContainerLowest = background,
+        surfaceContainerLow = surface,
+        surfaceContainer = surface,
+        surfaceContainerHigh = surfaceRaised,
+        surfaceContainerHighest = surfaceRaised,
+        outline = border,
+        outlineVariant = border,
+        error = error,
+        onError = onBrand,
+        inverseSurface = textPrimary,
+        inverseOnSurface = background
+    )
+}
 
-private val DarkColorScheme = darkColorScheme(
-    primary = AccentCyan,
-    onPrimary = ColorOnBright,
-    secondary = AccentMint,
-    onSecondary = ColorOnBright,
-    tertiary = AccentSteel,
-    onTertiary = ColorOnBright,
-    background = DarkPalette.background,
-    onBackground = DarkPalette.textPrimary,
-    surface = DarkPalette.surface,
-    onSurface = DarkPalette.textPrimary,
-    surfaceVariant = DarkPalette.surfaceRaised,
-    onSurfaceVariant = DarkPalette.textMuted,
-    outline = DarkPalette.border,
-    error = AccentRed,
-    onError = DarkPalette.textPrimary
-)
+private fun androidx.compose.ui.graphics.Color.compositeOver(
+    background: androidx.compose.ui.graphics.Color
+): androidx.compose.ui.graphics.Color {
+    val a = alpha
+    return androidx.compose.ui.graphics.Color(
+        red = red * a + background.red * (1f - a),
+        green = green * a + background.green * (1f - a),
+        blue = blue * a + background.blue * (1f - a),
+        alpha = 1f
+    )
+}
 
-private val LightColorScheme = lightColorScheme(
-    primary = AccentCyan,
-    onPrimary = ColorOnBright,
-    secondary = AccentMint,
-    onSecondary = ColorOnBright,
-    tertiary = AccentSteel,
-    onTertiary = ColorOnBright,
-    background = LightPalette.background,
-    onBackground = LightPalette.textPrimary,
-    surface = LightPalette.surface,
-    onSurface = LightPalette.textPrimary,
-    surfaceVariant = LightPalette.surfaceRaised,
-    onSurfaceVariant = LightPalette.textMuted,
-    outline = LightPalette.border,
-    error = AccentRed,
-    onError = LightPalette.textPrimary
+val AetherShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
 @Composable
@@ -57,8 +74,9 @@ fun AetherMeshTheme(
     }
 
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme,
+        colorScheme = (if (darkTheme) DarkPalette else LightPalette).toColorScheme(darkTheme),
         typography = Typography,
+        shapes = AetherShapes,
         content = content
     )
 }

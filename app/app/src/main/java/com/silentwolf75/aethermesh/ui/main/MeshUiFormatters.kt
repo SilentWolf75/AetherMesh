@@ -221,18 +221,23 @@ fun getShortName(name: String, nodeId: Long): String {
 }
 
 fun getBadgeColor(name: String): Color {
-    val hash = name.hashCode()
-    // Stay on the night-radar palette (no purple AI-slop).
+    // Twelve evenly spaced, medium-saturation hues: distinct at a glance on
+    // both themes, none of them mistakable for the error red or brand teal.
     val colors = listOf(
-        Color(0xFFFFB347), // Amber
-        Color(0xFFC8F547), // Mint
-        Color(0xFF4DA3FF), // Azure
-        Color(0xFF7AD4FF), // Steel
-        Color(0xFFFF8C42), // Orange
-        Color(0xFF14B8A6), // Teal
-        Color(0xFFFF5C7A)  // Coral
+        Color(0xFFE39A5B), // sand
+        Color(0xFFD8C155), // mustard
+        Color(0xFF94CB63), // leaf
+        Color(0xFF52BE8E), // jade
+        Color(0xFF4CB5CF), // sky
+        Color(0xFF6A94E3), // cornflower
+        Color(0xFF8E83E6), // periwinkle
+        Color(0xFFB27FDB), // lavender
+        Color(0xFFD57DBA), // orchid
+        Color(0xFFE38089), // rose
+        Color(0xFFB9A37F), // taupe
+        Color(0xFF7FA9B8)  // slate
     )
-    val index = Math.abs(hash) % colors.size
+    val index = Math.floorMod(name.hashCode(), colors.size)
     return colors[index]
 }
 

@@ -23,6 +23,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.TrendingDown
+import androidx.compose.material.icons.automirrored.filled.TrendingFlat
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -399,7 +402,7 @@ fun NodesView(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun NodeItem(
     node: MeshNode,
@@ -464,293 +467,145 @@ fun NodeItem(
         }
     } else null
 
-    Row(
+    val batteryUnknown = node.battery <= 0 && node.voltage <= 0f && !node.isCharging
+    val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
+    val trend = remember(history) { voltageTrend(history) }
+    val queueDepth = if (isConnectedNode) routerQueueDepth else queuedCount
+    val spanish = appLanguage == "Spanish"
+    val cardShape = RoundedCornerShape(18.dp)
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    selected -> AccentCyan.copy(alpha = 0.16f)
-                    stale -> SurfaceDark.copy(alpha = 0.55f)
-                    else -> SurfaceDark
-                }
-            )
-            .then(
-                if (selected) Modifier.border(BorderStroke(1.dp, AccentCyan.copy(alpha = 0.45f)), RoundedCornerShape(12.dp))
-                else Modifier
+            .clip(cardShape)
+            .background(if (selected) AccentCyan.copy(alpha = 0.14f) else SurfaceDark)
+            .border(
+                BorderStroke(
+                    1.dp,
+                    when {
+                        selected -> AccentCyan.copy(alpha = 0.55f)
+                        isConnectedNode -> AccentCyan.copy(alpha = 0.35f)
+                        else -> BorderDark.copy(alpha = 0.55f)
+                    }
+                ),
+                cardShape
             )
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = { menuExpanded = true }
             )
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp)
     ) {
-        NodeBadge(shortName = shortName, color = badgeColor, muted = stale, hops = hops)
-        Spacer(modifier = Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(node.name, color = primaryText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(formatLastHeard(node.lastActive, appLanguage), color = TextMuted, fontSize = 12.sp)
-                if (daysLabel != null) {
-                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
-                    Text(daysLabel, color = AccentAmber, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                }
-                if (distanceLabel != null) {
-                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
-                    Text(distanceLabel, color = if (stale) TextMuted else AccentMint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
-                if (hops != null && !isConnectedNode) {
-                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
-                    HopChip(hops = hops, muted = stale)
-                }
-                if (RadioRegionPolicy.isKnown(node.region)) {
-                    Text("  ·  ", color = TextMuted, fontSize = 12.sp)
-                    Text(
-                        RadioRegionPolicy.shortLabel(node.region),
-                        color = if (stale) TextMuted else AccentCyan,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-            // Always-visible field triage: last heard · queue · battery/voltage
-            val battLabel = when {
-                node.battery <= 0 && node.voltage <= 0f && !node.isCharging ->
-                    if (appLanguage == "Spanish") "Batt —" else "Batt —"
-                node.isCharging && node.battery > 0 -> "${node.battery}%⚡"
-                node.battery > 0 -> "${node.battery}%"
-                node.voltage > 0f -> "%.2fV".format(node.voltage)
-                else -> if (appLanguage == "Spanish") "Batt —" else "Batt —"
-            }
-            val queueLabel = when {
-                isConnectedNode && routerQueueDepth > 0 ->
-                    if (appLanguage == "Spanish") "Cola $routerQueueDepth" else "Queue $routerQueueDepth"
-                queuedCount > 0 ->
-                    if (appLanguage == "Spanish") "Cola $queuedCount" else "Queue $queuedCount"
-                isConnectedNode ->
-                    if (appLanguage == "Spanish") "Cola 0" else "Queue 0"
-                else -> null
-            }
-            Spacer(modifier = Modifier.height(3.dp))
-            Text(
-                buildString {
-                    append(if (appLanguage == "Spanish") "Oído " else "Heard ")
-                    append(formatLastHeard(node.lastActive, appLanguage))
-                    if (queueLabel != null) {
-                        append("  ·  ")
-                        append(queueLabel)
-                    }
-                    append("  ·  ")
-                    append(battLabel)
-                    if (node.voltage > 0f && node.battery > 0) {
-                        append(" ")
-                        append("%.2fV".format(node.voltage))
-                    }
-                },
-                color = when {
-                    lvSafe || queuedCount > 0 || routerQueueDepth > 0 -> AccentAmber
-                    stale -> TextMuted.copy(alpha = 0.85f)
-                    else -> TextMuted
-                },
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            val fieldBits = buildList {
-                if (voltageTrendLabel != null) add(voltageTrendLabel)
-                if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
-                    add(
-                        formatGpsLockAge(
-                            if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
-                            appLanguage
-                        )
-                    )
-                }
-                gpsDutyLabel?.let { add(it) }
-                if (lvSafe) {
-                    add(if (appLanguage == "Spanish") "Modo bajo voltaje" else "Low-V safe")
-                }
-            }
-            if (fieldBits.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(3.dp))
+        // Header: identity on the left, battery and actions on the right.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            NodeBadge(shortName = shortName, color = badgeColor, muted = stale)
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    fieldBits.joinToString("  ·  "),
-                    color = if (lvSafe) AccentAmber else TextMuted,
-                    fontSize = 11.sp,
-                    maxLines = 2,
+                    node.name,
+                    color = primaryText,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-            }
-            if (isConnectedNode) {
-                Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(13.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        if (appLanguage == "Spanish") "Este dispositivo (BLE)" else "This device (BLE)",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                }
-            } else if (sigRssi != 0f) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SignalBars(rssi = sigRssi)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("${sigRssi.toInt()} dBm", color = TextMuted, fontSize = 11.sp)
-                    val sigSnr = if (hasLiveSignal) route!!.lastSnr else node.snr
-                    if (sigSnr != 0f) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        SnrMeter(snr = sigSnr)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            "SNR ${"%.1f".format(sigSnr)}",
-                            color = TextMuted,
-                            fontSize = 11.sp
-                        )
-                    }
-                    if (node.loraSf in 7..12) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "SF${node.loraSf}",
-                            color = AccentSteel,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            } else if (node.loraSf in 7..12) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "SF${node.loraSf}",
-                    color = AccentSteel,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (node.isCharging) {
+                    val heardColor = if (stale) TextMuted else AccentMint
                     Icon(
-                        imageVector = Icons.Default.Bolt,
-                        contentDescription = if (appLanguage == "Spanish") "Cargando" else "Charging",
-                        tint = AccentAmber,
-                        modifier = Modifier.size(14.dp)
+                        if (isConnectedNode) Icons.Default.Bluetooth else Icons.Default.SettingsInputAntenna,
+                        contentDescription = null,
+                        tint = heardColor,
+                        modifier = Modifier.size(13.dp)
                     )
-                    Spacer(modifier = Modifier.width(2.dp))
-                }
-                val batteryUnknown = node.battery <= 0 && node.voltage <= 0f && !node.isCharging
-                BatteryMeter(
-                    level = node.battery,
-                    charging = node.isCharging,
-                    unknown = batteryUnknown,
-                    size = 18.dp
-                )
-                Spacer(modifier = Modifier.width(2.dp))
-                Text(
-                    if (batteryUnknown) "—" else "${node.battery}%",
-                    color = primaryText,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Box {
-                    IconButton(
-                        onClick = { menuExpanded = true },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = if (appLanguage == "Spanish") "Acciones" else "Actions",
-                            tint = TextMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        if (isConnectedNode) {
+                            if (spanish) "Este dispositivo" else "This device"
+                        } else {
+                            formatLastHeard(node.lastActive, appLanguage)
+                        },
+                        color = heardColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                    if (daysLabel != null) {
+                        Text("  ·  ", color = TextMuted, fontSize = 12.sp)
+                        Text(daysLabel, color = AccentAmber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                        modifier = Modifier.background(SurfaceDark)
-                    ) {
+                }
+            }
+            if (node.isCharging) {
+                Icon(
+                    imageVector = Icons.Default.Bolt,
+                    contentDescription = if (spanish) "Cargando" else "Charging",
+                    tint = AccentAmber,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            BatteryMeter(
+                level = node.battery,
+                charging = node.isCharging,
+                unknown = batteryUnknown,
+                size = 18.dp
+            )
+            Spacer(modifier = Modifier.width(3.dp))
+            Text(
+                if (batteryUnknown) "—" else "${node.battery}%",
+                color = primaryText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = if (spanish) "Acciones" else "Actions",
+                        tint = TextMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    modifier = Modifier.background(SurfaceDark)
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(t("Rename Node", appLanguage), color = TextLight) },
+                        onClick = {
+                            menuExpanded = false
+                            onRenameClick()
+                        }
+                    )
+                    if (!isConnectedNode) {
                         DropdownMenuItem(
-                            text = { Text(t("Rename Node", appLanguage), color = TextLight) },
+                            text = {
+                                Text(
+                                    if (appLanguage == "Spanish") "Mensaje" else "Message",
+                                    color = TextLight
+                                )
+                            },
                             onClick = {
                                 menuExpanded = false
-                                onRenameClick()
+                                onMessageClick()
                             }
                         )
-                        if (!isConnectedNode) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (appLanguage == "Spanish") "Mensaje" else "Message",
-                                        color = TextLight
-                                    )
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onMessageClick()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (appLanguage == "Spanish") "Trazado de ruta" else "Traceroute",
-                                        color = TextLight
-                                    )
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onTraceRoute()
-                                }
-                            )
-                            if (onViewOnMap != null && hasValidPosition(node.latitude, node.longitude)) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (appLanguage == "Spanish") "Ver en mapa" else "View on map",
-                                            color = TextLight
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        onViewOnMap()
-                                    }
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (appLanguage == "Spanish") "Trazado de ruta" else "Traceroute",
+                                    color = TextLight
                                 )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onTraceRoute()
                             }
-                            if (onRangeTest != null) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (appLanguage == "Spanish") "Prueba de rango" else "Range test",
-                                            color = TextLight
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        onRangeTest()
-                                    }
-                                )
-                            }
-                            if (onRemoteConfig != null) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (appLanguage == "Spanish") "Config. remota" else "Remote config",
-                                            color = TextLight
-                                        )
-                                    },
-                                    onClick = {
-                                        menuExpanded = false
-                                        onRemoteConfig()
-                                    }
-                                )
-                            }
-                        }
-                        if (isConnectedNode && onViewOnMap != null &&
-                            hasValidPosition(node.latitude, node.longitude)
-                        ) {
+                        )
+                        if (onViewOnMap != null && hasValidPosition(node.latitude, node.longitude)) {
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -764,7 +619,167 @@ fun NodeItem(
                                 }
                             )
                         }
+                        if (onRangeTest != null) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (appLanguage == "Spanish") "Prueba de rango" else "Range test",
+                                        color = TextLight
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onRangeTest()
+                                }
+                            )
+                        }
+                        if (onRemoteConfig != null) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (appLanguage == "Spanish") "Config. remota" else "Remote config",
+                                        color = TextLight
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onRemoteConfig()
+                                }
+                            )
+                        }
                     }
+                    if (isConnectedNode && onViewOnMap != null &&
+                        hasValidPosition(node.latitude, node.longitude)
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (appLanguage == "Spanish") "Ver en mapa" else "View on map",
+                                    color = TextLight
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onViewOnMap()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Readings: only the ones this node actually reported.
+        Spacer(modifier = Modifier.height(10.dp))
+        FlowRow(
+            modifier = Modifier.padding(end = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (!isConnectedNode && sigRssi != 0f) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(SurfaceRaised.copy(alpha = 0.7f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SignalBars(rssi = sigRssi)
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        buildString {
+                            append("${sigRssi.toInt()} dBm")
+                            if (sigSnr != 0f) append("  ·  SNR ${"%.1f".format(sigSnr)}")
+                        },
+                        color = TextLight,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
+            if (hops != null && !isConnectedNode) {
+                MetricPill(
+                    icon = Icons.Default.Route,
+                    text = if (hops == 1) {
+                        if (spanish) "Directo" else "Direct"
+                    } else {
+                        if (spanish) "$hops saltos" else "$hops hops"
+                    },
+                    tint = if (hops == 1) AccentMint else AccentSteel
+                )
+            }
+            if (distanceLabel != null) {
+                MetricPill(icon = Icons.Default.NearMe, text = distanceLabel, tint = AccentCyan)
+            }
+            if (node.voltage > 0f) {
+                MetricPill(
+                    icon = when (trend) {
+                        VoltageTrend.RISING -> Icons.AutoMirrored.Filled.TrendingUp
+                        VoltageTrend.FALLING -> Icons.AutoMirrored.Filled.TrendingDown
+                        else -> Icons.AutoMirrored.Filled.TrendingFlat
+                    },
+                    text = "%.2f V".format(node.voltage),
+                    tint = if (lvSafe || trend == VoltageTrend.FALLING) AccentAmber else TextMuted
+                )
+            }
+            if (node.lastPositionAt > 0L || hasValidPosition(node.latitude, node.longitude)) {
+                MetricPill(
+                    icon = Icons.Default.GpsFixed,
+                    text = formatGpsLockAge(
+                        if (node.lastPositionAt > 0L) node.lastPositionAt else node.lastActive,
+                        appLanguage
+                    ),
+                    textColor = TextMuted
+                )
+            }
+            if (queueDepth > 0) {
+                MetricPill(
+                    icon = Icons.Default.Schedule,
+                    text = if (spanish) "$queueDepth en cola" else "$queueDepth queued",
+                    tint = AccentAmber,
+                    textColor = AccentAmber
+                )
+            }
+            if (lvSafe) {
+                MetricPill(
+                    icon = Icons.Default.BatteryAlert,
+                    text = if (spanish) "Modo bajo voltaje" else "Low-voltage mode",
+                    tint = AccentAmber,
+                    textColor = AccentAmber
+                )
+            }
+        }
+
+        // Footer: what the node is and how it is configured.
+        val footer = buildList {
+            if (node.model.isNotBlank()) add(Icons.Default.Memory to node.model)
+            if (RadioRegionPolicy.isKnown(node.region)) {
+                add(Icons.Default.Public to buildString {
+                    append(RadioRegionPolicy.shortLabel(node.region))
+                    if (node.loraSf in 7..12) append(" · SF${node.loraSf}")
+                })
+            } else if (node.loraSf in 7..12) {
+                add(Icons.Default.Tune to "SF${node.loraSf}")
+            }
+            gpsDutyLabel?.let { add(Icons.Default.SatelliteAlt to it) }
+        }
+        if (footer.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(BorderDark.copy(alpha = 0.6f))
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.padding(end = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                footer.forEach { (icon, text) ->
+                    FooterFact(icon = icon, text = text, modifier = Modifier.weight(1f, fill = false))
                 }
             }
         }

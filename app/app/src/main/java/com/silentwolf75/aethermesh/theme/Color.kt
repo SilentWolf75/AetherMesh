@@ -9,8 +9,16 @@ import androidx.compose.ui.graphics.luminance
 import com.silentwolf75.aethermesh.data.SignalBand
 
 /**
- * Night-radar scheme: deep navy field, azure primary, lime success.
- * AccentCyan / AccentMint keep API names for existing call sites.
+ * AetherMesh design system.
+ *
+ * Calm graphite surfaces with a single teal brand accent. Semantic colours
+ * (success, warning, error, info) are reserved for meaning, never decoration,
+ * and every colour has a light-theme counterpart with readable contrast.
+ *
+ * The Accent* names predate this palette and are kept so existing call sites
+ * pick up the new values: AccentCyan is the brand accent, AccentMint success,
+ * AccentAmber warning, AccentRed error, AccentSteel info, AccentOrange a warm
+ * highlight for attention that is not an error.
  */
 data class AetherPalette(
     val background: Color,
@@ -18,25 +26,57 @@ data class AetherPalette(
     val surfaceRaised: Color,
     val border: Color,
     val textPrimary: Color,
-    val textMuted: Color
+    val textMuted: Color,
+    val brand: Color,
+    val onBrand: Color,
+    val success: Color,
+    val warning: Color,
+    val error: Color,
+    val info: Color,
+    val warm: Color,
+    /** Background of the outgoing chat bubble. */
+    val bubbleOut: Color,
+    val onBubbleOut: Color,
+    /** Background of an incoming chat bubble. */
+    val bubbleIn: Color
 )
 
 val DarkPalette = AetherPalette(
-    background = Color(0xFF060B14),
-    surface = Color(0xFF0E1624),
-    surfaceRaised = Color(0xFF152033),
-    border = Color(0xFF243044),
-    textPrimary = Color(0xFFE8F0FF),
-    textMuted = Color(0xFF7E90A8)
+    background = Color(0xFF111317),
+    surface = Color(0xFF1A1D23),
+    surfaceRaised = Color(0xFF23272E),
+    border = Color(0xFF2F343D),
+    textPrimary = Color(0xFFE8EAEF),
+    textMuted = Color(0xFF9AA2AF),
+    brand = Color(0xFF3DD6C3),
+    onBrand = Color(0xFF042420),
+    success = Color(0xFF5BD98A),
+    warning = Color(0xFFF5B83D),
+    error = Color(0xFFF2727A),
+    info = Color(0xFF6AAEF7),
+    warm = Color(0xFFF59A57),
+    bubbleOut = Color(0xFF1F5C55),
+    onBubbleOut = Color(0xFFE9FBF8),
+    bubbleIn = Color(0xFF262A32)
 )
 
 val LightPalette = AetherPalette(
-    background = Color(0xFFE6EEF8),
-    surface = Color(0xFFF5F8FC),
-    surfaceRaised = Color(0xFFFFFFFF),
-    border = Color(0xFFB8C7DA),
-    textPrimary = Color(0xFF0B1524),
-    textMuted = Color(0xFF4E6078)
+    background = Color(0xFFF3F4F7),
+    surface = Color(0xFFFFFFFF),
+    surfaceRaised = Color(0xFFECEEF2),
+    border = Color(0xFFD8DCE3),
+    textPrimary = Color(0xFF161A20),
+    textMuted = Color(0xFF5A6371),
+    brand = Color(0xFF0B8A7E),
+    onBrand = Color(0xFFFFFFFF),
+    success = Color(0xFF16924A),
+    warning = Color(0xFFB86E00),
+    error = Color(0xFFCC2F3A),
+    info = Color(0xFF2461C7),
+    warm = Color(0xFFC75A12),
+    bubbleOut = Color(0xFF0B8A7E),
+    onBubbleOut = Color(0xFFFFFFFF),
+    bubbleIn = Color(0xFFE6E9EE)
 )
 
 private var activePalette by mutableStateOf(DarkPalette)
@@ -54,28 +94,39 @@ val BorderDark: Color get() = activePalette.border
 val TextLight: Color get() = activePalette.textPrimary
 val TextMuted: Color get() = activePalette.textMuted
 
-/** Primary — azure radar blue. */
-val AccentCyan = Color(0xFF4DA3FF)
+/** Brand accent: selection, primary actions, links, section titles. */
+val AccentCyan: Color get() = activePalette.brand
 
-/** Success — lime. */
-val AccentMint = Color(0xFFC8F547)
+/** Text and icons drawn on top of the brand accent. */
+val OnAccent: Color get() = activePalette.onBrand
 
-/** Errors. */
-val AccentRed = Color(0xFFFF5C7A)
+/** Success, good signal, full battery, delivered. */
+val AccentMint: Color get() = activePalette.success
 
-/** Mid / warning. */
-val AccentAmber = Color(0xFFFFB347)
+/** Errors and destructive actions. */
+val AccentRed: Color get() = activePalette.error
 
-/** Radio chip / warm callout. */
-val AccentOrange = Color(0xFFFF8C42)
+/** Warnings and in-between states. */
+val AccentAmber: Color get() = activePalette.warning
 
-/** Cool secondary (hops, steel info). */
-val AccentSteel = Color(0xFF7AD4FF)
+/** Warm attention that is not an error (radio, unread). */
+val AccentOrange: Color get() = activePalette.warm
 
-val AccentCyanDim = Color(0x334DA3FF)
-val AccentMintDim = Color(0x33C8F547)
-val AccentSteelDim = Color(0x337AD4FF)
-val AccentOrangeDim = Color(0x33FF8C42)
+/** Informational blue (hops, routing detail). */
+val AccentSteel: Color get() = activePalette.info
+
+val AccentCyanDim: Color get() = activePalette.brand.copy(alpha = 0.16f)
+val AccentMintDim: Color get() = activePalette.success.copy(alpha = 0.16f)
+val AccentSteelDim: Color get() = activePalette.info.copy(alpha = 0.16f)
+val AccentOrangeDim: Color get() = activePalette.warm.copy(alpha = 0.16f)
+
+val BubbleOutgoing: Color get() = activePalette.bubbleOut
+val OnBubbleOutgoing: Color get() = activePalette.onBubbleOut
+val BubbleIncoming: Color get() = activePalette.bubbleIn
+
+/** Readable text colour for an arbitrary fill such as a node badge. */
+fun contentColorFor(fill: Color): Color =
+    if (fill.luminance() > 0.42f) Color(0xFF14171C) else Color(0xFFF7F8FA)
 
 fun batteryLevelColor(level: Int): Color {
     return when {
@@ -94,44 +145,20 @@ fun signalBandColor(band: SignalBand): Color = when (band) {
     SignalBand.NONE -> TextMuted
 }
 
-fun appBackgroundBrush(): Brush {
-    val bg = activePalette.background
-    val raised = activePalette.surfaceRaised
-    // Light theme: soft cool wash. Dark: navy radial that matches night-radar chrome.
-    val highlight = if (bg.luminance() > 0.5f) {
-        Color(
-            red = (raised.red * 0.92f + 0.08f).coerceIn(0f, 1f),
-            green = (raised.green * 0.94f + 0.06f).coerceIn(0f, 1f),
-            blue = (raised.blue * 0.98f + 0.02f).coerceIn(0f, 1f),
-            alpha = 1f
-        )
-    } else {
-        Color(0xFF122038)
-    }
-    val edge = if (bg.luminance() > 0.5f) {
-        Color(
-            red = (bg.red * 0.88f).coerceIn(0f, 1f),
-            green = (bg.green * 0.90f).coerceIn(0f, 1f),
-            blue = (bg.blue * 0.94f).coerceIn(0f, 1f),
-            alpha = 1f
-        )
-    } else {
-        Color(0xFF04070C)
-    }
-    return Brush.radialGradient(colors = listOf(highlight, bg, edge))
-}
+/** Flat app background. Kept as a Brush so callers need not change. */
+fun appBackgroundBrush(): Brush = Brush.verticalGradient(
+    colors = listOf(activePalette.background, activePalette.background)
+)
 
+/** Flat header background, level with the screen beneath it. */
 fun headerBarBrush(): Brush = Brush.verticalGradient(
-    colors = listOf(
-        activePalette.surfaceRaised,
-        activePalette.surface
-    )
+    colors = listOf(activePalette.background, activePalette.background)
 )
 
 fun cardTopStripeBrush(): Brush = Brush.horizontalGradient(
-    colors = listOf(AccentCyan, AccentSteel, AccentMint)
+    colors = listOf(activePalette.brand, activePalette.brand)
 )
 
 fun primaryButtonBrush(): Brush = Brush.horizontalGradient(
-    colors = listOf(AccentCyan, AccentSteel)
+    colors = listOf(activePalette.brand, activePalette.brand)
 )

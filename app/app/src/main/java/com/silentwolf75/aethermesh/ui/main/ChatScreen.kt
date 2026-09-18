@@ -73,6 +73,9 @@ import com.silentwolf75.aethermesh.theme.AccentSteelDim
 import com.silentwolf75.aethermesh.theme.appBackgroundBrush
 import com.silentwolf75.aethermesh.theme.headerBarBrush
 import com.silentwolf75.aethermesh.theme.primaryButtonBrush
+import com.silentwolf75.aethermesh.theme.BubbleIncoming
+import com.silentwolf75.aethermesh.theme.BubbleOutgoing
+import com.silentwolf75.aethermesh.theme.OnBubbleOutgoing
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
@@ -388,23 +391,18 @@ fun ChatView(
                                 }
                             },
                             colors = aetherFilledFieldColors(),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(28.dp),
                             modifier = Modifier.weight(1f)
                         )
                         IconButton(onClick = { showDeliveryLegend = true }) {
                             Icon(
                                 Icons.Default.Info,
                                 contentDescription = if (spanish) "Leyenda de entrega" else "Delivery legend",
-                                tint = AccentCyan
+                                tint = TextMuted
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    DeliveryStatusLegendCompact(
-                        appLanguage = appLanguage,
-                        onOpenFull = { showDeliveryLegend = true }
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
                 item {
                     Row(
@@ -424,7 +422,7 @@ fun ChatView(
                             Text(
                                 if (spanish) "+ Canal" else "+ Channel",
                                 color = if (canSend) AccentCyan else TextMuted,
-                                fontWeight = FontWeight.Bold,
+                                fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp
                             )
                         }
@@ -458,16 +456,16 @@ fun ChatView(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(16.dp))
                             .background(
-                                if (selected) AccentCyan.copy(alpha = 0.16f) else SurfaceDark
+                                if (selected) AccentCyan.copy(alpha = 0.14f) else SurfaceDark
                             )
                             .border(
                                 BorderStroke(
                                     1.dp,
-                                    if (selected) AccentCyan.copy(alpha = 0.45f) else BorderDark
+                                    if (selected) AccentCyan.copy(alpha = 0.5f) else BorderDark.copy(alpha = 0.55f)
                                 ),
-                                RoundedCornerShape(12.dp)
+                                RoundedCornerShape(16.dp)
                             )
                             .clickable {
                                 onSelectChannel(channel)
@@ -478,12 +476,12 @@ fun ChatView(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .size(width = 52.dp, height = 32.dp)
+                                .clip(RoundedCornerShape(9.dp))
                                 .background(AccentCyanDim),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("#", color = AccentCyan, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("#", color = AccentCyan, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -602,20 +600,19 @@ fun ChatView(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(16.dp))
                                 .background(
                                     when {
-                                        selected -> AccentMint.copy(alpha = 0.16f)
-                                        stale -> SurfaceDark.copy(alpha = 0.55f)
+                                        selected -> AccentCyan.copy(alpha = 0.14f)
                                         else -> SurfaceDark
                                     }
                                 )
                                 .border(
                                     BorderStroke(
                                         1.dp,
-                                        if (selected) AccentMint.copy(alpha = 0.45f) else BorderDark
+                                        if (selected) AccentCyan.copy(alpha = 0.5f) else BorderDark.copy(alpha = 0.55f)
                                     ),
-                                    RoundedCornerShape(12.dp)
+                                    RoundedCornerShape(16.dp)
                                 )
                                 .clickable {
                                     onSelectDirectMessage(node.nodeId)
@@ -1526,25 +1523,23 @@ fun MessageBubble(
     // DeliveryTicks draws the status glyph; the text must not repeat it
     // ("✓✓ ✓✓ delivered" showed four check marks).
     val statusText = when (message.status) {
-        "EXPIRED" -> if (spanish) "sin ACK · tocar para reintentar" else "no ACK · tap to retry"
-        "FAILED" -> if (spanish) "sin respuesta · tocar para reintentar" else "no reply · tap to retry"
-        "PENDING" -> if (spanish) "esperando recepción…" else "waiting for receipt…"
-        "QUEUED" -> if (spanish) "en cola (router / al aire)…" else "queued (router / on-air)…"
-        "RETRIED" -> if (spanish) "reenviado" else "resent"
-        "DELIVERED" -> if (spanish) "entregado al nodo" else "delivered to node"
+        "EXPIRED" -> if (spanish) "No entregado · tocar para reintentar" else "Not delivered · tap to retry"
+        "FAILED" -> if (spanish) "Sin respuesta · tocar para reintentar" else "No reply · tap to retry"
+        "PENDING" -> if (spanish) "Enviando…" else "Sending…"
+        "QUEUED" -> if (spanish) "En cola" else "Queued"
+        "RETRIED" -> if (spanish) "Reenviado" else "Resent"
+        "DELIVERED" -> if (spanish) "Entregado" else "Delivered"
         "HEARD" -> if (spanish) {
-            "oído por ${message.heardCount}"
+            "Oído por ${message.heardCount}"
         } else {
-            "heard by ${message.heardCount}"
+            "Heard by ${message.heardCount}"
         }
         "SENT" -> if (channelWaiting) {
-            if (spanish) "SENT · esperando HEARD…" else "SENT · waiting for HEARD…"
-        } else if (isChannel) {
+            if (spanish) "Enviado · esperando oyentes…" else "Sent · listening for receipts…"
+        } else {
             // Receipt window passed with nobody answering (or a neighborhood too
             // crowded for receipts). The message was transmitted; do not imply failure.
-            if (spanish) "SENT · al aire" else "SENT · on air"
-        } else {
-            if (spanish) "SENT · al radio" else "SENT · to radio"
+            if (spanish) "Enviado" else "Sent"
         }
         else -> ""
     }
@@ -1581,9 +1576,9 @@ fun MessageBubble(
                 "SENT = phone→radio / on air. Waiting for optional HEARD receipts (bonus, not a mailbox)."
         } else if (isChannel) {
             if (spanish)
-                "SENT = llegó al radio y salió al canal (cobertura flood). Los recibos de oyentes están desactivados, así que no hay confirmación de entrega. Actívalos en Ajustes → Preferencias para ver cuántos nodos lo oyeron."
+                "Enviado: salió al canal, pero ningún nodo devolvió un recibo a tiempo. Puede que lo hayan oído igualmente."
             else
-                "SENT = reached the radio and went out on the channel (flood coverage). Hearer receipts are off, so delivery can't be confirmed. Turn them on in Settings → Preferences to see how many nodes heard it."
+                "Sent: it went out on the channel, but no node returned a receipt in time. Nodes may still have heard it."
         } else {
             if (spanish)
                 "SENT = el teléfono lo entregó al radio. Aún no hay confirmación del destino."
@@ -1608,26 +1603,24 @@ fun MessageBubble(
         if (!senderLabel.isNullOrBlank() && !isMe) {
             Text(
                 senderLabel,
-                color = AccentCyan,
-                fontSize = 11.sp,
+                color = getBadgeColor(senderLabel),
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(start = 4.dp, bottom = 3.dp)
+                modifier = Modifier.padding(start = 6.dp, bottom = 3.dp)
             )
         }
         Box(
             modifier = Modifier
                 .clip(
                     RoundedCornerShape(
-                        topStart = 16.dp,
-                        topEnd = 16.dp,
-                        bottomStart = if (isMe) 16.dp else 4.dp,
-                        bottomEnd = if (isMe) 4.dp else 16.dp
+                        topStart = 18.dp,
+                        topEnd = 18.dp,
+                        bottomStart = if (isMe) 18.dp else 6.dp,
+                        bottomEnd = if (isMe) 6.dp else 18.dp
                     )
                 )
-                .then(
-                    if (isMe) Modifier.background(primaryButtonBrush())
-                    else Modifier.background(SurfaceDark)
-                )
+                .widthIn(max = 320.dp)
+                .background(if (isMe) BubbleOutgoing else BubbleIncoming)
                 .clickable(enabled = canRetry) { onRetryMessage(message) }
                 .semantics {
                     if (isMe) {
@@ -1644,15 +1637,16 @@ fun MessageBubble(
         ) {
             Text(
                 text = localizeChatPlaceholder(message.content, appLanguage),
-                color = if (isMe) Color(0xFF061018) else TextLight,
-                fontSize = 15.sp
+                color = if (isMe) OnBubbleOutgoing else TextLight,
+                fontSize = 15.sp,
+                lineHeight = 21.sp
             )
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(top = 3.dp, start = 4.dp, end = 4.dp)
         ) {
-            Text(time, color = TextMuted, fontSize = 10.sp)
+            Text(time, color = TextMuted, fontSize = 11.sp)
             if (isMe) {
                 Spacer(modifier = Modifier.width(6.dp))
                 DeliveryTicks(
@@ -1664,8 +1658,8 @@ fun MessageBubble(
                 Text(
                     text = statusText,
                     color = statusColor,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.semantics { contentDescription = statusDescription }
                 )
             }

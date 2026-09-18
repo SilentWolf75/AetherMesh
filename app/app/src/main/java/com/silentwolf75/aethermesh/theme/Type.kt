@@ -14,12 +14,19 @@ val Typography = Typography(
         lineHeight = 34.sp,
         letterSpacing = 0.sp
     ),
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 24.sp,
+        lineHeight = 30.sp,
+        letterSpacing = 0.sp
+    ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Bold,
-        fontSize = 20.sp,
-        lineHeight = 26.sp,
-        letterSpacing = 0.15.sp
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = 0.sp
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.Default,
@@ -58,10 +65,10 @@ val Typography = Typography(
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Bold,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        letterSpacing = 0.4.sp
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.1.sp
     ),
     labelMedium = TextStyle(
         fontFamily = FontFamily.Default,
@@ -79,13 +86,13 @@ val Typography = Typography(
     )
 )
 
-/** Teal section header used across lists and settings (Meshtastic-style). */
+/** Sentence-case section title in the brand accent, used above grouped content. */
 val SectionHeaderStyle = TextStyle(
     fontFamily = FontFamily.Default,
-    fontWeight = FontWeight.Bold,
-    fontSize = 12.sp,
-    lineHeight = 16.sp,
-    letterSpacing = 0.8.sp
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 15.sp,
+    lineHeight = 20.sp,
+    letterSpacing = 0.1.sp
 )
 
 /** Compact mono-ish ID / hex style. */
