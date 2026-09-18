@@ -757,6 +757,40 @@ void test_effective_blur_picks_coarser_radius() {
     TEST_ASSERT_EQUAL_UINT32(0, effectiveBlurRadiusM(0, 0));
 }
 
+
+void test_busy_backoff_grows_and_stays_bounded() {
+    // First busy result waits between half and all of the base window.
+    uint32_t sf12Airtime = 2300;
+    uint32_t base = 80 + sf12Airtime / 4;
+    TEST_ASSERT_EQUAL_UINT32(base / 2, channelBusyBackoffMs(sf12Airtime, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(base, channelBusyBackoffMs(sf12Airtime, 0, base - base / 2));
+    // Consecutive busy results widen the window, never past the cap.
+    for (uint32_t streak = 0; streak < 10; streak++) {
+        for (uint32_t r = 0; r < 5000; r += 97) {
+            uint32_t d = channelBusyBackoffMs(sf12Airtime, streak, r);
+            TEST_ASSERT_TRUE(d <= CHANNEL_BUSY_BACKOFF_CAP_MS);
+            TEST_ASSERT_TRUE(d >= 40);
+        }
+    }
+    TEST_ASSERT_TRUE(channelBusyBackoffMs(100, 2, 0) > channelBusyBackoffMs(100, 0, 0));
+}
+
+void test_flood_relay_prefers_the_farthest_hearer() {
+    // Weak signal (far from the sender) goes first; strong goes last.
+    TEST_ASSERT_EQUAL_UINT32(500, floodRelayDelayMs(-20.0f));
+    TEST_ASSERT_EQUAL_UINT32(2000, floodRelayDelayMs(10.0f));
+    TEST_ASSERT_TRUE(floodRelayDelayMs(-10.0f) < floodRelayDelayMs(5.0f));
+    // Same clamp and pace factor as the directed-relay delay.
+    TEST_ASSERT_EQUAL_UINT32(500, floodRelayDelayMs(-40.0f));
+    TEST_ASSERT_EQUAL_UINT32(1000, floodRelayDelayMs(-20.0f, 200));
+}
+
+void test_only_repeaters_ignore_duplicates() {
+    TEST_ASSERT_TRUE(cancelRelayOnDuplicate(0));
+    TEST_ASSERT_TRUE(cancelRelayOnDuplicate(1));
+    TEST_ASSERT_FALSE(cancelRelayOnDuplicate(NODE_ROLE_REPEATER));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_hopcost_strong_link_is_min);
@@ -828,5 +862,8 @@ int main(int, char**) {
     RUN_TEST(test_reply_hop_limit_covers_the_request_path);
     RUN_TEST(test_phone_origin_hop_limit_applies_node_setting);
     RUN_TEST(test_effective_blur_picks_coarser_radius);
+    RUN_TEST(test_busy_backoff_grows_and_stays_bounded);
+    RUN_TEST(test_flood_relay_prefers_the_farthest_hearer);
+    RUN_TEST(test_only_repeaters_ignore_duplicates);
     return UNITY_END();
 }

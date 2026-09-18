@@ -54,6 +54,13 @@ public:
     
 private:
     void noteRecentAirtime(uint32_t airtimeMs);
+    // Put the radio in receive mode. On SX1262 boards this also records the
+    // "valid LoRa header" event (without raising an interrupt for it) so a
+    // transmit can tell that a packet is already arriving.
+    int16_t startListening();
+    // True while a packet's header has been received and its body is still
+    // arriving. Transmitting then would destroy it.
+    bool isActivelyReceiving();
 #if defined(SEEED_T1000_E)
     LR1110* radio;
 #else
@@ -80,6 +87,11 @@ private:
     uint32_t txFailures;
     uint32_t rxPackets;
     uint32_t cadBusyEvents;
+    // Busy-channel hold-off: sends are refused until this time while the
+    // radio keeps listening. 0 = not holding off.
+    uint32_t channelBusyUntil;
+    uint32_t channelBusyStreak;
+    uint32_t headerSeenAt;
     uint32_t airtimeMsTotal;
     uint32_t recentAirtimeMs;
     uint32_t recentAirtimeWindowStart;

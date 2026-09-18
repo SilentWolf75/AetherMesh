@@ -1504,8 +1504,11 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
         seenCache.noteBestHop(millis(), packet.sender_id, packet.packet_id,
                               packet.retry_count, packet.hop_limit,
                               SEEN_PACKET_TIMEOUT_MS);
-        // Cancel pending rebroadcast if we hear a duplicate
-        cancelRebroadcast(packet.sender_id, packet.packet_id, packet.retry_count);
+        // Someone else already repeated it: drop our queued repeat, unless
+        // this node is a dedicated repeater, which always repeats.
+        if (meshmath::cancelRelayOnDuplicate(nodeRole)) {
+            cancelRebroadcast(packet.sender_id, packet.packet_id, packet.retry_count);
+        }
         // The relay wave is over for us as soon as we hear a relay of it, so a
         // queued ACK no longer has to sit out the whole window it reserved.
         pullInQueuedChannelAck(packet.packet_id);
@@ -1820,8 +1823,9 @@ void MeshRouter::processIncomingPacket(uint8_t* data, size_t len, float rssi, fl
                 packet.hop_limit--;
                 packet.prev_hop_id = localNodeId;
                 packet.next_hop_id = meshmath::restampNextHopId(0, false);
-                // Longer SNR backoff for floods so one strong relay leads.
-                uint32_t delay = meshmath::rebroadcastDelayMs(snr, rebroadcastTxdelayX100);
+                // The weakest hearer (usually the farthest) repeats first, so
+                // the repeat that cancels the others covers the most ground.
+                uint32_t delay = meshmath::floodRelayDelayMs(snr, rebroadcastTxdelayX100);
                 uint32_t jitter = 200 + (uint32_t)random(0, 500);
                 queueRebroadcast(packet, millis() + delay + jitter);
             } else {
