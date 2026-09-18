@@ -263,3 +263,23 @@ test("release notes are shown as text, never as markup", async ({ page }) => {
   await expect(page.locator("#release-notes-text")).toContainText("<img src=x");
   expect(await page.evaluate(() => window.pwned)).toBeUndefined();
 });
+
+test("log lines stay text when a tab is re-shown", async ({ page }) => {
+  // The serial monitor shows whatever the node prints, and the firmware prints
+  // chat received from other nodes. Switching tabs used to rebuild the view
+  // with innerHTML, so a remote node's message could run script in this page.
+  await setup(page, []);
+  const hostile = '<img src=x onerror="window.pwned=1">.bin';
+  const data = await page.evaluateHandle((name) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([9, 8, 7])], name));
+    return transfer;
+  }, hostile);
+  await page.locator("#dropzone").dispatchEvent("drop", { dataTransfer: data });
+  await page.locator("#flash").click();
+  await expect(page.locator("#status")).toContainText("Done.");
+  await page.locator("#tab-monitor-btn").click();
+  await page.locator("#tab-logs-btn").click();
+  await expect(page.locator("#log")).toContainText("<img src=x");
+  expect(await page.evaluate(() => window.pwned)).toBeUndefined();
+});
