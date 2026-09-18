@@ -66,6 +66,7 @@ fun RadioSettings(
     telemetryIntervalSecsState: MutableIntState,
     screenTimeoutSecsState: MutableIntState,
     powerSaveModeEnabledState: MutableState<Boolean>,
+    connectedModel: String? = null,
     onApply: () -> Unit,
     onRequestRepeaterConfirm: () -> Unit,
     onRequestDeployConfirm: (DeployProfile) -> Unit,
@@ -550,12 +551,22 @@ fun RadioSettings(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                    val txMax = com.silentwolf75.aethermesh.data.TxPowerPolicy.maxDbm(connectedModel, region)
+                    val txMin = com.silentwolf75.aethermesh.data.TxPowerPolicy.MIN_DBM
+                    Text(
+                        text = if (appLanguage == "Spanish")
+                            "Potencia en la antena. Máximo $txMax dBm para esta placa y región."
+                        else
+                            "Power at the antenna. Up to $txMax dBm for this board and region.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Slider(
-                        value = txPower.toFloat(),
+                        value = txPower.coerceIn(txMin, txMax).toFloat(),
                         onValueChange = { txPower = it.toInt() },
-                        valueRange = 10f..22f,
-                        steps = 12,
+                        valueRange = txMin.toFloat()..txMax.toFloat(),
+                        steps = (txMax - txMin - 1).coerceAtLeast(0),
                         colors = SliderDefaults.colors(
                             thumbColor = AccentCyan,
                             activeTrackColor = AccentCyan,
