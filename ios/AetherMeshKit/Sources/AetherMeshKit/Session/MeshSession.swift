@@ -34,7 +34,7 @@ public struct MeshNodeInfo: Equatable, Sendable {
     public let lastRssi: Float
     public let lastSnr: Float
     public let lastHeard: Date
-    /// Firmware GNSS snapshot; `.gpsStateUnknown` from older firmware.
+    /// Firmware GNSS snapshot; `.unknown` from older firmware.
     public let gpsState: Aethermesh_Telemetry.GpsState
     public let positionSource: Aethermesh_Telemetry.PositionSource
     public let satellitesUsed: UInt32

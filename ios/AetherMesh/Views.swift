@@ -224,8 +224,10 @@ struct NodesView: View {
                             Text(verbatim: String(format: "Battery %u%% · SNR %.1f dB · %@",
                                                   node.batteryLevel, node.lastSnr, node.firmwareVersion))
                                 .font(.caption).foregroundStyle(.secondary)
-                            if node.gpsState != .gpsStateUnknown && node.gpsState != .gpsStateAbsent {
-                                Text(verbatim: "GPS \(node.gpsState == .gpsStateFix ? "locked" : "no fix") · " +
+                            // SwiftProtobuf strips the GPS_STATE_ prefix, so the
+                            // cases are .unknown/.absent/.fix, not .gpsStateUnknown.
+                            if node.gpsState != .unknown && node.gpsState != .absent {
+                                Text(verbatim: "GPS \(node.gpsState == .fix ? "locked" : "no fix") · " +
                                     "\(node.satellitesUsed) used · \(node.satellitesInView) in view")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
