@@ -14,4 +14,6 @@ public:
     virtual uint32_t getCadBusyEvents() const = 0;
     virtual uint32_t getAirtimeMs() const = 0;
     virtual uint32_t getRecentAirtimeMs() const = 0;
+    // Share of the last minute the channel was busy (anyone's packets), 0-100.
+    virtual uint8_t getChannelUtilPercent() { return 0; }
 };

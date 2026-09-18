@@ -386,6 +386,7 @@ void RadioManager::loop() {
             uint8_t* buffer = new uint8_t[len];
             
             int state = radio->readData(buffer, len);
+            channelMinute.add(millis(), radio->getTimeOnAir(len) / 1000);
             if (state == RADIOLIB_ERR_NONE) {
                 rxPackets++;
                 lastRssi = radio->getRSSI();
@@ -487,6 +488,17 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
 #endif
 
     uint32_t airtimeMs = radio->getTimeOnAir(len) / 1000;
+    // Regulatory duty cycle applies to every transmission, urgent or not.
+    if (!txHour.fits(millis(), airtimeMs, dutyLimitPercent)) {
+        dutyRefusals++;
+        static uint32_t lastDutyLogMs = 0;
+        if ((uint32_t)(millis() - lastDutyLogMs) > 30000u) {
+            lastDutyLogMs = millis();
+            Serial.printf("Duty cycle: %u%% of the hourly %u%% used; holding transmissions.\n",
+                          (unsigned)txHour.percent(millis()), (unsigned)dutyLimitPercent);
+        }
+        return false;
+    }
     if (!skipCad) {
         // Never block here: the radio must keep listening while we wait,
         // and the caller's queue retries on its next pass.
@@ -550,6 +562,8 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     txPackets++;
     airtimeMsTotal += airtimeMs;
     noteRecentAirtime(airtimeMs);
+    txHour.add(millis(), airtimeMs);
+    channelMinute.add(millis(), airtimeMs);
     return true;
 }
 

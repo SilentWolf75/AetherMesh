@@ -867,6 +867,14 @@ inline bool isHopLimitInflation(uint32_t firstHopLimit, uint32_t newHopLimit,
 
 // --- Busy channel ------------------------------------------------------------
 
+// Above this share of the last minute on air, routine broadcasts (telemetry,
+// identity announcements) wait for a quieter moment so messages get through.
+constexpr uint8_t ROUTINE_TRAFFIC_MAX_CHANNEL_UTIL = 25;
+
+inline bool channelTooBusyForRoutineTraffic(uint8_t channelUtilPercent) {
+    return channelUtilPercent > ROUTINE_TRAFFIC_MAX_CHANNEL_UTIL;
+}
+
 // How long to hold off after channel-activity detection finds someone on the
 // air. The radio keeps listening meanwhile, so the packet that made the
 // channel busy is still received. Grows with consecutive busy results (a long
