@@ -42,6 +42,16 @@ class NodeIdentityPolicyTest {
         assertFalse(NodeIdentityPolicy.needsAttention(NodeIdentityPolicy.State.UNKNOWN))
     }
 
+    /**
+     * Shared with the iOS test and computed independently from the firmware's
+     * definition (SHA-256 over "AMID1-fp" || key, first 8 bytes). People read
+     * these aloud across devices, so node, Android and iOS must agree exactly.
+     */
+    @Test
+    fun fingerprintMatchesTheCrossPlatformVector() {
+        assertEquals("2587-706C-0147-0378", NodeIdentityPolicy.fingerprint(key(1)))
+    }
+
     @Test
     fun fingerprintIsStableAndShapedForReadingAloud() {
         val first = NodeIdentityPolicy.fingerprint(key(1))

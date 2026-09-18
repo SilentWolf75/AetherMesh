@@ -24,6 +24,17 @@ public struct MeshChatMessage: Equatable, Identifiable, Sendable {
     public let date: Date
 }
 
+/// What our radio decided about one node's announced identity keys. The phone
+/// keeps the verdict and fingerprint, never key material.
+public struct NodeIdentityReport: Equatable, Sendable {
+    public let nodeId: UInt32
+    public let fingerprint: String
+    public let state: NodeIdentityPolicy.State
+    public let keyEpoch: UInt32
+
+    public var needsAttention: Bool { NodeIdentityPolicy.needsAttention(state) }
+}
+
 public struct MeshNodeInfo: Equatable, Sendable {
     public let nodeId: UInt32
     public let name: String
@@ -63,6 +74,9 @@ public final class MeshSession {
         case node(MeshNodeInfo)
         case delivery(packetId: UInt32, state: Aethermesh_DeliveryStatus.State, heardCount: UInt32)
         case traceRoute(TraceRouteResult)
+        /// Our own radio's verdict on a node's announced keys, plus the
+        /// fingerprint to read against that node's serial log.
+        case identity(NodeIdentityReport)
     }
 
     public enum SendResult: Equatable {
@@ -135,6 +149,18 @@ public final class MeshSession {
                 positionSource: telemetry.positionSource,
                 satellitesUsed: telemetry.gpsSatellitesUsed,
                 satellitesInView: telemetry.gpsSatellitesInView
+            )))
+        case .nodeIdentity(let identity)?:
+            let state = NodeIdentityPolicy.state(of: identity.trust)
+            let fingerprint = NodeIdentityPolicy.fingerprint(identity.ed25519Public)
+            // A verdict with no usable key, or none at all, is not reported:
+            // an older node never gets shown as verified by default.
+            guard state != .unknown, !fingerprint.isEmpty else { break }
+            onEvent?(.identity(NodeIdentityReport(
+                nodeId: packet.senderID,
+                fingerprint: fingerprint,
+                state: state,
+                keyEpoch: identity.keyEpoch
             )))
         case .text(let text)?:
             handleText(packet, text)

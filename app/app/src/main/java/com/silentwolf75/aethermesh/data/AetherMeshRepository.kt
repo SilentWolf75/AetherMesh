@@ -1985,6 +1985,10 @@ class AetherMeshRepository(private val context: Context) {
 
                 val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    // Pin to this app explicitly. The class above already makes it
+                    // explicit, but a notification's PendingIntent is handed to the
+                    // system, and nothing else should ever be able to receive it.
+                    setPackage(context.packageName)
                     putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
                 }
                 val notifyId = BatteryAlertPolicy.notifyId(nodeId)
@@ -2067,6 +2071,8 @@ class AetherMeshRepository(private val context: Context) {
 
         val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
             flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            // Pin to this app explicitly; see the battery alert above.
+            setPackage(context.packageName)
             if (isBroadcast) {
                 putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_CHANNEL, channel)
             } else {
