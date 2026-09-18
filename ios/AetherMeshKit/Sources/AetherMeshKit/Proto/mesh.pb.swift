@@ -258,6 +258,14 @@ public nonisolated struct Aethermesh_MeshPacket: @unchecked Sendable {
     set {_uniqueStorage()._payload = .positionPrivacy(newValue)}
   }
 
+  public var nodeIdentity: Aethermesh_NodeIdentity {
+    get {
+      if case .nodeIdentity(let v)? = _storage._payload {return v}
+      return Aethermesh_NodeIdentity()
+    }
+    set {_uniqueStorage()._payload = .nodeIdentity(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Payload: Equatable, Sendable {
@@ -278,6 +286,7 @@ public nonisolated struct Aethermesh_MeshPacket: @unchecked Sendable {
     case configResult(Aethermesh_ConfigResult)
     /// authenticated BLE only, never LoRa
     case positionPrivacy(Aethermesh_PositionPrivacy)
+    case nodeIdentity(Aethermesh_NodeIdentity)
 
   }
 
@@ -666,7 +675,98 @@ public nonisolated struct Aethermesh_TextMessage: Sendable {
   /// True if content is encrypted
   public var isEncrypted: Bool = false
 
+  /// Sealed payload for a direct message encrypted to the recipient's X25519
+  /// key. When set, `content` is empty and `is_encrypted` is true. Raw bytes,
+  /// not base64: at SF12 every byte is ~30 ms of airtime.
+  public var sealed: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Long-lived identity keys a node announces to the mesh. Hearers store the
+/// first key they see for a node (trust on first use) and surface a later change
+/// instead of accepting it silently, so a node that starts announcing someone
+/// else's identity cannot quietly become them.
+public nonisolated struct Aethermesh_NodeIdentity: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// 32 bytes, key agreement for direct messages
+  public var x25519Public: Data = Data()
+
+  /// 32 bytes, verifies this announcement
+  public var ed25519Public: Data = Data()
+
+  /// Increments whenever the node regenerates its keys
+  public var keyEpoch: UInt32 = 0
+
+  /// 64 bytes, Ed25519 over the canonical body
+  public var signature: Data = Data()
+
+  public var trust: Aethermesh_NodeIdentity.Trust = .unspecified
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  /// What the local node decided about this announcement. Set only on the copy
+  /// handed to the companion app over the authenticated BLE link, never on air:
+  /// the phone cannot check a signature itself, so it trusts its own radio's
+  /// verdict rather than re-deriving one from an unverified broadcast.
+  public nonisolated enum Trust: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case unspecified // = 0
+
+    /// no key was on file; this one is now the node's identity
+    case firstUse // = 1
+
+    /// matches what we already trust
+    case known // = 2
+
+    /// key replaced with a properly signed newer epoch
+    case rotated // = 3
+
+    /// a different key claimed a node id we already know
+    case conflict // = 4
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .unspecified
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .unspecified
+      case 1: self = .firstUse
+      case 2: self = .known
+      case 3: self = .rotated
+      case 4: self = .conflict
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .unspecified: return 0
+      case .firstUse: return 1
+      case .known: return 2
+      case .rotated: return 3
+      case .conflict: return 4
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Aethermesh_NodeIdentity.Trust] = [
+      .unspecified,
+      .firstUse,
+      .known,
+      .rotated,
+      .conflict,
+    ]
+
+  }
 
   public init() {}
 }
@@ -1518,7 +1618,7 @@ fileprivate nonisolated let _protobuf_package = "aethermesh"
 
 nonisolated extension Aethermesh_MeshPacket: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".MeshPacket"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sender_id\0\u{3}recipient_id\0\u{3}packet_id\0\u{3}hop_limit\0\u{3}want_ack\0\u{1}text\0\u{1}telemetry\0\u{3}route_discovery\0\u{1}ack\0\u{3}prev_hop_id\0\u{1}config\0\u{3}auth_request\0\u{3}auth_response\0\u{3}rx_rssi\0\u{3}rx_snr\0\u{3}retry_count\0\u{3}delivery_status\0\u{3}ota_control\0\u{3}ota_data\0\u{3}ota_status\0\u{3}trace_route\0\u{1}diagnostics\0\u{3}protocol_version\0\u{3}session_id\0\u{3}auth_counter\0\u{3}auth_tag\0\u{3}range_test_control\0\u{3}config_result\0\u{3}next_hop_id\0\u{3}position_privacy\0\u{3}hop_start\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}sender_id\0\u{3}recipient_id\0\u{3}packet_id\0\u{3}hop_limit\0\u{3}want_ack\0\u{1}text\0\u{1}telemetry\0\u{3}route_discovery\0\u{1}ack\0\u{3}prev_hop_id\0\u{1}config\0\u{3}auth_request\0\u{3}auth_response\0\u{3}rx_rssi\0\u{3}rx_snr\0\u{3}retry_count\0\u{3}delivery_status\0\u{3}ota_control\0\u{3}ota_data\0\u{3}ota_status\0\u{3}trace_route\0\u{1}diagnostics\0\u{3}protocol_version\0\u{3}session_id\0\u{3}auth_counter\0\u{3}auth_tag\0\u{3}range_test_control\0\u{3}config_result\0\u{3}next_hop_id\0\u{3}position_privacy\0\u{3}hop_start\0\u{3}node_identity\0")
 
   fileprivate class _StorageClass {
     var _senderID: UInt32 = 0
@@ -1804,6 +1904,19 @@ nonisolated extension Aethermesh_MeshPacket: SwiftProtobuf.Message, SwiftProtobu
           }
         }()
         case 31: try { try decoder.decodeSingularUInt32Field(value: &_storage._hopStart) }()
+        case 32: try {
+          var v: Aethermesh_NodeIdentity?
+          var hadOneofValue = false
+          if let current = _storage._payload {
+            hadOneofValue = true
+            if case .nodeIdentity(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._payload = .nodeIdentity(v)
+          }
+        }()
         default: break
         }
       }
@@ -1936,6 +2049,9 @@ nonisolated extension Aethermesh_MeshPacket: SwiftProtobuf.Message, SwiftProtobu
       if _storage._hopStart != 0 {
         try visitor.visitSingularUInt32Field(value: _storage._hopStart, fieldNumber: 31)
       }
+      try { if case .nodeIdentity(let v)? = _storage._payload {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 32)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -2417,7 +2533,7 @@ nonisolated extension Aethermesh_PositionPrivacy: SwiftProtobuf.Message, SwiftPr
 
 nonisolated extension Aethermesh_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TextMessage"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}content\0\u{1}channel\0\u{3}is_encrypted\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}content\0\u{1}channel\0\u{3}is_encrypted\0\u{1}sealed\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2428,6 +2544,7 @@ nonisolated extension Aethermesh_TextMessage: SwiftProtobuf.Message, SwiftProtob
       case 1: try { try decoder.decodeSingularStringField(value: &self.content) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.channel) }()
       case 3: try { try decoder.decodeSingularBoolField(value: &self.isEncrypted) }()
+      case 4: try { try decoder.decodeSingularBytesField(value: &self.sealed) }()
       default: break
       }
     }
@@ -2443,6 +2560,9 @@ nonisolated extension Aethermesh_TextMessage: SwiftProtobuf.Message, SwiftProtob
     if self.isEncrypted != false {
       try visitor.visitSingularBoolField(value: self.isEncrypted, fieldNumber: 3)
     }
+    if !self.sealed.isEmpty {
+      try visitor.visitSingularBytesField(value: self.sealed, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2450,9 +2570,64 @@ nonisolated extension Aethermesh_TextMessage: SwiftProtobuf.Message, SwiftProtob
     if lhs.content != rhs.content {return false}
     if lhs.channel != rhs.channel {return false}
     if lhs.isEncrypted != rhs.isEncrypted {return false}
+    if lhs.sealed != rhs.sealed {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
+}
+
+nonisolated extension Aethermesh_NodeIdentity: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".NodeIdentity"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}x25519_public\0\u{3}ed25519_public\0\u{3}key_epoch\0\u{1}signature\0\u{1}trust\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBytesField(value: &self.x25519Public) }()
+      case 2: try { try decoder.decodeSingularBytesField(value: &self.ed25519Public) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.keyEpoch) }()
+      case 4: try { try decoder.decodeSingularBytesField(value: &self.signature) }()
+      case 5: try { try decoder.decodeSingularEnumField(value: &self.trust) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.x25519Public.isEmpty {
+      try visitor.visitSingularBytesField(value: self.x25519Public, fieldNumber: 1)
+    }
+    if !self.ed25519Public.isEmpty {
+      try visitor.visitSingularBytesField(value: self.ed25519Public, fieldNumber: 2)
+    }
+    if self.keyEpoch != 0 {
+      try visitor.visitSingularUInt32Field(value: self.keyEpoch, fieldNumber: 3)
+    }
+    if !self.signature.isEmpty {
+      try visitor.visitSingularBytesField(value: self.signature, fieldNumber: 4)
+    }
+    if self.trust != .unspecified {
+      try visitor.visitSingularEnumField(value: self.trust, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Aethermesh_NodeIdentity, rhs: Aethermesh_NodeIdentity) -> Bool {
+    if lhs.x25519Public != rhs.x25519Public {return false}
+    if lhs.ed25519Public != rhs.ed25519Public {return false}
+    if lhs.keyEpoch != rhs.keyEpoch {return false}
+    if lhs.signature != rhs.signature {return false}
+    if lhs.trust != rhs.trust {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Aethermesh_NodeIdentity.Trust: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TRUST_UNSPECIFIED\0\u{1}FIRST_USE\0\u{1}KNOWN\0\u{1}ROTATED\0\u{1}CONFLICT\0")
 }
 
 nonisolated extension Aethermesh_Telemetry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
