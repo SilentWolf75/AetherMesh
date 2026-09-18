@@ -88,6 +88,14 @@ public enum AuthRequests {
         })
     }
 
+    /// Unlock by proof: the password itself stays on the phone.
+    public static func proof(localNodeId: UInt32, packetId: UInt32, proof: Data) -> Aethermesh_MeshPacket {
+        envelope(localNodeId, packetId, Aethermesh_AuthRequest.with {
+            $0.proof = proof
+            $0.isChangePassword = false
+        })
+    }
+
     public static func changePassword(
         localNodeId: UInt32, packetId: UInt32, current: String, new newPassword: String
     ) -> Aethermesh_MeshPacket? {

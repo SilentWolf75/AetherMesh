@@ -15,7 +15,9 @@ aethermesh.NodeConfig.node_name max_size:17
 aethermesh.NodeConfig.node_short_name max_size:5
 aethermesh.AuthRequest.password max_size:32
 aethermesh.AuthRequest.new_password max_size:32
+aethermesh.AuthRequest.proof max_size:32
 aethermesh.AuthResponse.message max_size:32
+aethermesh.AuthResponse.challenge max_size:16
 
 aethermesh.NodeConfig.config_password max_size:33
 aethermesh.OtaControl.md5 max_size:33

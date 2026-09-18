@@ -7,6 +7,8 @@
 #include "MeshRouter.h"
 #include "NodeIdentity.h"
 #include "PacketAuth.h"
+#include "AuthProof.h"
+#include "HardwareRandom.h"
 #include "BleSession.h"
 #include "GpsStatus.h"
 #include "MeshMath.h"
@@ -3916,7 +3918,27 @@ void onLoRaPacketTransmitted() {
 }
 
 // Send Authentication response to the BLE client
-void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
+// One-time challenge for AuthRequest.proof: bound to the Bluetooth connection
+// it was issued on and consumed by the first answer, right or wrong.
+static uint8_t authChallenge[authproof::CHALLENGE_BYTES];
+static bool authChallengeValid = false;
+static uint32_t authChallengeGeneration = 0;
+
+static bool issueAuthChallenge(uint32_t generation) {
+    authChallengeValid = hwrandom::fill(authChallenge, sizeof(authChallenge));
+    authChallengeGeneration = generation;
+    return authChallengeValid;
+}
+
+static bool consumeAuthProof(uint32_t generation, const uint8_t* proof, size_t proofLen) {
+    const bool usable = authChallengeValid && authChallengeGeneration == generation;
+    authChallengeValid = false;
+    return usable && authproof::verify(nodePassword, authChallenge, sizeof(authChallenge), proof, proofLen);
+}
+
+void sendAuthResponse(bool success, const char* message, bool passwordNotSet, bool withChallenge = false);
+
+void sendAuthResponse(bool success, const char* message, bool passwordNotSet, bool withChallenge) {
     aethermesh_MeshPacket response = aethermesh_MeshPacket_init_zero;
     response.sender_id = localNodeId;
     response.recipient_id = 0; // Local client
@@ -3926,6 +3948,10 @@ void sendAuthResponse(bool success, const char* message, bool passwordNotSet) {
     strncpy(response.payload.auth_response.message, message, sizeof(response.payload.auth_response.message) - 1);
     response.payload.auth_response.message[sizeof(response.payload.auth_response.message) - 1] = '\0';
     response.payload.auth_response.password_not_set = passwordNotSet;
+    if (withChallenge && authChallengeValid) {
+        memcpy(response.payload.auth_response.challenge.bytes, authChallenge, sizeof(authChallenge));
+        response.payload.auth_response.challenge.size = sizeof(authChallenge);
+    }
 
     uint8_t buffer[128];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
@@ -4523,7 +4549,9 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
         if (route == blesession::PhonePacketRoute::AuthHandshake) {
             if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag) {
                 bool hasPassword = (strlen(nodePassword) > 0);
-                bool isRequestPasswordEmpty = (strlen(packet.payload.auth_request.password) == 0);
+                const bool hasProof = packet.payload.auth_request.proof.size > 0;
+                bool isRequestPasswordEmpty =
+                    (strlen(packet.payload.auth_request.password) == 0) && !hasProof;
 
                 // Brute-force lockout window (status queries still allowed)
                 if (!isRequestPasswordEmpty && (int32_t)(millis() - authLockoutUntil) < 0) {
@@ -4533,9 +4561,14 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                 }
 
                 if (isRequestPasswordEmpty) {
-                    // It's a query for password status
+                    // A status query. Hand out a fresh challenge so the app can
+                    // prove it knows the password without sending it.
                     Serial.println("Received empty password query. Replying status.");
-                    sendAuthResponse(false, "Password required", !hasPassword);
+                    issueAuthChallenge(packetGeneration);
+                    sendAuthResponse(false, "Password required", !hasPassword, hasPassword);
+                } else if (hasProof && !hasPassword) {
+                    authChallengeValid = false;
+                    sendAuthResponse(false, "Password not set", true);
                 } else if (!hasPassword) {
                     // First connect: set the password
                     strncpy(nodePassword, packet.payload.auth_request.password, sizeof(nodePassword) - 1);
@@ -4547,11 +4580,17 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
                     sendNodeConfigReportToPhone();
                     sendBleTelemetryLoopbackToPhone();
                 } else {
-                    // Verify the password
-                    if (strcmp(packet.payload.auth_request.password, nodePassword) == 0) {
+                    // Verify the proof, or the password from apps that predate proofs.
+                    const bool accepted = hasProof
+                        ? consumeAuthProof(packetGeneration,
+                                           packet.payload.auth_request.proof.bytes,
+                                           packet.payload.auth_request.proof.size)
+                        : strcmp(packet.payload.auth_request.password, nodePassword) == 0;
+                    if (accepted) {
                         bleSession.markAuthenticated(packetGeneration);
                         failedAuthAttempts = 0;
-                        Serial.println("BLE client authenticated successfully.");
+                        Serial.printf("BLE client authenticated successfully%s.\n",
+                                      hasProof ? " (proof, password not sent)" : "");
                         sendAuthResponse(true, "Authenticated successfully", false);
                         sendNodeConfigReportToPhone();
                         sendBleTelemetryLoopbackToPhone();

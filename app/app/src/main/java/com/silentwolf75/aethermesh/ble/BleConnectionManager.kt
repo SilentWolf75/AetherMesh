@@ -301,10 +301,51 @@ class BleConnectionManager(private val context: Context) {
         }
     }
 
+    private val bondResetTried = mutableSetOf<String>()
+
+    @SuppressLint("MissingPermission")
+    private fun isBonding(gatt: BluetoothGatt): Boolean = try {
+        gatt.device.bondState == BluetoothDevice.BOND_BONDING
+    } catch (e: SecurityException) {
+        false
+    }
+
+    /**
+     * The node lost its pairing keys (full erase, factory reset) but the phone
+     * kept its own, so encryption fails every time. Drop the phone's bond once
+     * so the next connection pairs afresh.
+     */
+    @SuppressLint("MissingPermission")
+    private fun forgetStaleBondIfKeysMismatch(gatt: BluetoothGatt, status: Int) {
+        val device = gatt.device
+        val mac = device.address.uppercase()
+        val bonded = try {
+            device.bondState == BluetoothDevice.BOND_BONDED
+        } catch (e: SecurityException) {
+            false
+        }
+        if (!BondPolicy.shouldForgetBond(status, bonded, mac in bondResetTried)) return
+        bondResetTried += mac
+        try {
+            // Public API has no way to unpair; this hidden method is the
+            // standard route and has been stable since Android 4.4.
+            val removed = device.javaClass.getMethod("removeBond").invoke(device) as? Boolean
+            Log.w(TAG, "Encryption failed with $mac (status $status); forgot the stale pairing: $removed")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not forget the stale pairing with $mac: ${e.message}")
+        }
+    }
+
     private fun armConnectWatchdog(macAddress: String) {
         connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
         connectionTimeoutRunnable = Runnable {
             val stalledGatt = bluetoothGatt
+            if (stalledGatt != null && !isConnected && isBonding(stalledGatt)) {
+                // The user is looking at the system "Pair?" prompt; give them time.
+                Log.d(TAG, "Pairing in progress for $macAddress; extending connect watchdog")
+                armConnectWatchdog(macAddress)
+                return@Runnable
+            }
             if (stalledGatt != null && !isConnected) {
                 Log.w(TAG, "Connection handshake timed out for $macAddress")
                 try {
@@ -737,7 +778,8 @@ class BleConnectionManager(private val context: Context) {
                 handler.postDelayed(discoverRunnable, BleConnectPolicy.MTU_FALLBACK_DISCOVER_MS)
                 gatt.requestMtu(BleConnectPolicy.REQUESTED_MTU)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d(TAG, "Disconnected from GATT server. Closing GATT to release system resources...")
+                Log.d(TAG, "Disconnected from GATT server (status $status). Closing GATT to release system resources...")
+                forgetStaleBondIfKeysMismatch(gatt, status)
                 mtuTimeoutRunnable?.let {
                     handler.removeCallbacks(it)
                     mtuTimeoutRunnable = null

@@ -1590,6 +1590,11 @@ public nonisolated struct Aethermesh_AuthRequest: Sendable {
 
   public var newPassword: String = String()
 
+  /// Unlock without sending the password: HMAC-SHA256 keyed with the password
+  /// over "AMAUTH1" followed by the challenge from the node's last AuthResponse.
+  /// When set, password is left empty.
+  public var proof: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1606,6 +1611,10 @@ public nonisolated struct Aethermesh_AuthResponse: Sendable {
   public var message: String = String()
 
   public var passwordNotSet: Bool = false
+
+  /// Fresh random challenge for AuthRequest.proof, valid once and only on this
+  /// connection. Empty from firmware that predates proofs.
+  public var challenge: Data = Data()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -3389,7 +3398,7 @@ nonisolated extension Aethermesh_ConfigResult.Status: SwiftProtobuf._ProtoNamePr
 
 nonisolated extension Aethermesh_AuthRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AuthRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}password\0\u{3}is_change_password\0\u{3}new_password\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}password\0\u{3}is_change_password\0\u{3}new_password\0\u{1}proof\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3400,6 +3409,7 @@ nonisolated extension Aethermesh_AuthRequest: SwiftProtobuf.Message, SwiftProtob
       case 1: try { try decoder.decodeSingularStringField(value: &self.password) }()
       case 2: try { try decoder.decodeSingularBoolField(value: &self.isChangePassword) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.newPassword) }()
+      case 4: try { try decoder.decodeSingularBytesField(value: &self.proof) }()
       default: break
       }
     }
@@ -3415,6 +3425,9 @@ nonisolated extension Aethermesh_AuthRequest: SwiftProtobuf.Message, SwiftProtob
     if !self.newPassword.isEmpty {
       try visitor.visitSingularStringField(value: self.newPassword, fieldNumber: 3)
     }
+    if !self.proof.isEmpty {
+      try visitor.visitSingularBytesField(value: self.proof, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3422,6 +3435,7 @@ nonisolated extension Aethermesh_AuthRequest: SwiftProtobuf.Message, SwiftProtob
     if lhs.password != rhs.password {return false}
     if lhs.isChangePassword != rhs.isChangePassword {return false}
     if lhs.newPassword != rhs.newPassword {return false}
+    if lhs.proof != rhs.proof {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -3429,7 +3443,7 @@ nonisolated extension Aethermesh_AuthRequest: SwiftProtobuf.Message, SwiftProtob
 
 nonisolated extension Aethermesh_AuthResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AuthResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}message\0\u{3}password_not_set\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}message\0\u{3}password_not_set\0\u{1}challenge\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3440,6 +3454,7 @@ nonisolated extension Aethermesh_AuthResponse: SwiftProtobuf.Message, SwiftProto
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.message) }()
       case 3: try { try decoder.decodeSingularBoolField(value: &self.passwordNotSet) }()
+      case 4: try { try decoder.decodeSingularBytesField(value: &self.challenge) }()
       default: break
       }
     }
@@ -3455,6 +3470,9 @@ nonisolated extension Aethermesh_AuthResponse: SwiftProtobuf.Message, SwiftProto
     if self.passwordNotSet != false {
       try visitor.visitSingularBoolField(value: self.passwordNotSet, fieldNumber: 3)
     }
+    if !self.challenge.isEmpty {
+      try visitor.visitSingularBytesField(value: self.challenge, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3462,6 +3480,7 @@ nonisolated extension Aethermesh_AuthResponse: SwiftProtobuf.Message, SwiftProto
     if lhs.success != rhs.success {return false}
     if lhs.message != rhs.message {return false}
     if lhs.passwordNotSet != rhs.passwordNotSet {return false}
+    if lhs.challenge != rhs.challenge {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

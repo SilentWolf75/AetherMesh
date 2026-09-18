@@ -82,6 +82,7 @@ static void queuePhonePacket(const uint8_t* data, size_t len) {
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLESecurity.h>
 
 // ESP32 Static Pointers
 static BLEServer* espBLEServer = nullptr;
@@ -128,6 +129,22 @@ class EspServerCallbacks : public BLEServerCallbacks {
     }
 };
 
+// Pairing uses LE Secure Connections with "just works" confirmation: the link
+// key comes from an ECDH exchange, so a listener in range cannot read the link.
+class EspSecurityCallbacks : public BLESecurityCallbacks {
+    uint32_t onPassKeyRequest() override { return 0; }
+    void onPassKeyNotify(uint32_t) override {}
+    bool onConfirmPIN(uint32_t) override { return true; }
+    bool onSecurityRequest() override { return true; }
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t result) override {
+        if (result.success) {
+            Serial.println("BLE: link encrypted and bonded.");
+        } else {
+            Serial.printf("BLE: pairing failed (reason 0x%02X).\n", result.fail_reason);
+        }
+    }
+};
+
 class EspCharCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
         std::string value = pCharacteristic->getValue();
@@ -157,6 +174,14 @@ void nrfDisconnectCallback(uint16_t conn_handle, uint8_t reason) {
     if (nrfBLEInstance) nrfBLEInstance->isConnected = false;
     Serial.print("Phone disconnected from BLE (Nordic). Reason: 0x");
     Serial.println(reason, HEX);
+}
+
+void nrfPairCompleteCallback(uint16_t conn_handle, uint8_t auth_status) {
+    if (auth_status == BLE_GAP_SEC_STATUS_SUCCESS) {
+        Serial.println("BLE: link encrypted and bonded.");
+    } else {
+        Serial.printf("BLE: pairing failed (status 0x%02X).\n", auth_status);
+    }
 }
 
 void nrfWriteCallback(uint16_t conn_h, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
@@ -194,6 +219,13 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     BLEDevice::init(localName);
     BLEDevice::setMTU(256);
     
+    BLEDevice::setSecurityCallbacks(new EspSecurityCallbacks());
+    BLESecurity* security = new BLESecurity();
+    security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+    security->setCapability(ESP_IO_CAP_NONE);
+    security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
     espBLEServer = BLEDevice::createServer();
     espBLEServer->setCallbacks(new EspServerCallbacks());
     
@@ -204,6 +236,9 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
         TX_CHAR_UUID,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
     );
+    // Both characteristics need an encrypted link: the phone's first write or
+    // subscription makes it pair.
+    pTxChar->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
     pTxChar->setCallbacks(new EspCharCallbacks());
     
     // RX (Node -> Phone): Notify
@@ -211,7 +246,10 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
         RX_CHAR_UUID,
         BLECharacteristic::PROPERTY_NOTIFY
     );
-    espRxChar->addDescriptor(new BLE2902());
+    espRxChar->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED);
+    BLE2902* notifyConfig = new BLE2902();
+    notifyConfig->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
+    espRxChar->addDescriptor(notifyConfig);
     
     pService->start();
     
@@ -238,18 +276,26 @@ bool BLEManager::init(uint32_t nodeId, const char* customName) {
     
     Bluefruit.Periph.setConnectCallback(nrfConnectCallback);
     Bluefruit.Periph.setDisconnectCallback(nrfDisconnectCallback);
+    // LE Secure Connections, "just works": no PIN, but the link is encrypted
+    // with a key an eavesdropper cannot derive. The characteristics below
+    // demand it, so the phone pairs on first use.
+    Bluefruit.Security.setIOCaps(false, false, false);
+    Bluefruit.Security.setMITM(false);
+    Bluefruit.Security.setPairCompleteCallback(nrfPairCompleteCallback);
     
     // Initialize Service & Characteristics
     nrfService.begin();
     
     nrfTxChar.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
-    nrfTxChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+    nrfTxChar.setPermission(SECMODE_ENC_NO_MITM, SECMODE_ENC_NO_MITM);
     nrfTxChar.setMaxLen(256);
     nrfTxChar.setWriteCallback(nrfWriteCallback);
     nrfTxChar.begin();
     
     nrfRxChar.setProperties(CHR_PROPS_NOTIFY);
-    nrfRxChar.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+    // The notify subscription (CCCD) takes the read permission, so this also
+    // keeps an unpaired phone from subscribing.
+    nrfRxChar.setPermission(SECMODE_ENC_NO_MITM, SECMODE_NO_ACCESS);
     nrfRxChar.setMaxLen(256);
     nrfRxChar.begin();
     
