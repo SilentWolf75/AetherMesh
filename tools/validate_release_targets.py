@@ -42,8 +42,11 @@ def main() -> None:
         raise SystemExit("Could not find firmware matrix in ci.yml")
     ci_targets = {item.strip() for item in matrix_match.group(1).split(",")}
 
-    pages = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-    pages_targets = set(re.findall(r"pio run -e ([a-zA-Z0-9_]+)", pages))
+    # Every supported board must be published. Builds happen in the release
+    # workflow; the Pages deploy only mirrors what a release published, so the
+    # promise is checked where the firmware is actually built.
+    release = (ROOT / ".github" / "workflows" / "beta-release.yml").read_text(encoding="utf-8")
+    release_targets = set(re.findall(r"pio run -e ([a-zA-Z0-9_]+)", release))
     flasher = (ROOT / "web-flasher" / "index.html").read_text(encoding="utf-8")
     ui_targets = set(re.findall(r'<option value="([^"]+)"', flasher))
 
@@ -52,14 +55,11 @@ def main() -> None:
         errors.append(f"Update UI_TARGETS mapping: platformio={sorted(firmware)} mapping={sorted(UI_TARGETS)}")
     if ci_targets != firmware:
         errors.append(f"CI target drift: missing={sorted(firmware - ci_targets)} extra={sorted(ci_targets - firmware)}")
-    if pages_targets != firmware:
-        errors.append(f"Pages target drift: missing={sorted(firmware - pages_targets)} extra={sorted(pages_targets - firmware)}")
+    if release_targets != firmware:
+        errors.append(f"Release target drift: missing={sorted(firmware - release_targets)} extra={sorted(release_targets - firmware)}")
     expected_ui = {UI_TARGETS[target] for target in firmware}
     if not expected_ui.issubset(ui_targets):
         errors.append(f"Flasher target drift: missing={sorted(expected_ui - ui_targets)}")
-    for target in firmware:
-        if target not in pages:
-            errors.append(f"Pages manifest does not mention {target}")
 
     versions = read_version_file()
     if versions:
