@@ -175,6 +175,11 @@ class AetherMeshRepository(private val context: Context) {
     val remoteConfigResult: SharedFlow<RemoteConfigResultEvent> = _remoteConfigResult.asSharedFlow()
 
     private var pendingAuthPassword: String? = null
+
+    /** Password waiting for the node's challenge; see [sendAuthRequest]. */
+    @Volatile
+    private var passwordAwaitingChallenge: String? = null
+
     /** True while waiting for AuthResponse to a change-password request. */
     @Volatile
     private var pendingPasswordChange: Boolean = false
@@ -544,13 +549,41 @@ class AetherMeshRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Unlock the node. With a password, this first asks the node for a
+     * one-time challenge (an empty request) and answers it with a proof when
+     * the reply arrives, so the password is never sent. Firmware that predates
+     * proofs replies without a challenge and gets the password as before.
+     */
     fun sendAuthRequest(password: String): Boolean {
         if (!bleManager.isConnected || !bleManager.isGattReady) return false
-        val packet = AuthRequestApply.buildUnlock(
-            bleManager.connectedNodeId, PacketIdGenerator.next(), password
-        )
         pendingAuthPassword = password
+        passwordAwaitingChallenge = password.ifEmpty { null }
+        val packet = AuthRequestApply.buildUnlock(
+            bleManager.connectedNodeId, PacketIdGenerator.next(), ""
+        )
         return bleManager.sendPacket(packet.toByteArray())
+    }
+
+    /**
+     * Second half of [sendAuthRequest]. Returns true when the reply was the
+     * status-query answer and has been handled here.
+     */
+    private fun answerAuthChallenge(challenge: ByteArray, passwordNotSet: Boolean, success: Boolean): Boolean {
+        val password = passwordAwaitingChallenge ?: return false
+        if (success) return false
+        passwordAwaitingChallenge = null
+        val packet = if (!passwordNotSet && AuthProof.isUsableChallenge(challenge)) {
+            AuthRequestApply.buildProof(
+                bleManager.connectedNodeId, PacketIdGenerator.next(), AuthProof.compute(password, challenge)
+            )
+        } else {
+            // Older firmware (no challenge), or a node with no password yet
+            // that takes this one as its first: send it, over the encrypted link.
+            AuthRequestApply.buildUnlock(bleManager.connectedNodeId, PacketIdGenerator.next(), password)
+        }
+        bleManager.sendPacket(packet.toByteArray())
+        return true
     }
 
     fun changeDevicePassword(currentPassword: String, newPassword: String): Boolean {
@@ -697,7 +730,10 @@ class AetherMeshRepository(private val context: Context) {
         // Handle AuthResponse packet first
         if (packet.payloadCase == MeshPacket.PayloadCase.AUTH_RESPONSE) {
             val authResp = packet.authResponse
-            Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}")
+            Log.d(TAG, "AuthResponse received: success=${authResp.success}, msg=${authResp.message}, notSet=${authResp.passwordNotSet}, challenge=${authResp.challenge.size()}")
+            if (answerAuthChallenge(authResp.challenge.toByteArray(), authResp.passwordNotSet, authResp.success)) {
+                return
+            }
             applyAuthResponse(
                 senderId = senderId,
                 success = authResp.success,

@@ -109,6 +109,7 @@ public final class MeshSession {
     /// carries over to a new connection (firmware enforces the same rule).
     public func reset() {
         authState = .unknown
+        passwordAwaitingChallenge = nil
         pendingTraceId = nil
     }
 
@@ -120,6 +121,7 @@ public final class MeshSession {
 
         switch packet.payload {
         case .authResponse(let response)?:
+            if answerChallenge(response) { return }
             if response.success {
                 setAuth(.authenticated)
                 learnLocalNode(packet.senderID)
@@ -227,9 +229,31 @@ public final class MeshSession {
 
     // MARK: Outbound
 
+    /// Unlock the node. With a password this first asks for a one-time
+    /// challenge (an empty request) and answers it with a proof, so the
+    /// password never crosses the air. Firmware that predates proofs replies
+    /// without a challenge and gets the password as before.
     @discardableResult
     public func unlock(password: String) -> Bool {
-        send(AuthRequests.unlock(localNodeId: localNodeId, packetId: takePacketId(), password: password))
+        passwordAwaitingChallenge = password.isEmpty ? nil : password
+        return send(AuthRequests.unlock(localNodeId: localNodeId, packetId: takePacketId(), password: ""))
+    }
+
+    private var passwordAwaitingChallenge: String?
+
+    /// Second half of `unlock`. True when the reply was the challenge and has been answered.
+    private func answerChallenge(_ response: Aethermesh_AuthResponse) -> Bool {
+        guard let password = passwordAwaitingChallenge, !response.success else { return false }
+        passwordAwaitingChallenge = nil
+        if !response.passwordNotSet && AuthProof.isUsable(response.challenge) {
+            let proof = AuthProof.compute(password: password, challenge: response.challenge)
+            _ = send(AuthRequests.proof(localNodeId: localNodeId, packetId: takePacketId(), proof: proof))
+        } else {
+            // Older firmware, or a node taking this as its first password:
+            // send it, over the now-encrypted link.
+            _ = send(AuthRequests.unlock(localNodeId: localNodeId, packetId: takePacketId(), password: password))
+        }
+        return true
     }
 
     /// Send chat. Encrypts whenever a key is stored for the chat; never falls back

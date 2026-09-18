@@ -28,7 +28,8 @@ final class MeshSessionTests: XCTestCase {
         return try! packet.serializedBytes()
     }
 
-    private func authResponse(success: Bool, message: String, sender: UInt32? = nil, rssi: Float = 0) -> Data {
+    private func authResponse(success: Bool, message: String, sender: UInt32? = nil, rssi: Float = 0,
+                              challenge: Data = Data()) -> Data {
         frame {
             $0.senderID = sender ?? node
             $0.recipientID = 0
@@ -36,6 +37,7 @@ final class MeshSessionTests: XCTestCase {
             $0.authResponse = Aethermesh_AuthResponse.with {
                 $0.success = success
                 $0.message = message
+                $0.challenge = challenge
             }
         }
     }
@@ -53,12 +55,40 @@ final class MeshSessionTests: XCTestCase {
         s.handleIncoming(authResponse(success: false, message: "Authentication required"))
         XCTAssertEqual(s.authState, .required(passwordNotSet: false))
         s.unlock(password: "admin")
+        // First an empty request asking for a challenge...
+        let query = try Aethermesh_MeshPacket(serializedBytes: writes.last!)
+        XCTAssertEqual(query.authRequest.password, "")
+        XCTAssertTrue(query.authRequest.proof.isEmpty)
+        // ...then the proof, and the password never leaves the phone.
+        let challenge = Data((0 ..< 16).map { UInt8($0) })
+        s.handleIncoming(authResponse(success: false, message: "Password required", challenge: challenge))
         let request = try Aethermesh_MeshPacket(serializedBytes: writes.last!)
-        XCTAssertEqual(request.authRequest.password, "admin")
+        XCTAssertEqual(request.authRequest.password, "")
+        XCTAssertEqual(request.authRequest.proof, AuthProof.compute(password: "admin", challenge: challenge))
         XCTAssertEqual(request.recipientID, 0)
+        XCTAssertEqual(s.authState, .required(passwordNotSet: false))
         s.handleIncoming(authResponse(success: true, message: "Authenticated successfully"))
         XCTAssertEqual(s.authState, .authenticated)
         XCTAssertEqual(s.localNodeId, node)
+    }
+
+    func testOlderFirmwareWithoutChallengeGetsThePassword() throws {
+        let s = session()
+        s.unlock(password: "admin")
+        s.handleIncoming(authResponse(success: false, message: "Password required"))
+        let request = try Aethermesh_MeshPacket(serializedBytes: writes.last!)
+        XCTAssertEqual(request.authRequest.password, "admin")
+        XCTAssertTrue(request.authRequest.proof.isEmpty)
+    }
+
+    func testProofMatchesTheSharedVectors() {
+        let counting = Data((0 ..< 16).map { UInt8($0) })
+        XCTAssertEqual(AuthProof.compute(password: "admin", challenge: counting).map { String(format: "%02x", $0) }.joined(),
+                       "2ab4d919d4aa92c4649a3541a25e6e73908a358a4faf2ca51a7e2577aa969932")
+        let ones = Data(repeating: 0xFF, count: 16)
+        XCTAssertEqual(AuthProof.compute(password: "pässwörd-with-a-long-tail-0123456789", challenge: ones)
+                           .map { String(format: "%02x", $0) }.joined(),
+                       "83ba1a19d57fa4755405d91ac287085ac065ffd75e674ff4eecb86e151de273f")
     }
 
     func testAuthResponseOverRadioIsIgnored() {

@@ -343,18 +343,27 @@ typedef struct _aethermesh_ConfigResult {
     char message[40];
 } aethermesh_ConfigResult;
 
+typedef PB_BYTES_ARRAY_T(32) aethermesh_AuthRequest_proof_t;
 /* Authentication request sent by companion app to LoRa node */
 typedef struct _aethermesh_AuthRequest {
     char password[32];
     bool is_change_password;
     char new_password[32];
+    /* Unlock without sending the password: HMAC-SHA256 keyed with the password
+ over "AMAUTH1" followed by the challenge from the node's last AuthResponse.
+ When set, password is left empty. */
+    aethermesh_AuthRequest_proof_t proof;
 } aethermesh_AuthRequest;
 
+typedef PB_BYTES_ARRAY_T(16) aethermesh_AuthResponse_challenge_t;
 /* Authentication response returned by LoRa node to companion app */
 typedef struct _aethermesh_AuthResponse {
     bool success;
     char message[32];
     bool password_not_set;
+    /* Fresh random challenge for AuthRequest.proof, valid once and only on this
+ connection. Empty from firmware that predates proofs. */
+    aethermesh_AuthResponse_challenge_t challenge;
 } aethermesh_AuthResponse;
 
 typedef PB_BYTES_ARRAY_T(17) aethermesh_MeshPacket_auth_tag_t;
@@ -499,8 +508,8 @@ extern "C" {
 #define aethermesh_DeliveryStatus_init_default   {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
 #define aethermesh_NodeConfig_init_default       {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0}
 #define aethermesh_ConfigResult_init_default     {_aethermesh_ConfigResult_Status_MIN, 0, ""}
-#define aethermesh_AuthRequest_init_default      {"", 0, ""}
-#define aethermesh_AuthResponse_init_default     {0, "", 0}
+#define aethermesh_AuthRequest_init_default      {"", 0, "", {0, {0}}}
+#define aethermesh_AuthResponse_init_default     {0, "", 0, {0, {0}}}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, 0}
 #define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_zero    {_aethermesh_RangeTestControl_Op_MIN}
@@ -517,8 +526,8 @@ extern "C" {
 #define aethermesh_DeliveryStatus_init_zero      {0, 0, _aethermesh_DeliveryStatus_State_MIN, _aethermesh_DeliveryStatus_Reason_MIN, 0, 0, 0}
 #define aethermesh_NodeConfig_init_zero          {"", 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0}
 #define aethermesh_ConfigResult_init_zero        {_aethermesh_ConfigResult_Status_MIN, 0, ""}
-#define aethermesh_AuthRequest_init_zero         {"", 0, ""}
-#define aethermesh_AuthResponse_init_zero        {0, "", 0}
+#define aethermesh_AuthRequest_init_zero         {"", 0, "", {0, {0}}}
+#define aethermesh_AuthResponse_init_zero        {0, "", 0, {0, {0}}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define aethermesh_MeshDiagnostics_tx_packets_tag 1
@@ -650,9 +659,11 @@ extern "C" {
 #define aethermesh_AuthRequest_password_tag      1
 #define aethermesh_AuthRequest_is_change_password_tag 2
 #define aethermesh_AuthRequest_new_password_tag  3
+#define aethermesh_AuthRequest_proof_tag         4
 #define aethermesh_AuthResponse_success_tag      1
 #define aethermesh_AuthResponse_message_tag      2
 #define aethermesh_AuthResponse_password_not_set_tag 3
+#define aethermesh_AuthResponse_challenge_tag    4
 #define aethermesh_MeshPacket_sender_id_tag      1
 #define aethermesh_MeshPacket_recipient_id_tag   2
 #define aethermesh_MeshPacket_packet_id_tag      3
@@ -929,14 +940,16 @@ X(a, STATIC,   SINGULAR, STRING,   message,           3)
 #define aethermesh_AuthRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   password,          1) \
 X(a, STATIC,   SINGULAR, BOOL,     is_change_password,   2) \
-X(a, STATIC,   SINGULAR, STRING,   new_password,      3)
+X(a, STATIC,   SINGULAR, STRING,   new_password,      3) \
+X(a, STATIC,   SINGULAR, BYTES,    proof,             4)
 #define aethermesh_AuthRequest_CALLBACK NULL
 #define aethermesh_AuthRequest_DEFAULT NULL
 
 #define aethermesh_AuthResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     success,           1) \
 X(a, STATIC,   SINGULAR, STRING,   message,           2) \
-X(a, STATIC,   SINGULAR, BOOL,     password_not_set,   3)
+X(a, STATIC,   SINGULAR, BOOL,     password_not_set,   3) \
+X(a, STATIC,   SINGULAR, BYTES,    challenge,         4)
 #define aethermesh_AuthResponse_CALLBACK NULL
 #define aethermesh_AuthResponse_DEFAULT NULL
 
@@ -982,8 +995,8 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 /* Maximum encoded size of messages (where known) */
 #define AETHERMESH_MESH_PB_H_MAX_SIZE            aethermesh_MeshPacket_size
 #define aethermesh_Ack_size                      16
-#define aethermesh_AuthRequest_size              68
-#define aethermesh_AuthResponse_size             37
+#define aethermesh_AuthRequest_size              102
+#define aethermesh_AuthResponse_size             55
 #define aethermesh_ConfigResult_size             49
 #define aethermesh_DeliveryStatus_size           34
 #define aethermesh_MeshDiagnostics_size          170

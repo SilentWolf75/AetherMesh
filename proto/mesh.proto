@@ -374,6 +374,10 @@ message AuthRequest {
   string password = 1;
   bool is_change_password = 2;
   string new_password = 3;
+  // Unlock without sending the password: HMAC-SHA256 keyed with the password
+  // over "AMAUTH1" followed by the challenge from the node's last AuthResponse.
+  // When set, password is left empty.
+  bytes proof = 4;
 }
 
 // Authentication response returned by LoRa node to companion app
@@ -381,4 +385,7 @@ message AuthResponse {
   bool success = 1;
   string message = 2;
   bool password_not_set = 3;
+  // Fresh random challenge for AuthRequest.proof, valid once and only on this
+  // connection. Empty from firmware that predates proofs.
+  bytes challenge = 4;
 }

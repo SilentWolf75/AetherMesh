@@ -18,6 +18,17 @@ object AuthRequestApply {
                 .build()
         )
 
+    /** Unlock by proof: the password itself stays on the phone. */
+    fun buildProof(localNodeId: Long, packetId: Int, proof: ByteArray): MeshPacket =
+        envelope(
+            localNodeId,
+            packetId,
+            AuthRequest.newBuilder()
+                .setProof(com.google.protobuf.ByteString.copyFrom(proof))
+                .setIsChangePassword(false)
+                .build()
+        )
+
     fun buildChangePassword(
         localNodeId: Long,
         packetId: Int,
