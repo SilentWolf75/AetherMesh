@@ -88,9 +88,9 @@ object RelativeTimePolicy {
         if (gpsMode == null || gpsMode !in 0..2) return null
         val mins = ((clampDutySecs(dutyIntervalSecs) + 59) / 60)
         return when (gpsMode) {
-            0 -> if (spanish) "GPS: siempre encendido" else "GPS: always on"
-            1 -> if (spanish) "GPS: apagado" else "GPS: off"
-            else -> if (spanish) "GPS: periódico (${mins} min)" else "GPS: duty (${mins} min)"
+            0 -> if (spanish) "GPS siempre" else "GPS always on"
+            1 -> if (spanish) "GPS apagado" else "GPS off"
+            else -> if (spanish) "GPS cada ${mins} min" else "GPS every ${mins} min"
         }
     }
 

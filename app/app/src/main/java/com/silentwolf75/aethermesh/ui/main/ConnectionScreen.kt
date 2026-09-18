@@ -552,22 +552,22 @@ fun ConnectionView(
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AccentCyan,
-                            contentColor = Color(0xFF061018)
+                            contentColor = OnAccent
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isScanning) {
                             CircularProgressIndicator(
-                                color = Color(0xFF061018),
+                                color = OnAccent,
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (spanish) "Escaneando…" else "Scanning…", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
+                            Text(if (spanish) "Escaneando…" else "Scanning…", color = OnAccent, fontWeight = FontWeight.Bold)
                         } else {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF061018))
+                            Icon(Icons.Default.Search, contentDescription = null, tint = OnAccent)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (spanish) "Buscar dispositivos" else "Scan for devices", color = Color(0xFF061018), fontWeight = FontWeight.Bold)
+                            Text(if (spanish) "Buscar dispositivos" else "Scan for devices", color = OnAccent, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

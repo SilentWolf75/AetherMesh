@@ -40,8 +40,8 @@ class RelativeTimePolicyTest {
     fun gpsLabelsAndDutyClamp() {
         assertEquals("No GPS lock yet", RelativeTimePolicy.gpsLockAge(0, false, now))
         assertEquals("GPS just now", RelativeTimePolicy.gpsLockAge(now - 1_000, false, now))
-        assertEquals("GPS: always on", RelativeTimePolicy.gpsDutyStatus(0, 900, false))
-        assertEquals("GPS: duty (15 min)", RelativeTimePolicy.gpsDutyStatus(2, 900, false))
+        assertEquals("GPS always on", RelativeTimePolicy.gpsDutyStatus(0, 900, false))
+        assertEquals("GPS every 15 min", RelativeTimePolicy.gpsDutyStatus(2, 900, false))
         assertNull(RelativeTimePolicy.gpsDutyStatus(null, 900, false))
         assertEquals(900, RelativeTimePolicy.clampDutySecs(0))
         assertEquals(300, RelativeTimePolicy.clampDutySecs(60))

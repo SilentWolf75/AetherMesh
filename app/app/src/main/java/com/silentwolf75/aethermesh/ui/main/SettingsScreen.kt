@@ -508,21 +508,44 @@ fun SettingsView(
             .verticalScroll(settingsScrollState)
     ) {
         val deviceCategories = listOf(
-            Triple(SettingsCategory.CHANNELS, "Channels", "Manage secondary channels and share/join links"),
-            Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Set spreading factor, bandwidth, power, and region"),
-            Triple(SettingsCategory.POSITION, "GPS & Position Settings", "Configure onboard GPS mode, telemetry interval, and satellite lock status"),
-            Triple(SettingsCategory.ROUTING, "Mesh Routing", "Hop limit, rebroadcast pace, and route health"),
-            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Stable Releases or Pages OTA; Heltec .bin / RAK .zip only"),
-            Triple(SettingsCategory.SECURITY, "Security & Keys", "Manage private keys, ECDH keypairs, and device password")
+            Triple(SettingsCategory.CHANNELS, "Channels", "Add, share and join channels"),
+            Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Region, spreading factor and power"),
+            Triple(SettingsCategory.POSITION, "GPS & Position Settings", "GPS schedule and position sharing"),
+            Triple(SettingsCategory.ROUTING, "Mesh Routing", "Hop limit and route health"),
+            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Release and Beta firmware"),
+            Triple(SettingsCategory.SECURITY, "Security & Keys", "Password and node keys")
         )
         val appCategories = listOf(
-            Triple(SettingsCategory.PREFERENCES, "App Preferences", "Set language, theme, units, and background alerts"),
-            Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Live logs console, packet exports, and system database reset")
+            Triple(SettingsCategory.PREFERENCES, "App Preferences", "Language, theme, units and alerts"),
+            Triple(SettingsCategory.DEVELOPER, "Developer & Diagnostics", "Logs, exports and database reset")
         )
 
         fun categoryNeedsDevice(cat: SettingsCategory): Boolean =
             cat != SettingsCategory.PREFERENCES &&
                 cat != SettingsCategory.DEVELOPER
+
+        @Composable
+        fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(SurfaceDark)
+                    .border(BorderStroke(1.dp, BorderDark.copy(alpha = 0.55f)), RoundedCornerShape(18.dp)),
+                content = content
+            )
+        }
+
+        @Composable
+        fun SettingsDivider() {
+            Box(
+                modifier = Modifier
+                    .padding(start = 54.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(BorderDark.copy(alpha = 0.6f))
+            )
+        }
 
         @Composable
         fun SettingsCategoryCard(cat: SettingsCategory, title: String, desc: String) {
@@ -538,52 +561,29 @@ fun SettingsView(
                 SettingsCategory.PREFERENCES -> Icons.Default.Palette
                 SettingsCategory.DEVELOPER -> Icons.Default.Terminal
             }
-            val iconColor = when (cat) {
-                SettingsCategory.CHANNELS -> AccentCyan
-                SettingsCategory.RADIO -> AccentMint
-                SettingsCategory.POSITION -> Color(0xFF818CF8)
-                SettingsCategory.FIRMWARE -> AccentMint
-                SettingsCategory.SECURITY -> Color(0xFFEF4444)
-                SettingsCategory.ROUTING -> AccentCyan
-                SettingsCategory.PREFERENCES -> Color(0xFFFBBF24)
-                SettingsCategory.DEVELOPER -> AccentSteel
-            }
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (enabled) SurfaceDark else SurfaceDark.copy(alpha = 0.55f)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, BorderDark),
+            val iconColor = AccentCyan
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 10.dp)
                     .clickable(enabled = enabled) { activeCategory = cat }
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(iconColor.copy(alpha = if (enabled) 0.15f else 0.08f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            tint = if (enabled) iconColor else TextMuted,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (enabled) iconColor else TextMuted.copy(alpha = 0.6f),
+                        modifier = Modifier.size(22.dp)
+                    )
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = t(title, appLanguage),
                             color = if (enabled) TextLight else TextMuted,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
                         )
                         Text(
                             text = if (!enabled) {
@@ -593,7 +593,7 @@ fun SettingsView(
                                 t(desc, appLanguage)
                             },
                             color = TextMuted,
-                            fontSize = 11.sp
+                            fontSize = 13.sp
                         )
                     }
                     Icon(
@@ -700,46 +700,6 @@ fun SettingsView(
                 )
             }
         } else if (activeCategory == null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(110.dp)
-                    .padding(bottom = 16.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(SurfaceRaised, SurfaceDark, AccentCyan.copy(alpha = 0.35f))
-                            )
-                        )
-                        .padding(16.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    Column {
-                        Text(
-                            text = t("Settings", appLanguage),
-                            color = AccentCyan,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (spanishUi)
-                                "Ajustes del nodo (Bluetooth) y preferencias de la app."
-                            else
-                                "Device settings (Bluetooth) and app preferences.",
-                            color = TextMuted,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-
             if (!isConnected) {
                 Text(
                     if (spanishUi)
@@ -756,18 +716,24 @@ fun SettingsView(
             AetherSectionHeader(
                 title = if (spanishUi) "Nodo" else "Device",
                 trailing = if (isConnected) null else if (spanishUi) "Bloqueado" else "Locked",
-                modifier = Modifier.padding(bottom = 8.dp)
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
             )
-            deviceCategories.forEach { (cat, title, desc) ->
-                SettingsCategoryCard(cat, title, desc)
+            SettingsGroup {
+                deviceCategories.forEachIndexed { index, (cat, title, desc) ->
+                    if (index > 0) SettingsDivider()
+                    SettingsCategoryCard(cat, title, desc)
+                }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             AetherSectionHeader(
                 title = if (spanishUi) "Aplicación" else "App",
-                modifier = Modifier.padding(bottom = 8.dp)
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
             )
-            appCategories.forEach { (cat, title, desc) ->
-                SettingsCategoryCard(cat, title, desc)
+            SettingsGroup {
+                appCategories.forEachIndexed { index, (cat, title, desc) ->
+                    if (index > 0) SettingsDivider()
+                    SettingsCategoryCard(cat, title, desc)
+                }
             }
         } else {
             BackHandler { activeCategory = null }

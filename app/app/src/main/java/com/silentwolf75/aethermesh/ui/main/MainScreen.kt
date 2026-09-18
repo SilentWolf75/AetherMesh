@@ -132,13 +132,14 @@ val SurfaceDark: Color get() = com.silentwolf75.aethermesh.theme.SurfaceDark
 val BorderDark: Color get() = com.silentwolf75.aethermesh.theme.BorderDark
 val TextLight: Color get() = com.silentwolf75.aethermesh.theme.TextLight
 val TextMuted: Color get() = com.silentwolf75.aethermesh.theme.TextMuted
-val AccentCyan = com.silentwolf75.aethermesh.theme.AccentCyan
-val AccentMint = com.silentwolf75.aethermesh.theme.AccentMint
-val AccentRed = com.silentwolf75.aethermesh.theme.AccentRed
-val AccentAmber = com.silentwolf75.aethermesh.theme.AccentAmber
-val AccentOrange = com.silentwolf75.aethermesh.theme.AccentOrange
-val AccentSteel = com.silentwolf75.aethermesh.theme.AccentSteel
+val AccentCyan: Color get() = com.silentwolf75.aethermesh.theme.AccentCyan
+val AccentMint: Color get() = com.silentwolf75.aethermesh.theme.AccentMint
+val AccentRed: Color get() = com.silentwolf75.aethermesh.theme.AccentRed
+val AccentAmber: Color get() = com.silentwolf75.aethermesh.theme.AccentAmber
+val AccentOrange: Color get() = com.silentwolf75.aethermesh.theme.AccentOrange
+val AccentSteel: Color get() = com.silentwolf75.aethermesh.theme.AccentSteel
 val SurfaceRaised: Color get() = com.silentwolf75.aethermesh.theme.SurfaceRaised
+val OnAccent: Color get() = com.silentwolf75.aethermesh.theme.OnAccent
 
 fun batteryLevelColor(level: Int): Color = com.silentwolf75.aethermesh.theme.batteryLevelColor(level)
 
@@ -385,6 +386,14 @@ fun t(text: String, lang: String): String {
         "System Configuration Panel" -> "Panel de Configuración del Sistema"
         "Select a settings category below to manage your device." -> "Selecciona una categoría de ajustes abajo para gestionar tu dispositivo."
         "Manage secondary channels and share/join links" -> "Gestiona canales secundarios y enlaces de compartir/unirse"
+        "Add, share and join channels" -> "Crea, comparte y únete a canales"
+        "Region, spreading factor and power" -> "Región, factor de propagación y potencia"
+        "GPS schedule and position sharing" -> "Horario del GPS y posición compartida"
+        "Hop limit and route health" -> "Límite de saltos y salud de rutas"
+        "Release and Beta firmware" -> "Firmware Release y Beta"
+        "Password and node keys" -> "Contraseña y claves del nodo"
+        "Language, theme, units and alerts" -> "Idioma, tema, unidades y alertas"
+        "Logs, exports and database reset" -> "Registros, exportaciones y reinicio de datos"
         "Set spreading factor, bandwidth, power, and region" -> "Ajusta spreading factor, ancho de banda, potencia y región"
         "Security & Keys" -> "Seguridad y Claves"
         "Manage private keys, ECDH keypairs, and device password" -> "Gestiona claves privadas, pares de claves ECDH y contraseña de dispositivo"
@@ -1434,13 +1443,15 @@ fun HeaderBar(
 ) {
     val spanish = appLanguage == "Spanish"
     val statusLabel = when {
-        isConnected && !isAuthenticated -> if (spanish) "BLOQUEADO" else "LOCKED"
-        isConnected -> if (spanish) "ENLACE" else "LINK UP"
+        isConnected && !isAuthenticated -> if (spanish) "Bloqueado" else "Locked"
+        isConnected && !connectedNodeName.isNullOrBlank() ->
+            if (spanish) "Conectado a $connectedNodeName" else "Connected to $connectedNodeName"
+        isConnected -> if (spanish) "Conectado" else "Connected"
         connectionPhase == com.silentwolf75.aethermesh.ble.BleConnectionPhase.Reconnecting ->
-            if (spanish) "RECON $reconnectAttempt" else "RECONNECT $reconnectAttempt"
+            if (spanish) "Reconectando ($reconnectAttempt)" else "Reconnecting ($reconnectAttempt)"
         connectionPhase == com.silentwolf75.aethermesh.ble.BleConnectionPhase.Connecting ->
-            if (spanish) "CONECTANDO" else "CONNECTING"
-        else -> if (spanish) "SIN RED" else "OFFLINE"
+            if (spanish) "Conectando…" else "Connecting…"
+        else -> if (spanish) "Sin conexión" else "Not connected"
     }
     val statusColor = when {
         isConnected && !isAuthenticated -> AccentAmber
@@ -1478,15 +1489,14 @@ fun HeaderBar(
                         )
                     }
                 }
-                AnimatedAetherMeshLogo(size = 40.dp)
-                Spacer(modifier = Modifier.width(10.dp))
+                AnimatedAetherMeshLogo(size = 34.dp)
+                Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = title.uppercase(),
-                        color = AccentCyan,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.4.sp
+                        text = title,
+                        color = TextLight,
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 1
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1495,14 +1505,20 @@ fun HeaderBar(
                             .clickable(onClick = onConnectionClick)
                             .padding(vertical = 2.dp)
                     ) {
-                        PulseDot(active = pulseActive)
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(statusColor)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             statusLabel,
-                            color = statusColor,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp
+                            color = TextMuted,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1537,7 +1553,7 @@ fun HeaderBar(
                 ) {
                     Text(
                         text = shortName,
-                        color = Color(0xFF061018),
+                        color = OnAccent,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )
@@ -1570,21 +1586,6 @@ fun HeaderBar(
                 }
             }
         }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(
-                            Color.Transparent,
-                            AccentCyan,
-                            AccentMint.copy(alpha = 0.7f),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
     }
 }
 

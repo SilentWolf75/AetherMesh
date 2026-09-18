@@ -35,6 +35,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silentwolf75.aethermesh.theme.AccentAmber
+import com.silentwolf75.aethermesh.theme.AccentCyanDim
+import com.silentwolf75.aethermesh.theme.AccentRed
+import com.silentwolf75.aethermesh.theme.TextLight
 import com.silentwolf75.aethermesh.theme.AccentCyan
 import com.silentwolf75.aethermesh.theme.AccentMint
 import com.silentwolf75.aethermesh.theme.AccentOrange
@@ -105,7 +108,7 @@ fun AetherAppNavigation(
                         .fillMaxWidth()
                         .padding(horizontal = 8.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(if (selected) item.color.copy(alpha = 0.18f) else Color.Transparent)
+                        .background(if (selected) AccentCyanDim else Color.Transparent)
                         .clickable { onTabSelected(item.tab) }
                         .padding(vertical = 12.dp, horizontal = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -114,7 +117,7 @@ fun AetherAppNavigation(
                         Icon(
                             imageVector = item.icon,
                             contentDescription = t(item.labelKey, appLanguage),
-                            tint = if (selected) item.color else item.color.copy(alpha = 0.42f),
+                            tint = if (selected) AccentCyan else TextMuted,
                             modifier = Modifier.size(24.dp)
                         )
                         if (item.tab == TabItem.CHATS && chatsUnreadCount > 0) {
@@ -123,13 +126,13 @@ fun AetherAppNavigation(
                                     .align(Alignment.TopEnd)
                                     .padding(start = 14.dp, bottom = 14.dp)
                                     .clip(CircleShape)
-                                    .background(AccentCyan)
-                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                    .background(AccentRed)
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
                                 Text(
                                     if (chatsUnreadCount > 9) "9+" else "$chatsUnreadCount",
-                                    color = Color.Black,
-                                    fontSize = 8.sp,
+                                    color = Color.White,
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -138,9 +141,9 @@ fun AetherAppNavigation(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = t(item.labelKey, appLanguage),
-                        color = if (selected) item.color else TextMuted,
-                        fontSize = 10.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected) TextLight else TextMuted,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -151,13 +154,13 @@ fun AetherAppNavigation(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(SurfaceRaised)
+                .background(com.silentwolf75.aethermesh.theme.SurfaceDark)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(1.dp)
-                    .background(BorderDark.copy(alpha = 0.7f))
+                    .background(BorderDark.copy(alpha = 0.5f))
             )
             Row(
                 modifier = Modifier
@@ -173,16 +176,21 @@ fun AetherAppNavigation(
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(14.dp))
-                            .background(if (selected) item.color.copy(alpha = 0.16f) else Color.Transparent)
                             .clickable { onTabSelected(item.tab) }
-                            .padding(vertical = 8.dp),
+                            .padding(vertical = 6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 60.dp, height = 32.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (selected) AccentCyanDim else Color.Transparent),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Icon(
                                 imageVector = item.icon,
                                 contentDescription = t(item.labelKey, appLanguage),
-                                tint = if (selected) item.color else item.color.copy(alpha = 0.45f),
+                                tint = if (selected) AccentCyan else TextMuted,
                                 modifier = Modifier.size(22.dp)
                             )
                             if (item.tab == TabItem.CONNECTION && !isConnected) {
@@ -201,24 +209,24 @@ fun AetherAppNavigation(
                                         .align(Alignment.TopEnd)
                                         .padding(start = 12.dp, bottom = 12.dp)
                                         .clip(CircleShape)
-                                        .background(AccentCyan)
-                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                        .background(AccentRed)
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
                                 ) {
                                     Text(
                                         if (chatsUnreadCount > 9) "9+" else "$chatsUnreadCount",
-                                        color = Color.Black,
-                                        fontSize = 8.sp,
+                                        color = Color.White,
+                                        fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = t(item.labelKey, appLanguage),
-                            color = if (selected) item.color else TextMuted,
-                            fontSize = 10.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) TextLight else TextMuted,
+                            fontSize = 12.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
