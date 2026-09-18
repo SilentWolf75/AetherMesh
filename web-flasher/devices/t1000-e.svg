@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none" role="img" aria-label="Seeed SenseCAP T1000-E">
+  <defs>
+    <linearGradient id="t1kBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f47"/>
+      <stop offset="1" stop-color="#23272d"/>
+    </linearGradient>
+    <linearGradient id="t1kFace" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a5059"/>
+      <stop offset="1" stop-color="#30353c"/>
+    </linearGradient>
+  </defs>
+  <!-- lanyard loop -->
+  <rect x="50" y="8" width="20" height="12" rx="6" stroke="#8a929c" stroke-width="3"/>
+  <!-- card body -->
+  <rect x="24" y="16" width="72" height="96" rx="14" fill="url(#t1kBody)" stroke="#12151a" stroke-width="1.5"/>
+  <rect x="29" y="21" width="62" height="86" rx="10" fill="url(#t1kFace)"/>
+  <!-- lanyard slot -->
+  <rect x="52" y="25" width="16" height="4" rx="2" fill="#15181d"/>
+  <!-- status LED -->
+  <circle cx="60" cy="40" r="2.6" fill="#3DD6C3"/>
+  <circle cx="60" cy="40" r="5" fill="#3DD6C3" opacity="0.18"/>
+  <!-- wordmark -->
+  <text x="60" y="58" text-anchor="middle" font-family="Arial, sans-serif" font-size="7.5" font-weight="700" fill="#c7ccd3" letter-spacing="0.6">SenseCAP</text>
+  <!-- button -->
+  <circle cx="60" cy="82" r="11" fill="#262a30" stroke="#5b626c" stroke-width="1.5"/>
+  <circle cx="60" cy="82" r="7" fill="#353a41"/>
+  <!-- edge contacts -->
+  <rect x="50" y="104" width="4" height="2.5" rx="1" fill="#c9a24a"/>
+  <rect x="58" y="104" width="4" height="2.5" rx="1" fill="#c9a24a"/>
+  <rect x="66" y="104" width="4" height="2.5" rx="1" fill="#c9a24a"/>
+</svg>

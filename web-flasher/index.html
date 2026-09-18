@@ -3,1131 +3,414 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="description" content="Flash AetherMesh firmware directly to your LoRa node from your browser, or monitor telemetry in real-time using the interactive Web Serial monitor." />
-<meta property="og:title" content="AetherMesh Web Flasher" />
-<meta property="og:description" content="Flash AetherMesh firmware directly to your LoRa node from your browser, or monitor telemetry in real-time using the interactive Web Serial monitor." />
+<meta name="description" content="Install AetherMesh firmware on your LoRa node straight from your browser, then watch it boot in the built-in serial console." />
+<meta property="og:title" content="AetherMesh Flasher" />
+<meta property="og:description" content="Install AetherMesh firmware on your LoRa node straight from your browser." />
 <meta property="og:type" content="website" />
-<title>AetherMesh Web Flasher</title>
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#F3F4F7" media="(prefers-color-scheme: light)" />
+<title>AetherMesh Flasher</title>
 <link rel="icon" type="image/svg+xml" href="./aethermesh-logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+  /* AetherMesh design tokens: the same graphite surfaces and single teal
+     accent as the Android app, with a light theme that follows the OS. */
   :root {
     color-scheme: dark;
-    --page: #060B14;
-    --panel: rgba(14, 22, 36, 0.72);
-    --panel-hover: rgba(21, 32, 51, 0.82);
-    --panel-solid: #0E1624;
-    --panel-dark: #04070C;
-    --line: rgba(36, 48, 68, 0.95);
-    --line-focus: rgba(77, 163, 255, 0.45);
-    --text: #E8F0FF;
-    --muted: #7E90A8;
-    --cyan: #4DA3FF;
-    --indigo: #7AD4FF;
-    --purple: #7AD4FF;
-    --green: #C8F547;
-    --amber: #FFB347;
-    --red: #FF5C7A;
+    --page: #111317;
+    --surface: #1A1D23;
+    --raised: #23272E;
+    --line: #2F343D;
+    --line-soft: rgba(47, 52, 61, 0.6);
+    --text: #E8EAEF;
+    --muted: #9AA2AF;
+    --brand: #3DD6C3;
+    --on-brand: #042420;
+    --brand-soft: rgba(61, 214, 195, 0.14);
+    --brand-line: rgba(61, 214, 195, 0.45);
+    --ok: #5BD98A;
+    --warn: #F5B83D;
+    --err: #F2727A;
+    --info: #6AAEF7;
+    --console: #0B0D10;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.18);
+    --radius: 18px;
+    --radius-sm: 12px;
+    --cyan: var(--brand);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --page: #F3F4F7;
+      --surface: #FFFFFF;
+      --raised: #ECEEF2;
+      --line: #D8DCE3;
+      --line-soft: rgba(216, 220, 227, 0.8);
+      --text: #161A20;
+      --muted: #5A6371;
+      --brand: #0B8A7E;
+      --on-brand: #FFFFFF;
+      --brand-soft: rgba(11, 138, 126, 0.10);
+      --brand-line: rgba(11, 138, 126, 0.45);
+      --ok: #16924A;
+      --warn: #B86E00;
+      --err: #CC2F3A;
+      --info: #2461C7;
+      --console: #14171C;
+      --shadow: 0 1px 2px rgba(20, 24, 30, 0.06), 0 8px 24px rgba(20, 24, 30, 0.06);
+    }
   }
 
   * { box-sizing: border-box; }
-
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
     min-height: 100vh;
-    background-color: var(--page);
-    background-image: 
-      radial-gradient(at 0% 0%, rgba(122, 212, 255, 0.10) 0px, transparent 50%),
-      radial-gradient(at 100% 0%, rgba(77, 163, 255, 0.12) 0px, transparent 50%),
-      linear-gradient(180deg, #060B14 0%, #0E1624 50%, #04070C 100%);
+    background: var(--page);
     color: var(--text);
-    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    line-height: 1.5;
-    position: relative;
-    overflow-x: hidden;
+    font: 15px/1.55 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-
-  /* Global Network Background Grid */
-  body::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background-image: 
-      linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
-    background-size: 36px 36px;
-    pointer-events: none;
-    z-index: -1;
-  }
-
-  /* Ambient Glow Blurs */
-  .bg-glow {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(120px);
-    z-index: -1;
-    opacity: 0.14;
-    pointer-events: none;
-  }
-  .glow-cyan {
-    top: 5%;
-    left: 10%;
-    width: 400px;
-    height: 400px;
-    background: radial-gradient(circle, var(--cyan), transparent 70%);
-    animation: pulse-glow 15s infinite alternate;
-  }
-  .glow-indigo {
-    bottom: 5%;
-    right: 10%;
-    width: 450px;
-    height: 450px;
-    background: radial-gradient(circle, var(--green), transparent 70%);
-    animation: pulse-glow 20s infinite alternate-reverse;
-  }
-  @keyframes pulse-glow {
-    0% { transform: scale(1) translate(0, 0); opacity: 0.1; }
-    50% { transform: scale(1.15) translate(40px, -30px); opacity: 0.18; }
-    100% { transform: scale(0.9) translate(-20px, 30px); opacity: 0.1; }
-  }
-
-  .wrap {
-    width: min(1280px, 100%);
-    margin: 0 auto;
-    padding: 36px 20px 72px;
-  }
-
-  .hero {
-    display: flex;
-    align-items: center;
-    gap: 28px;
-    padding: 10px 0 36px;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 28px;
-  }
-
-  /* Brand Logo & Animations */
-  .brand-logo-wrapper {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .brand-mark {
-    width: 115px;
-    height: 115px;
-    filter: drop-shadow(0 4px 15px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 12px rgba(77, 163, 255, 0.15));
-    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.4s;
-  }
-  .brand-mark:hover {
-    transform: scale(1.04) rotate(1deg);
-    filter: drop-shadow(0 8px 25px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 20px rgba(77, 163, 255, 0.35));
-  }
-
-  /* SVG Logo Wave Signal Animations */
-  @keyframes signal-pulse-inner {
-    0% {
-      opacity: 0.15;
-      stroke-width: 3px;
-      stroke: #2B6FD6;
-    }
-    30% {
-      opacity: 1;
-      stroke-width: 4.5px;
-      stroke: #7AD4FF;
-      filter: drop-shadow(0 0 4px rgba(122, 212, 255, 0.65));
-    }
-    60%, 100% {
-      opacity: 0.15;
-      stroke-width: 3px;
-      stroke: #2B6FD6;
-    }
-  }
-  
-  @keyframes signal-pulse-outer {
-    0%, 30% {
-      opacity: 0.15;
-      stroke-width: 3.5px;
-      stroke: #2B6FD6;
-    }
-    60% {
-      opacity: 1;
-      stroke-width: 5px;
-      stroke: #4DA3FF;
-      filter: drop-shadow(0 0 5px rgba(77, 163, 255, 0.8));
-    }
-    90%, 100% {
-      opacity: 0.15;
-      stroke-width: 3.5px;
-      stroke: #2B6FD6;
-    }
-  }
-
-  .logo-wave-inner {
-    animation: signal-pulse-inner 2.4s infinite ease-in-out;
-  }
-  
-  .logo-wave-outer {
-    animation: signal-pulse-outer 2.4s infinite ease-in-out;
-  }
-
-  .hero-content {
-    flex: 1 1 auto;
-    text-align: left;
-  }
-
-  h1 {
-    font-family: 'Outfit', sans-serif;
-    margin: 0;
-    font-size: clamp(32px, 4.5vw, 44px);
-    line-height: 1.1;
-    font-weight: 800;
-    letter-spacing: -0.5px;
-  }
-
-  .gradient-text {
-    background: linear-gradient(135deg, var(--text) 30%, var(--cyan) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-
-  .sub {
-    color: var(--muted);
-    font-size: 16px;
-    margin: 8px 0 0;
-    max-width: 700px;
-  }
-
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.25fr) 1fr;
-    gap: 26px;
-    align-items: start;
-  }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 24px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    transition: border-color 0.3s, box-shadow 0.3s, background-color 0.3s;
-  }
-  .panel:hover {
-    background: var(--panel-hover);
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-  }
-
-  .step-card {
-    border-left: 3px solid transparent;
-  }
-  .step-card.active {
-    border-left-color: var(--cyan);
-    box-shadow: inset 4px 0 16px rgba(77, 163, 255, 0.03), 0 12px 30px rgba(0, 0, 0, 0.25);
-  }
-  .step-card.disabled {
-    opacity: 0.45;
-    pointer-events: none;
-  }
-
-  .panel + .panel { margin-top: 18px; }
-
-  .step-title {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 18px;
-  }
-
-  .num {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--indigo), var(--cyan));
-    color: #040c16;
-    font-size: 13px;
-    font-weight: 800;
-    box-shadow: 0 0 12px rgba(77, 163, 255, 0.3);
-  }
-
-  h2 {
-    font-family: 'Outfit', sans-serif;
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: #fff;
-  }
-
-  label {
-    display: block;
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--muted);
-    margin: 0 0 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  select {
-    width: 100%;
-    min-height: 46px;
-    background: var(--panel-dark);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 14px;
-    font-family: inherit;
-    outline: none;
-    cursor: pointer;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  select:focus {
-    border-color: var(--cyan);
-    box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.15);
-  }
-
-  .field + .field { margin-top: 18px; }
-
-  /* Hardware Grid & Card Selector */
-  .hardware-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 16px;
-    margin-top: 14px;
-    margin-bottom: 8px;
-  }
-
-  .hardware-card {
-    background: rgba(14, 22, 36, 0.45);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 16px;
-    cursor: pointer;
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    align-items: stretch;
-  }
-
-  .hardware-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: linear-gradient(135deg, rgba(122, 212, 255, 0.1), rgba(77, 163, 255, 0.1));
-    opacity: 0;
-    transition: opacity 0.25s ease;
-    z-index: 0;
-  }
-
-  .hardware-card:hover {
-    border-color: rgba(122, 212, 255, 0.4);
-    transform: translateY(-3px);
-    background: rgba(21, 32, 51, 0.55);
-    box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.6);
-  }
-
-  .hardware-card:hover::before {
-    opacity: 1;
-  }
-
-  .hardware-card.selected {
-    border-color: var(--cyan);
-    background: rgba(77, 163, 255, 0.08);
-    box-shadow: 
-      0 0 20px -5px rgba(77, 163, 255, 0.3),
-      inset 0 0 12px -2px rgba(77, 163, 255, 0.12);
-  }
-
-  .hardware-card.selected::after {
-    content: '';
-    position: absolute;
-    top: 0; right: 0;
-    width: 24px; height: 24px;
-    background: var(--cyan);
-    clip-path: polygon(100% 0, 0 0, 100% 100%);
-    z-index: 1;
-  }
-
-  .hardware-card.selected::before {
-    content: '✓';
-    position: absolute;
-    top: 2px; right: 4px;
-    font-size: 10px;
-    font-weight: bold;
-    color: #03060c;
-    z-index: 2;
-  }
-
-  .hardware-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
-    z-index: 1;
-  }
-
-  .hardware-card-brand {
-    font-size: 9px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--muted);
-    background: rgba(255, 255, 255, 0.03);
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.03);
-  }
-  
-  .hardware-card.selected .hardware-card-brand {
-    color: var(--cyan);
-    border-color: rgba(77, 163, 255, 0.2);
-    background: rgba(77, 163, 255, 0.05);
-  }
-
-  .hardware-card-cpu {
-    font-size: 9px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: rgba(255, 255, 255, 0.35);
-    background: rgba(255, 255, 255, 0.02);
-    padding: 2px 6px;
-    border-radius: 4px;
-  }
-
-  .hardware-card.selected .hardware-card-cpu {
-    color: rgba(77, 163, 255, 0.7);
-    background: rgba(77, 163, 255, 0.03);
-  }
-
-  .hardware-card-image {
-    height: 128px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 6px 0;
-    z-index: 1;
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .hardware-card:hover .hardware-card-image {
-    transform: scale(1.04);
-  }
-
-  .hardware-card-image svg,
-  .hardware-card-image img {
-    max-width: 100%;
-    max-height: 100%;
-    width: auto;
-    height: auto;
-    filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
-    transition: filter 0.3s ease;
-  }
-
-  .hardware-card:hover .hardware-card-image svg,
-  .hardware-card:hover .hardware-card-image img {
-    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
-  }
-
-  .hardware-card-name {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text);
-    z-index: 1;
-    line-height: 1.25;
-    text-align: center;
-    margin-top: 4px;
-  }
-
-  /* Drag & Drop Zone */
-  .upload-zone {
-    border: 2px dashed rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    padding: 24px 18px;
-    text-align: center;
-    background: rgba(0, 0, 0, 0.15);
-    cursor: pointer;
-    transition: all 0.2s ease-in-out;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    user-select: none;
-  }
-  .upload-zone:hover, .upload-zone.dragover {
-    border-color: var(--cyan);
-    background: rgba(77, 163, 255, 0.03);
-    box-shadow: 0 0 16px rgba(77, 163, 255, 0.05);
-  }
-  .upload-zone-icon {
-    font-size: 32px;
-    color: var(--muted);
-    transition: color 0.2s, transform 0.2s;
-  }
-  .upload-zone:hover .upload-zone-icon {
-    color: var(--cyan);
-    transform: translateY(-2px);
-  }
-  .upload-zone-text {
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .upload-zone-text span {
-    color: var(--cyan);
-    text-decoration: underline;
-    font-weight: 600;
-  }
-  .upload-zone-sub {
-    font-size: 11px;
-    color: var(--muted);
-  }
-
-  /* File chip style when loaded */
-  .file-chip {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: rgba(77, 163, 255, 0.08);
-    border: 1px solid rgba(77, 163, 255, 0.25);
-    border-radius: 10px;
-    padding: 12px 16px;
-    font-size: 13px;
-    transition: all 0.2s;
-  }
-  .file-chip-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    text-align: left;
-  }
-  .file-chip-name {
-    font-weight: 600;
-    color: #fff;
-    word-break: break-all;
-  }
-  .file-chip-size {
-    font-size: 11px;
-    color: var(--muted);
-  }
-  .file-chip-remove {
-    background: transparent;
-    border: 0;
-    color: var(--muted);
-    font-size: 18px;
-    cursor: pointer;
-    padding: 0 6px;
-    line-height: 1;
-    transition: color 0.2s, transform 0.2s;
-  }
-  .file-chip-remove:hover {
-    color: var(--red);
-    transform: scale(1.1);
-  }
-
-  .or-divider {
-    display: flex;
-    align-items: center;
-    text-align: center;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    margin: 14px 0;
-  }
-  .or-divider::before,
-  .or-divider::after {
-    content: '';
-    flex: 1;
-    border-bottom: 1px solid var(--line);
-  }
-  .or-divider:not(:empty)::before { margin-right: 12px; }
-  .or-divider:not(:empty)::after { margin-left: 12px; }
-
-  .hint {
-    margin: 10px 0 0;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  code {
-    color: var(--amber);
-    background: rgba(245, 158, 11, 0.08);
-    border: 1px solid rgba(245, 158, 11, 0.18);
-    border-radius: 5px;
-    padding: 1px 5px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-  }
-
-  /* Custom Checkbox styles */
-  .checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--text);
-    cursor: pointer;
-    user-select: none;
-    margin-top: 10px;
-  }
-  .checkbox-label input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--cyan);
-    cursor: pointer;
-    margin: 0;
-  }
-
-  /* Advanced Settings accordion */
-  .settings-accordion {
-    margin-top: 6px;
-    border-top: 1px solid var(--line);
-    padding-top: 12px;
-  }
-  .settings-summary {
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    list-style: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    user-select: none;
-    transition: color 0.2s;
-  }
-  .settings-summary::-webkit-details-marker { display: none; }
-  .settings-summary:hover {
-    color: var(--text);
-  }
-  .settings-summary::before {
-    content: '▶';
-    font-size: 9px;
-    display: inline-block;
-    transition: transform 0.2s;
-  }
-  details[open] .settings-summary::before {
-    transform: rotate(90deg);
-  }
-  .settings-content {
-    display: grid;
-    grid-template-columns: 1.2fr 0.8fr;
-    gap: 14px;
-    padding: 14px 4px 4px;
-  }
-  .settings-content input[type="text"] {
-    width: 100%;
-    min-height: 46px;
-    background: var(--panel-dark);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 14px;
-    font-family: 'JetBrains Mono', monospace;
-    outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .settings-content input[type="text"]:focus {
-    border-color: var(--cyan);
-    box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.15);
-  }
-
-  .row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-
-  button {
-    min-height: 46px;
-    border: 0;
-    border-radius: 10px;
-    padding: 0 16px;
-    font-size: 14px;
-    font-weight: 700;
-    font-family: inherit;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    user-select: none;
-  }
-
-  button.primary {
-    background: linear-gradient(135deg, var(--green), var(--cyan));
-    color: #040c16;
-    box-shadow: 0 4px 15px rgba(77, 163, 255, 0.2);
-  }
-  button.primary:hover:not(:disabled) {
-    box-shadow: 0 6px 20px rgba(77, 163, 255, 0.35);
-    transform: translateY(-1px);
-  }
-  button.primary:active:not(:disabled) {
-    transform: translateY(0);
-  }
-
-  button.secondary {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text);
-    border: 1px solid var(--line);
-  }
-  button.secondary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
-    transform: translateY(-1px);
-  }
-  button.secondary:active:not(:disabled) {
-    transform: translateY(0);
-  }
-
-  button:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-    box-shadow: none !important;
-    transform: none !important;
-  }
-
-  /* Progress Bar Glow */
-  .bar-wrap {
-    height: 10px;
-    background: var(--panel-dark);
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    overflow: hidden;
-    margin-top: 18px;
-    display: none;
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-  }
-
-  .bar {
-    height: 100%;
-    width: 0;
-    background: linear-gradient(90deg, var(--green), var(--cyan), var(--indigo));
-    border-radius: 999px;
-    transition: width 0.1s ease;
-    position: relative;
-    overflow: hidden;
-  }
-  .bar::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; bottom: 0; right: 0;
-    background-image: linear-gradient(
-      -45deg, 
-      rgba(255, 255, 255, 0.15) 25%, 
-      transparent 25%, 
-      transparent 50%, 
-      rgba(255, 255, 255, 0.15) 50%, 
-      rgba(255, 255, 255, 0.15) 75%, 
-      transparent 75%, 
-      transparent
-    );
-    background-size: 20px 20px;
-    animation: shimmer-progress 2s linear infinite;
-  }
-  @keyframes shimmer-progress {
-    0% { background-position: 0 0; }
-    100% { background-position: 20px 0; }
-  }
-
-  #status {
-    margin-top: 14px;
-    font-size: 14px;
-    font-weight: 500;
-    min-height: 22px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  /* Diagnostics Telemetry Grid */
-  .telemetry-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 18px;
-    background: rgba(77, 163, 255, 0.03);
-    border: 1px dashed rgba(77, 163, 255, 0.18);
-    border-radius: 12px;
-    padding: 16px;
-    animation: fade-in 0.3s ease-out;
-  }
-  @keyframes fade-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .telemetry-item {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    text-align: left;
-  }
-  .telemetry-label {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .telemetry-val {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--cyan);
-    font-family: 'JetBrains Mono', monospace;
-    word-break: break-all;
-  }
-
-  /* Simulated Terminal Console */
-  .terminal-wrapper {
-    background: var(--panel-dark);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    overflow: hidden;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-    display: flex;
-    flex-direction: column;
-  }
-  .terminal-header {
-    background: rgba(255, 255, 255, 0.02);
-    border-bottom: 1px solid var(--line);
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    user-select: none;
-  }
-  .terminal-left-group {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-  }
-  .terminal-dots {
-    display: flex;
-    gap: 6px;
-  }
-  .terminal-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-  }
-  .terminal-dot.close { background: var(--red); }
-  .terminal-dot.minimize { background: var(--amber); }
-  .terminal-dot.maximize { background: var(--green); }
-  
-  /* Tabs Layout */
-  .terminal-tabs {
-    display: flex;
-    gap: 4px;
-  }
-  .terminal-tab-btn {
-    background: transparent;
-    border: 0;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 11px;
-    font-family: inherit;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 6px;
-    transition: all 0.2s;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .terminal-tab-btn.active {
-    background: rgba(77, 163, 255, 0.12);
-    color: var(--cyan);
-    border: 1px solid rgba(77, 163, 255, 0.2);
-  }
-  .terminal-tab-btn:hover:not(.active) {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text);
-  }
-
-  .terminal-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  
-  /* Header Autoscroll toggle style */
-  .autoscroll-header-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--muted);
-    margin: 0;
-    text-transform: none;
-    cursor: pointer;
-    user-select: none;
-  }
-  .autoscroll-header-label input {
-    accent-color: var(--cyan);
-    margin: 0;
-    cursor: pointer;
-  }
-
-  .terminal-action-btn {
-    background: transparent;
-    border: 0;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 11px;
-    font-family: inherit;
-    padding: 2px 6px;
-    border-radius: 4px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .terminal-action-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--text);
-  }
-  .terminal-action-btn.connected {
-    color: var(--red);
-    font-weight: 700;
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    background: rgba(239, 68, 68, 0.05);
-  }
-  .terminal-action-btn.connected:hover {
-    background: rgba(239, 68, 68, 0.12);
-    color: var(--red);
-  }
-
-  .terminal-body {
-    background: #03050a;
-    padding: 16px;
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 12px;
-    line-height: 1.6;
-    color: rgba(243, 244, 246, 0.85);
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 320px;
-    min-height: 180px;
-    overflow-y: auto;
-    scroll-behavior: smooth;
-  }
-
-  /* Command input bar for interactive mode */
-  .console-input-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: #020306;
-    border-top: 1px solid var(--line);
-    padding: 10px 16px;
-    animation: fade-in 0.2s ease-out;
-  }
-  .prompt-symbol {
-    font-family: 'JetBrains Mono', monospace;
-    color: var(--cyan);
-    font-weight: 700;
-    user-select: none;
-  }
-  .console-input-bar input {
-    flex: 1;
-    background: transparent;
-    border: 0;
-    outline: none;
-    color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-  }
-  .console-send-btn {
-    min-height: auto;
-    height: 28px;
-    padding: 0 12px;
-    background: var(--cyan);
-    color: #03060c;
-    font-size: 11px;
-    border-radius: 6px;
-    font-weight: 700;
-    border: 0;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .console-send-btn:hover {
-    background: #7AD4FF;
-    box-shadow: 0 0 8px rgba(77, 163, 255, 0.35);
-  }
-
-  .cmd-sent {
-    color: var(--cyan);
-    font-weight: 700;
-  }
-  .info {
-    color: var(--indigo);
-  }
-
-  .aside {
-    position: sticky;
-    top: 20px;
-  }
-
-  .compact-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 14px;
-  }
-
-  .compact-list li {
-    display: grid;
-    grid-template-columns: 24px 1fr;
-    gap: 12px;
-    color: var(--muted);
-    font-size: 13.5px;
-    align-items: flex-start;
-  }
-
-  .dot {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: rgba(77, 163, 255, 0.1);
-    color: var(--cyan);
-    font-weight: 800;
-    font-size: 12px;
-  }
-
-  /* Compatibility banner style */
-  .compatibility-card {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 18px;
-    border-radius: 12px;
-    font-size: 13.5px;
-    font-weight: 500;
-    margin-bottom: 18px;
-    animation: fade-in 0.3s ease-out;
-  }
-  .compatibility-card.compatible {
-    background: rgba(16, 185, 129, 0.08);
-    border: 1px solid rgba(16, 185, 129, 0.2);
-    color: #d1fae5;
-  }
-  .compatibility-card.uncompatible {
-    background: rgba(239, 68, 68, 0.08);
-    border: 1px solid rgba(239, 68, 68, 0.2);
-    color: #fee2e2;
-  }
-  .compatibility-icon {
-    font-size: 18px;
-    flex-shrink: 0;
-  }
-
-  details.faq-details {
-    border-top: 1px solid var(--line);
-    margin-top: 16px;
-    padding-top: 14px;
-  }
-
-  summary.faq-summary {
-    color: var(--text);
-    cursor: pointer;
-    font-weight: 700;
-    font-size: 13px;
-    user-select: none;
-    outline: none;
-  }
-  summary.faq-summary:hover {
-    color: var(--cyan);
-  }
-
-  .warn { color: var(--amber); }
-  .err { color: var(--red); }
-  .ok { color: var(--green); }
-  a { color: var(--cyan); text-decoration: none; }
+  a { color: var(--brand); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  code {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.86em;
+    background: var(--raised);
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
+    padding: 1px 6px;
+  }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
-  @media (max-width: 900px) {
-    .layout { grid-template-columns: 1fr; }
-    .aside { position: static; }
+  .wrap { width: min(980px, 100%); margin: 0 auto; padding: 0 16px 72px; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 18px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand img { width: 40px; height: 40px; border-radius: 11px; }
+  .brand strong { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+  .brand span { color: var(--muted); font-weight: 500; }
+  .top-links { display: flex; gap: 6px; flex-wrap: wrap; }
+  .top-links a {
+    color: var(--muted); font-size: 14px; font-weight: 600;
+    padding: 8px 12px; border-radius: 10px;
+  }
+  .top-links a:hover { background: var(--raised); color: var(--text); text-decoration: none; }
+
+  /* ---------- Intro ---------- */
+  .intro { padding: 28px 0 8px; }
+  .intro h1 {
+    margin: 0; font-size: clamp(28px, 5vw, 40px); line-height: 1.12;
+    font-weight: 800; letter-spacing: -0.02em;
+  }
+  .intro p { margin: 10px 0 0; color: var(--muted); font-size: 16px; max-width: 620px; }
+
+  .stepper {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    margin: 26px 0 18px; padding: 0; list-style: none;
+  }
+  .stepper li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-radius: var(--radius-sm);
+    background: var(--surface); border: 1px solid var(--line-soft);
+    color: var(--muted); font-weight: 600; font-size: 14px;
+  }
+  .stepper li b {
+    display: grid; place-items: center; flex: 0 0 26px; height: 26px; border-radius: 50%;
+    background: var(--raised); color: var(--muted); font-size: 13px;
   }
 
-  @media (max-width: 620px) {
-    .hero { flex-direction: column; text-align: center; gap: 14px; padding-bottom: 24px; }
-    .hero-content { text-align: center; }
-    .brand-mark { width: 95px; height: 95px; }
-    .row { grid-template-columns: 1fr; }
-    .settings-content { grid-template-columns: 1fr; }
+  /* ---------- Compatibility banner (markup built by flasher.js) ---------- */
+  #compat-banner:empty { display: none; }
+  .compatibility-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500;
+    margin-bottom: 18px;
   }
+  .compatibility-card.compatible { background: rgba(91, 217, 138, 0.10); color: var(--ok); border: 1px solid rgba(91, 217, 138, 0.28); }
+  .compatibility-card.uncompatible { background: rgba(242, 114, 122, 0.10); color: var(--err); border: 1px solid rgba(242, 114, 122, 0.3); }
+  .compatibility-icon { font-weight: 800; }
+
+  /* ---------- Cards and steps ---------- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    padding: 22px;
+    box-shadow: var(--shadow);
+  }
+  .stack { display: grid; gap: 18px; }
+  .step-title { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .step-title .num {
+    display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%;
+    background: var(--raised); color: var(--muted); font-weight: 700; font-size: 14px;
+    transition: background 0.2s, color 0.2s;
+  }
+  .step-title h2 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+  .step-title p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+  .step-card.active .step-title .num { background: var(--brand); color: var(--on-brand); }
+  .step-card.disabled { opacity: 0.55; pointer-events: none; }
+  .sub-block { border-top: 1px solid var(--line-soft); margin-top: 18px; padding-top: 18px; }
+
+  label, .label {
+    display: block; margin: 0 0 6px;
+    font-size: 13px; font-weight: 600; color: var(--muted);
+  }
+  select, input[type="text"] {
+    width: 100%; min-height: 46px; padding: 10px 14px;
+    background: var(--page); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    font: inherit; font-size: 15px;
+  }
+  select:focus, input[type="text"]:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+  select:disabled { opacity: 0.6; }
+  .field + .field { margin-top: 16px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .hint { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+  /* ---------- Device picker ---------- */
+  .hardware-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+  }
+  .hardware-card {
+    position: relative; cursor: pointer; user-select: none;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 12px 10px 14px; border-radius: 16px;
+    background: var(--page); border: 1.5px solid var(--line-soft);
+    transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  }
+  .hardware-card:hover { border-color: var(--line); transform: translateY(-1px); }
+  .hardware-card.selected { border-color: var(--brand); background: var(--brand-soft); }
+  .hardware-card.selected::after {
+    content: '✓'; position: absolute; top: 8px; right: 8px;
+    width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--brand); color: var(--on-brand); font-size: 12px; font-weight: 800;
+  }
+  .hardware-card-header { display: flex; width: 100%; justify-content: space-between; gap: 6px; }
+  .hardware-card-brand { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; }
+  .hardware-card-cpu { display: none; }
+  .hardware-card-image { height: 92px; display: grid; place-items: center; }
+  .hardware-card-image img { width: 128px; height: 92px; object-fit: contain; }
+  .hardware-card-name { font-size: 14px; font-weight: 700; text-align: center; }
+  .hardware-card-chip { font-size: 11px; color: var(--muted); margin-top: -6px; }
+
+  /* ---------- Firmware ---------- */
+  #release-notes summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--brand); }
+  #release-notes-text {
+    white-space: pre-wrap; word-break: break-word; margin: 10px 0 0;
+    max-height: 260px; overflow-y: auto; padding: 12px 14px;
+    background: var(--page); border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+    font: 13px/1.5 'JetBrains Mono', ui-monospace, monospace; color: var(--muted);
+  }
+  .fw-row { display: flex; gap: 10px; align-items: flex-end; }
+  .fw-row > div { flex: 1; min-width: 0; }
+  .or-divider {
+    display: flex; align-items: center; gap: 12px; margin: 16px 0;
+    color: var(--muted); font-size: 12px; font-weight: 600;
+  }
+  .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-soft); }
+  .upload-zone {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    min-height: 118px; padding: 18px; cursor: pointer; text-align: center;
+    border: 1.5px dashed var(--line); border-radius: var(--radius-sm); background: var(--page);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .upload-zone:hover, .upload-zone.dragover { border-color: var(--brand); background: var(--brand-soft); }
+  .upload-zone-icon { font-size: 22px; color: var(--brand); }
+  .upload-zone-text { font-size: 14px; font-weight: 600; }
+  .upload-zone-text span { color: var(--brand); }
+  .upload-zone-sub { font-size: 12px; color: var(--muted); }
+  .file-chip {
+    align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 14px; border-radius: var(--radius-sm);
+    background: var(--brand-soft); border: 1px solid var(--brand-line);
+  }
+  .file-chip-info { display: flex; flex-direction: column; min-width: 0; }
+  .file-chip-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-chip-size { font-size: 12px; color: var(--muted); }
+  .file-chip-remove {
+    background: transparent; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1;
+    padding: 4px 8px; border-radius: 8px;
+  }
+  .file-chip-remove:hover { background: var(--raised); color: var(--text); }
+
+  details.settings-accordion { margin-top: 16px; }
+  .settings-summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--muted); }
+  .settings-content { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+
+  /* Install mode as two selectable tiles */
+  #flash-mode { border: 0; padding: 0; margin: 0; }
+  #flash-mode legend { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; padding: 0; }
+  .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .mode-tile {
+    display: flex; gap: 10px; align-items: flex-start; margin: 0; cursor: pointer;
+    padding: 14px; border-radius: var(--radius-sm);
+    border: 1.5px solid var(--line-soft); background: var(--page);
+    color: var(--text); font-size: 14px; font-weight: 500;
+  }
+  .mode-tile:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+  .mode-tile input { accent-color: var(--brand); margin-top: 3px; }
+  .mode-tile strong { display: block; font-size: 15px; }
+  .mode-tile small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  /* ---------- Buttons ---------- */
+  button { font: inherit; }
+  .primary, .secondary {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 48px; padding: 10px 20px; border-radius: var(--radius-sm);
+    font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: filter 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .primary { background: var(--brand); color: var(--on-brand); border: 0; }
+  .primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .secondary { background: var(--raised); color: var(--text); border: 1px solid var(--line); }
+  .secondary:hover:not(:disabled) { border-color: var(--brand-line); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row .primary { flex: 1 1 220px; }
+  .row .secondary { flex: 0 1 200px; }
+  .full { width: 100%; }
+
+  /* ---------- Progress, status and device info ---------- */
+  .bar-wrap { display: none; height: 8px; margin-top: 16px; border-radius: 99px; background: var(--raised); overflow: hidden; }
+  .bar { height: 100%; width: 0; background: var(--brand); border-radius: 99px; transition: width 0.2s; }
+  #status { margin-top: 14px; font-size: 14px; font-weight: 500; min-height: 22px; }
+  #status:empty { display: none; }
+  #status .ok { color: var(--ok); }
+  #status .err { color: var(--err); }
+  .telemetry-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-top: 16px; }
+  .telemetry-item { padding: 12px 14px; border-radius: var(--radius-sm); background: var(--page); border: 1px solid var(--line-soft); }
+  .telemetry-label { display: block; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .telemetry-val { font: 600 14px 'JetBrains Mono', ui-monospace, monospace; word-break: break-all; }
+
+  /* ---------- nRF52 drive install ---------- */
+  .uf2-steps { margin: 4px 0 16px; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 10px; }
+  .uf2-steps li { counter-increment: s; display: flex; gap: 12px; font-size: 14px; }
+  .uf2-steps li::before {
+    content: counter(s); flex: 0 0 24px; height: 24px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--raised); color: var(--muted);
+    font-size: 12px; font-weight: 700;
+  }
+  .callout {
+    padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13px; color: var(--muted);
+    background: var(--page); border: 1px solid var(--line-soft);
+  }
+
+  /* ---------- Console ---------- */
+  .terminal-wrapper { border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--line); background: var(--console); }
+  .terminal-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    padding: 8px 10px; background: #15181D; border-bottom: 1px solid #262A31;
+  }
+  .terminal-left-group { display: flex; align-items: center; gap: 12px; }
+  .terminal-dots { display: none; }
+  .terminal-tabs { display: flex; gap: 4px; background: #0F1114; padding: 3px; border-radius: 10px; }
+  .terminal-tab-btn {
+    border: 0; background: transparent; color: #9AA2AF; cursor: pointer;
+    padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  }
+  .terminal-tab-btn.active { background: #2A2F37; color: #E8EAEF; }
+  .terminal-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .autoscroll-header-label { display: inline-flex; align-items: center; gap: 6px; margin: 0 6px 0 0; color: #9AA2AF; font-size: 12px; font-weight: 500; }
+  .autoscroll-header-label input { accent-color: var(--brand); }
+  .terminal-action-btn {
+    border: 1px solid #2F343D; background: #1E2228; color: #C9CED6; cursor: pointer;
+    padding: 5px 10px; border-radius: 8px; font-size: 12px; font-weight: 600;
+    display: inline-flex; align-items: center;
+  }
+  .terminal-action-btn:hover { border-color: #3DD6C3; }
+  .terminal-action-btn.connected { border-color: #F2727A; color: #F2727A; }
+  .terminal-body {
+    height: 300px; overflow-y: auto; padding: 12px 14px;
+    font: 12.5px/1.6 'JetBrains Mono', ui-monospace, monospace; color: #C9CED6;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .terminal-body .ok { color: #5BD98A; }
+  .terminal-body .err { color: #F2727A; }
+  .terminal-body .info { color: #6AAEF7; }
+  .terminal-body .warn { color: #F5B83D; }
+  .console-empty { padding: 28px 16px; text-align: center; color: #7E8794; font-size: 13px; }
+  #log:not([style*="none"]) + .console-empty { display: none; }
+  .console-input-bar { align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid #262A31; background: #111418; }
+  .prompt-symbol { color: #3DD6C3; font-family: 'JetBrains Mono', monospace; }
+  #consoleInput { flex: 1; min-height: 36px; background: transparent; border: 0; color: #E8EAEF; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+  #consoleInput:focus { box-shadow: none; }
+  .console-send-btn { border: 0; background: #3DD6C3; color: #042420; font-weight: 700; padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+
+  /* ---------- Help + app ---------- */
+  .help-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; }
+  .help-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .help-list li { display: flex; gap: 10px; font-size: 14px; }
+  .help-list li::before { content: '✓'; color: var(--brand); font-weight: 800; }
+  .faq-details { margin-top: 14px; }
+  .faq-summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--brand); }
+  .app-card { display: flex; flex-direction: column; gap: 12px; justify-content: space-between; }
+  .app-card h3 { margin: 0; font-size: 17px; }
+  .app-card p { margin: 0; color: var(--muted); font-size: 14px; }
+  #apk-version { color: var(--muted); font-weight: 500; font-size: 13px; margin-left: 6px; }
+  .section-label { margin: 34px 0 12px; font-size: 13px; font-weight: 700; color: var(--muted); }
+
+  footer { margin-top: 40px; color: var(--muted); font-size: 13px; text-align: center; }
+
+  /* ---------- Small screens ---------- */
+  @media (max-width: 720px) {
+    .stepper { grid-template-columns: 1fr; gap: 6px; }
+    .two-col, .settings-content, .mode-grid, .help-grid { grid-template-columns: 1fr; }
+    .panel { padding: 18px 16px; }
+    .hardware-grid { grid-template-columns: repeat(2, 1fr); }
+    .top-links a { padding: 8px; }
+    .fw-row { flex-direction: column; align-items: stretch; }
+    .row .primary, .row .secondary { flex: 1 1 100%; }
+    .brand strong span { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-<div class="bg-glow glow-cyan"></div>
-<div class="bg-glow glow-indigo"></div>
-
-<main class="wrap">
-  <header class="hero" aria-labelledby="title">
-    <div class="brand-logo-wrapper">
-      <svg class="brand-mark" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <defs>
-          <linearGradient id="brandBg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-            <stop offset="0" stop-color="#060B14"/>
-            <stop offset="0.5" stop-color="#0E1624"/>
-            <stop offset="1" stop-color="#152033"/>
-          </linearGradient>
-          <linearGradient id="brandPeak" x1="32" y1="34" x2="76" y2="76" gradientUnits="userSpaceOnUse">
-            <stop offset="0" stop-color="#7AD4FF"/>
-            <stop offset="1" stop-color="#4DA3FF"/>
-          </linearGradient>
-        </defs>
-        <rect width="108" height="108" rx="18" fill="url(#brandBg)"/>
-        <path d="M18 0v108M36 0v108M54 0v108M72 0v108M90 0v108M0 18h108M0 36h108M0 54h108M0 72h108M0 90h108" fill="none" stroke="#FFFFFF" stroke-opacity="0.095" stroke-width="0.4"/>
-        <path d="M0 0l108 108M108 0L0 108" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="0.3"/>
-        <path class="logo-wave-outer" d="M38 20A20 20 0 0 1 70 20" fill="none" stroke="#4DA3FF" stroke-width="3.5" stroke-linecap="round"/>
-        <path class="logo-wave-inner" d="M45 26A12 12 0 0 1 63 26" fill="none" stroke="#7AD4FF" stroke-width="3" stroke-linecap="round"/>
-        <path d="M32 76L54 34L76 76" fill="none" stroke="url(#brandPeak)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M40 62H68" fill="none" stroke="#7AD4FF" stroke-width="4" stroke-linecap="round"/>
-        <path d="M54 34V62" fill="none" stroke="#4DA3FF" stroke-width="4" stroke-linecap="round"/>
-        <circle cx="54" cy="34" r="5" fill="#FFFFFF"/>
-        <circle cx="32" cy="76" r="5" fill="#C8F547"/>
-        <circle cx="76" cy="76" r="5" fill="#4DA3FF"/>
-        <circle cx="54" cy="62" r="4" fill="#FFFFFF"/>
-      </svg>
-    </div>
-    <div class="hero-content">
-      <h1 id="title">AetherMesh <span class="gradient-text">Web Flasher</span></h1>
-      <p class="sub">Flash firmware over USB from your browser, or monitor your node telemetry using the real-time interactive console.</p>
-    </div>
+<div class="wrap">
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="AetherMesh Flasher home">
+      <img src="./aethermesh-logo.svg" alt="" width="40" height="40">
+      <strong>AetherMesh <span>Flasher</span></strong>
+    </a>
+    <nav class="top-links" aria-label="Project links">
+      <a href="https://github.com/SilentWolf75/AetherMesh/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/SilentWolf75/AetherMesh" target="_blank" rel="noopener">GitHub</a>
+      <a href="#get-app">Android app</a>
+    </nav>
   </header>
 
-  <div id="compat-banner"></div>
+  <main>
+    <section class="intro" aria-labelledby="title">
+      <h1 id="title">Install AetherMesh on your node</h1>
+      <p>Pick your device, choose a release, and install it over USB. Everything happens in your browser, and every build is checked against its published SHA-256 first.</p>
+      <ol class="stepper" aria-label="Steps">
+        <li><b>1</b>Choose your device</li>
+        <li><b>2</b>Choose firmware</li>
+        <li><b>3</b>Install</li>
+      </ol>
+    </section>
 
-  <!-- STEP 1 (Full Width Top Panel) -->
-  <div class="panel step-card active" id="step-1-card" style="margin-bottom: 26px;">
+    <div id="compat-banner"></div>
+
+    <div class="stack">
+      <!-- STEP 1: device -->
+      <section class="panel step-card active" id="step-1-card" aria-labelledby="step1-title">
         <div class="step-title">
           <span class="num">1</span>
-          <h2>Select target</h2>
+          <div>
+            <h2 id="step1-title">Choose your device</h2>
+            <p>Connect one board at a time with a USB cable that carries data.</p>
+          </div>
         </div>
-        <label>Device Hardware</label>
-        <select id="target" style="display: none;">
+        <select id="target" hidden aria-hidden="true" tabindex="-1">
           <option value="heltec-v4" selected>Heltec V4 / ESP32-S3</option>
           <option value="heltec-v3">Heltec V3 / ESP32-S3</option>
           <option value="rak4631">RAK WisBlock RAK4631 (nRF52)</option>
@@ -1139,196 +422,117 @@
           <option value="elecrow-crowpanel-35">Elecrow CrowPanel 3.5 / ESP32-S3</option>
         </select>
 
-        <div class="hardware-grid" id="hardware-grid">
-          <!-- Heltec V4 -->
-          <div class="hardware-card selected" data-val="heltec-v4">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">Heltec</span>
-              <span class="hardware-card-cpu">ESP32-S3</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/heltec-v4.svg" alt="Heltec WiFi LoRa 32 V4" width="160" height="100" loading="lazy">
-            </div>
-            <span class="hardware-card-name">WiFi LoRa 32 V4</span>
+        <div class="hardware-grid" id="hardware-grid" role="radiogroup" aria-label="Device">
+          <div class="hardware-card selected" data-val="heltec-v4" role="radio" aria-checked="true" tabindex="0">
+            <div class="hardware-card-header"><span class="hardware-card-brand">Heltec</span><span class="hardware-card-cpu">ESP32-S3</span></div>
+            <div class="hardware-card-image"><img src="./devices/heltec-v4.svg" alt="" width="160" height="100"></div>
+            <span class="hardware-card-name">LoRa 32 V4</span>
+            <span class="hardware-card-chip">ESP32-S3 · USB</span>
           </div>
-
-          <!-- Heltec V3 -->
-          <div class="hardware-card" data-val="heltec-v3">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">Heltec</span>
-              <span class="hardware-card-cpu">ESP32-S3</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/heltec-v3.svg" alt="Heltec WiFi LoRa 32 V3" width="160" height="100" loading="lazy">
-            </div>
-            <span class="hardware-card-name">WiFi LoRa 32 V3</span>
+          <div class="hardware-card" data-val="heltec-v3" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">Heltec</span><span class="hardware-card-cpu">ESP32-S3</span></div>
+            <div class="hardware-card-image"><img src="./devices/heltec-v3.svg" alt="" width="160" height="100"></div>
+            <span class="hardware-card-name">LoRa 32 V3</span>
+            <span class="hardware-card-chip">ESP32-S3 · USB</span>
           </div>
-
-          <!-- RAK4631 -->
-          <div class="hardware-card" data-val="rak4631">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">RAK</span>
-              <span class="hardware-card-cpu">nRF52840</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/rak4631.svg" alt="RAK WisBlock 4631" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="rak4631" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">RAK</span><span class="hardware-card-cpu">nRF52840</span></div>
+            <div class="hardware-card-image"><img src="./devices/rak4631.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">WisBlock 4631</span>
+            <span class="hardware-card-chip">nRF52840 · USB drive</span>
           </div>
-
-          <!-- RAK3401 1W -->
-          <div class="hardware-card" data-val="rak3401-1w">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">RAK</span>
-              <span class="hardware-card-cpu">nRF52840</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/rak3401.svg" alt="RAK3401 1W" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="rak3401-1w" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">RAK</span><span class="hardware-card-cpu">nRF52840</span></div>
+            <div class="hardware-card-image"><img src="./devices/rak3401.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">RAK3401 1W</span>
+            <span class="hardware-card-chip">nRF52840 · USB drive</span>
           </div>
-
-          <!-- RAK19026 -->
-          <div class="hardware-card" data-val="rak19026">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">RAK</span>
-              <span class="hardware-card-cpu">nRF52840</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/rak19026.svg" alt="RAK19026" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="rak19026" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">RAK</span><span class="hardware-card-cpu">nRF52840</span></div>
+            <div class="hardware-card-image"><img src="./devices/rak19026.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">RAK19026</span>
+            <span class="hardware-card-chip">nRF52840 · USB drive</span>
           </div>
-
-          <!-- Lilygo T-Echo -->
-          <div class="hardware-card" data-val="lilygo-t-echo">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">LILYGO</span>
-              <span class="hardware-card-cpu">nRF52840</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/t-echo.svg" alt="LILYGO T-Echo" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="lilygo-t-echo" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">LILYGO</span><span class="hardware-card-cpu">nRF52840</span></div>
+            <div class="hardware-card-image"><img src="./devices/t-echo.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">T-Echo</span>
+            <span class="hardware-card-chip">nRF52840 · USB drive</span>
           </div>
-
-          <!-- Seeed SenseCAP T1000-E -->
-          <div class="hardware-card" data-val="seeed-t1000-e">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">Seeed</span>
-              <span class="hardware-card-cpu">nRF52840 + LR1110</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/t-echo.svg" alt="SenseCAP T1000-E" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="seeed-t1000-e" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">Seeed</span><span class="hardware-card-cpu">nRF52840 + LR1110</span></div>
+            <div class="hardware-card-image"><img src="./devices/t1000-e.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">T1000-E</span>
+            <span class="hardware-card-chip">nRF52840 · USB drive</span>
           </div>
-
-          <!-- Lilygo T-Deck -->
-          <div class="hardware-card" data-val="lilygo-t-deck">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">LILYGO</span>
-              <span class="hardware-card-cpu">ESP32-S3</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/t-deck.svg" alt="LILYGO T-Deck" width="120" height="120" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="lilygo-t-deck" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">LILYGO</span><span class="hardware-card-cpu">ESP32-S3</span></div>
+            <div class="hardware-card-image"><img src="./devices/t-deck.svg" alt="" width="120" height="120"></div>
             <span class="hardware-card-name">T-Deck</span>
+            <span class="hardware-card-chip">ESP32-S3 · USB</span>
           </div>
-
-          <!-- Elecrow CrowPanel 3.5 -->
-          <div class="hardware-card" data-val="elecrow-crowpanel-35">
-            <div class="hardware-card-header">
-              <span class="hardware-card-brand">Elecrow</span>
-              <span class="hardware-card-cpu">ESP32-S3</span>
-            </div>
-            <div class="hardware-card-image">
-              <img src="./devices/crowpanel-35.svg" alt="Elecrow CrowPanel 3.5" width="160" height="100" loading="lazy">
-            </div>
+          <div class="hardware-card" data-val="elecrow-crowpanel-35" role="radio" aria-checked="false" tabindex="-1">
+            <div class="hardware-card-header"><span class="hardware-card-brand">Elecrow</span><span class="hardware-card-cpu">ESP32-S3</span></div>
+            <div class="hardware-card-image"><img src="./devices/crowpanel-35.svg" alt="" width="160" height="100"></div>
             <span class="hardware-card-name">CrowPanel 3.5</span>
+            <span class="hardware-card-chip">ESP32-S3 · USB</span>
           </div>
         </div>
-        <p class="hint">Connect one board at a time using a micro-USB/USB-C data cable.</p>
-      </div>
+      </section>
 
-      <div class="layout">
-        <section aria-label="Flashing workflow" style="display: flex; flex-direction: column; gap: 26px;">
-          <!-- Channel applies to every board: serial-flashed ESP32 builds and
-               UF2 drag-and-drop nRF52 builds alike, so it sits above both flows. -->
-          <div class="panel" id="channel-card" style="margin-bottom: 0;">
-            <div class="field">
-              <label for="channel">Release channel</label>
-              <select id="channel">
-                <option value="release" selected>Release — hardware-qualified</option>
-                <option value="beta">Beta — published to test, not yet qualified</option>
-              </select>
-              <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
-              <label for="version" style="margin-top: 12px;">Version</label>
-              <select id="version" disabled>
-                <option value="">Loading...</option>
-              </select>
-              <details id="release-notes" style="margin-top: 10px; display: none;">
-                <summary style="cursor: pointer; font-size: 13px; color: var(--cyan);">What's in this version</summary>
-                <pre id="release-notes-text" style="white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--muted); margin: 8px 0 0; max-height: 260px; overflow-y: auto;"></pre>
-              </details>
-            </div>
-          </div>
-          <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
-          <div class="panel uf2-guide-card" id="uf2-guide" style="display: none; background: rgba(122, 212, 255, 0.04); border: 1px dashed rgba(122, 212, 255, 0.25); margin-bottom: 0;">
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
-          <span style="font-size: 20px;">💡</span>
-          <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--indigo); text-transform: uppercase; letter-spacing: 0.5px;">nRF52 Bootloader Flow</h3>
-        </div>
-        <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.45;">
-          The RAK4631 uses a USB Mass Storage bootloader. Double-tap <code>RST</code> to enter bootloader mode, then drag and drop the firmware:
-        </p>
-        <button class="secondary" id="enter-bootloader-btn" style="width: 100%; min-height: 42px; font-size: 13px; margin: 0 0 12px;">
-          Put the board into its bootloader
-        </button>
-        <p class="hint" id="bootloader-hint" style="margin: 0 0 12px;">Pick the board's port when asked. It reboots into a USB drive, with no button pressing. If nothing happens, the firmware on it is too old for this; double-tap <strong>RST</strong> instead.</p>
-        <ol style="font-size: 13px; color: var(--text); padding-left: 20px; margin: 0 0 16px; display: grid; gap: 8px;">
-          <li>Use the button above, or double-tap the board's <strong>RST</strong> button quickly.</li>
-          <li>A USB folder named <strong>RAK4631</strong> or <strong>NORDIC</strong> will mount on your computer.</li>
-          <li>Download the firmware using the button below.</li>
-          <li>Drag and drop the downloaded <code>.uf2</code> file onto the mounted folder.</li>
-        </ol>
-        <p class="hint" style="margin: 0 0 12px;">The board reboots itself as soon as the copy finishes, so your computer may report that the drive was ejected or that the copy failed. That is expected, and means it worked.</p>
-        <button class="secondary" id="download-uf2-btn" style="width: 100%; min-height: 42px; font-size: 13px;">
-          <span>⬇</span> Download RAK4631 UF2 Firmware
-        </button>
-      </div>
-
-      <!-- STEP 2 -->
-      <div class="panel step-card" id="step-2-card">
+      <!-- STEP 2: firmware. The channel applies to every board, so it sits
+           above both the serial flow and the nRF52 drive flow. -->
+      <section class="panel" id="firmware-card" aria-labelledby="step2-title">
         <div class="step-title">
           <span class="num">2</span>
-          <h2>Select firmware</h2>
-        </div>
-        
-
-        <div class="field" style="display: flex; gap: 10px; align-items: flex-end;">
-          <div style="flex: 1;">
-            <label for="fw">Bundled build</label>
-            <select id="fw">
-              <option value="">Loading builds...</option>
-            </select>
+          <div>
+            <h2 id="step2-title">Choose firmware</h2>
+            <p>Release builds are hardware-qualified. Beta builds carry the newest fixes.</p>
           </div>
-          <button id="download-fw" class="secondary" style="min-height: 46px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;" title="Download selected firmware binary">
-            <span>⬇</span> Download
-          </button>
+        </div>
+        <div id="channel-card">
+          <div class="two-col">
+            <div>
+              <label for="channel">Release channel</label>
+              <select id="channel">
+                <option value="release" selected>Release (hardware-qualified)</option>
+                <option value="beta">Beta (newest, still being tested)</option>
+              </select>
+            </div>
+            <div>
+              <label for="version">Version</label>
+              <select id="version" disabled>
+                <option value="">Loading…</option>
+              </select>
+            </div>
+          </div>
+          <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
+          <details id="release-notes" style="margin-top: 12px; display: none;">
+            <summary>What's in this version</summary>
+            <pre id="release-notes-text"></pre>
+          </details>
         </div>
 
-        <div class="or-divider">OR</div>
-
-        <div class="field">
-          <label>Local firmware file</label>
-          <div class="upload-zone" id="dropzone">
-            <div class="upload-zone-icon">⇪</div>
-            <div class="upload-zone-text"><span>Click to browse</span> or drag &amp; drop file</div>
-            <div class="upload-zone-sub">Firmware binary (.bin)</div>
+        <!-- Serial-flashed boards (ESP32): pick a build or a local file -->
+        <div class="sub-block step-card" id="step-2-card">
+          <div class="fw-row">
+            <div>
+              <label for="fw">Build</label>
+              <select id="fw">
+                <option value="">Loading builds…</option>
+              </select>
+            </div>
+            <button id="download-fw" class="secondary" type="button" title="Download the selected build">Download</button>
           </div>
-          <input type="file" id="file" accept=".bin" style="display: none;" />
-          
+
+          <div class="or-divider">or use a file from your computer</div>
+
+          <div class="upload-zone" id="dropzone" role="button" tabindex="0" aria-label="Choose a local firmware file">
+            <div class="upload-zone-icon" aria-hidden="true">⇪</div>
+            <div class="upload-zone-text"><span>Browse</span> or drop a file here</div>
+            <div class="upload-zone-sub">A <code>-usb.bin</code> image, not the <code>-ota.bin</code> one</div>
+          </div>
+          <input type="file" id="file" accept=".bin" hidden />
           <div class="file-chip" id="file-chip" style="display: none;">
             <div class="file-chip-info">
               <span class="file-chip-name" id="file-chip-name">firmware.bin</span>
@@ -1336,155 +540,153 @@
             </div>
             <button class="file-chip-remove" id="file-chip-remove" type="button" aria-label="Remove file">&times;</button>
           </div>
+
+          <!-- Update keeps the node's settings and identity key; the published
+               image would otherwise overwrite them, because it covers the
+               settings partition with blank bytes. -->
+          <fieldset id="flash-mode" style="margin-top: 18px;">
+            <legend>Install mode</legend>
+            <div class="mode-grid">
+              <label class="mode-tile" for="mode-update">
+                <input type="radio" name="flash-mode" id="mode-update" value="update" checked />
+                <span><strong>Update</strong><small>Keeps this node's settings, channels and identity key.</small></span>
+              </label>
+              <label class="mode-tile" for="mode-full">
+                <input type="radio" name="flash-mode" id="mode-full" value="full" />
+                <span><strong>Erase and install</strong><small>Starts fresh. Other nodes will see its key change.</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <details class="settings-accordion">
+            <summary class="settings-summary">Advanced</summary>
+            <div class="settings-content">
+              <div>
+                <label for="baudrate">Baud rate</label>
+                <select id="baudrate">
+                  <option value="921600" selected>921600 (fast)</option>
+                  <option value="460800">460800</option>
+                  <option value="230400">230400</option>
+                  <option value="115200">115200 (safest)</option>
+                </select>
+              </div>
+              <div>
+                <label for="offset">Flash offset</label>
+                <input type="text" id="offset" value="0x0" placeholder="0x0" />
+              </div>
+            </div>
+          </details>
         </div>
-        <p class="hint">Use a <code>-usb.bin</code> image for USB flashing. Do not use the <code>-ota.bin</code> image here.</p>
 
-        <!-- Advanced settings inside Step 2 -->
-        <details class="settings-accordion">
-          <summary class="settings-summary">Advanced Settings</summary>
-          <div class="settings-content">
-            <div>
-              <label for="baudrate">Flashing Baud Rate</label>
-              <select id="baudrate">
-                <option value="921600" selected>921600 (Fast)</option>
-                <option value="460800">460800</option>
-                <option value="230400">230400</option>
-                <option value="115200">115200 (Safe)</option>
-              </select>
-            </div>
-            <div>
-              <label for="offset">Flash Offset</label>
-              <input type="text" id="offset" value="0x0" placeholder="0x0" />
-            </div>
+        <!-- Drive-flashed boards (nRF52): shown instead of the serial flow -->
+        <div class="sub-block" id="uf2-guide" style="display: none;">
+          <h3 style="margin: 0 0 6px; font-size: 16px;">Install by USB drive</h3>
+          <p class="hint" style="margin: 0 0 14px;">These boards install firmware by copying one file onto them, like a USB stick.</p>
+          <ol class="uf2-steps">
+            <li><span>Put the board into its bootloader with the button below, or double-tap its <strong>RST</strong> button.</span></li>
+            <li><span>A drive named <strong>RAK4631</strong>, <strong>NORDIC</strong> or similar appears on your computer.</span></li>
+            <li><span>Download the firmware, then drag the <code>.uf2</code> file onto that drive.</span></li>
+          </ol>
+          <div class="row">
+            <button class="secondary" id="enter-bootloader-btn" type="button">Open the bootloader</button>
+            <button class="primary" id="download-uf2-btn" type="button">Download firmware</button>
           </div>
-        </details>
+          <p class="hint" id="bootloader-hint">Pick the board's port when asked; it reboots as a USB drive with no button pressing. If nothing happens, double-tap <strong>RST</strong> instead.</p>
+          <p class="callout" style="margin: 12px 0 0;">The board restarts the moment the copy finishes, so your computer may say the drive was ejected or the copy failed. That is expected and means it worked.</p>
+        </div>
+      </section>
 
-        <!-- Update keeps the node's settings and identity key; the published
-             image would otherwise overwrite them, because it covers the
-             settings partition with blank bytes. -->
-        <fieldset class="field" id="flash-mode" style="border: 0; padding: 0; margin: 14px 0 0;">
-          <legend style="font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px;">Install mode</legend>
-          <label class="checkbox-label" for="mode-update">
-            <input type="radio" name="flash-mode" id="mode-update" value="update" checked />
-            <span><strong>Update</strong> &mdash; keeps this node's settings, channels and identity key</span>
-          </label>
-          <label class="checkbox-label" for="mode-full">
-            <input type="radio" name="flash-mode" id="mode-full" value="full" />
-            <span><strong>Full erase and install</strong> &mdash; resets everything, including the node's identity key. Other nodes will see its key change.</span>
-          </label>
-        </fieldset>
-      </div>
-
-      <!-- STEP 3 -->
-      <div class="panel step-card" id="step-3-card">
+      <!-- STEP 3: install (serial boards) -->
+      <section class="panel step-card" id="step-3-card" aria-labelledby="step3-title">
         <div class="step-title">
           <span class="num">3</span>
-          <h2>Flashing &amp; Utilities</h2>
+          <div>
+            <h2 id="step3-title">Install</h2>
+            <p>Your browser will ask which serial port to use.</p>
+          </div>
         </div>
         <div class="row">
-          <button id="flash" class="primary">
-            <span>⚡</span> Connect &amp; Flash
-          </button>
-          <button id="read-info" class="secondary">
-            <span>ℹ</span> Read Device Info
-          </button>
+          <button id="flash" class="primary" type="button">Connect and install</button>
+          <button id="read-info" class="secondary" type="button">Read device info</button>
         </div>
         <div class="bar-wrap" id="barWrap"><div class="bar" id="bar"></div></div>
-        
-        <div id="status"></div>
-
-        <!-- Telemetry Card (Shown when info is read) -->
+        <div id="status" role="status" aria-live="polite"></div>
         <div class="telemetry-grid" id="telemetry" style="display: none;">
-          <div class="telemetry-item">
-            <span class="telemetry-label">Chip Target</span>
-            <span class="telemetry-val" id="telemetry-chip">-</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="telemetry-label">MAC Address</span>
-            <span class="telemetry-val" id="telemetry-mac">-</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="telemetry-label">Flash Size</span>
-            <span class="telemetry-val" id="telemetry-flash">-</span>
-          </div>
-          <div class="telemetry-item">
-            <span class="telemetry-label">Features</span>
-            <span class="telemetry-val" id="telemetry-features">-</span>
+          <div class="telemetry-item"><span class="telemetry-label">Chip</span><span class="telemetry-val" id="telemetry-chip">-</span></div>
+          <div class="telemetry-item"><span class="telemetry-label">MAC address</span><span class="telemetry-val" id="telemetry-mac">-</span></div>
+          <div class="telemetry-item"><span class="telemetry-label">Flash size</span><span class="telemetry-val" id="telemetry-flash">-</span></div>
+          <div class="telemetry-item"><span class="telemetry-label">Features</span><span class="telemetry-val" id="telemetry-features">-</span></div>
+        </div>
+        <p class="hint">When it finishes, press <strong>RST</strong> once to start the new firmware.</p>
+      </section>
+
+      <!-- Console -->
+      <section class="panel" aria-labelledby="console-title">
+        <div class="step-title" style="margin-bottom: 12px;">
+          <div>
+            <h2 id="console-title">Console</h2>
+            <p>Install progress, or live output from your node in Serial monitor.</p>
           </div>
         </div>
-
-        <p class="hint">After flashing finishes, tap <code>RST</code> once to boot the new firmware.</p>
-      </div>
-
-      <!-- Android App Download Card -->
-      <div class="panel step-card active" id="apk-card" style="margin-top: 26px; background: linear-gradient(135deg, rgba(76, 175, 80, 0.05) 0%, rgba(33, 150, 243, 0.05) 100%); border-color: rgba(76, 175, 80, 0.15);">
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 16px;">
-            <span style="font-size: 32px; filter: drop-shadow(0 0 10px rgba(76, 175, 80, 0.45));">🤖</span>
-            <div>
-              <h2 style="margin: 0; font-size: 15px; font-weight: 800; color: #FFF; text-transform: uppercase; letter-spacing: 0.5px;">AetherMesh Android App <span id="apk-version" style="font-size: 11px; font-weight: 600; color: var(--cyan); text-transform: none; letter-spacing: 0; margin-left: 6px;"></span></h2>
-              <p style="margin: 4px 0 0; font-size: 13px; color: var(--muted); line-height: 1.45;">Download the latest compiled Android app for map plotting, message relays, and controls.</p>
+        <div class="terminal-wrapper">
+          <div class="terminal-header">
+            <div class="terminal-left-group">
+              <div class="terminal-dots"></div>
+              <div class="terminal-tabs" role="tablist">
+                <button class="terminal-tab-btn active" id="tab-logs-btn" type="button" role="tab">Install log</button>
+                <button class="terminal-tab-btn" id="tab-monitor-btn" type="button" role="tab">Serial monitor</button>
+              </div>
+            </div>
+            <div class="terminal-actions">
+              <label class="autoscroll-header-label" for="autoscroll-chk">
+                <input type="checkbox" id="autoscroll-chk" checked />
+                <span>Auto-scroll</span>
+              </label>
+              <button class="terminal-action-btn" id="monitor-connect-btn" type="button" style="display: none;">Connect Monitor</button>
+              <button class="terminal-action-btn" id="copy-logs" type="button" title="Copy to clipboard">Copy</button>
+              <button class="terminal-action-btn" id="clear-logs" type="button" title="Clear the console">Clear</button>
             </div>
           </div>
-          <a href="./aethermesh-app.apk" style="background: linear-gradient(135deg, #C8F547 0%, #4DA3FF 100%); box-shadow: 0 4px 15px rgba(200, 245, 71, 0.35); text-decoration: none; padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 700; color: #060B14; display: inline-flex; align-items: center; gap: 8px; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'">
-            <span>📥</span> Download APK
-          </a>
-        </div>
-      </div>
-    </section>
-
-    <!-- RIGHT PANEL: TERMINAL CONSOLE & QUICK CHECKS -->
-    <aside class="panel aside" aria-label="Quick help and Terminal">
-      <!-- Custom Terminal Simulator with Logs vs Serial Monitor Tabs -->
-      <div class="terminal-wrapper">
-        <div class="terminal-header">
-          <div class="terminal-left-group">
-            <div class="terminal-dots">
-              <span class="terminal-dot close"></span>
-              <span class="terminal-dot minimize"></span>
-              <span class="terminal-dot maximize"></span>
-            </div>
-            <div class="terminal-tabs">
-              <button class="terminal-tab-btn active" id="tab-logs-btn">Logs</button>
-              <button class="terminal-tab-btn" id="tab-monitor-btn">Serial Monitor</button>
-            </div>
-          </div>
-          <div class="terminal-actions">
-            <!-- Autoscroll checkbox toggle -->
-            <label class="autoscroll-header-label" for="autoscroll-chk">
-              <input type="checkbox" id="autoscroll-chk" checked />
-              <span>Auto-scroll</span>
-            </label>
-            <button class="terminal-action-btn" id="monitor-connect-btn" style="display: none;">Connect Monitor</button>
-            <button class="terminal-action-btn" id="copy-logs" title="Copy logs to clipboard">Copy</button>
-            <button class="terminal-action-btn" id="clear-logs" title="Clear console">Clear</button>
+          <div class="terminal-body" id="log" style="display: none;"></div>
+          <div class="console-empty">Nothing yet. Output appears here while installing.</div>
+          <div class="console-input-bar" id="consoleInputBar" style="display: none;">
+            <span class="prompt-symbol">&gt;</span>
+            <input type="text" id="consoleInput" placeholder="Send a command to the node, then press Enter" autocomplete="off" />
+            <button class="console-send-btn" id="consoleSendBtn" type="button">Send</button>
           </div>
         </div>
-        <div class="terminal-body" id="log" style="display: none;"></div>
-        
-        <!-- Command Input bar for Serial Monitor -->
-        <div class="console-input-bar" id="consoleInputBar" style="display: none;">
-          <span class="prompt-symbol">&gt;</span>
-          <input type="text" id="consoleInput" placeholder="Send serial command to node (press Enter)..." autocomplete="off" />
-          <button class="console-send-btn" id="consoleSendBtn">Send</button>
-        </div>
+      </section>
+
+      <!-- Help + app -->
+      <div class="help-grid">
+        <section class="panel" aria-labelledby="help-title">
+          <h2 id="help-title" style="margin: 0 0 12px; font-size: 17px;">Before you start</h2>
+          <ul class="help-list">
+            <li>Use Chrome, Edge or Opera on a computer.</li>
+            <li>Use a USB cable that carries data, not a charge-only one.</li>
+            <li>Close other serial tools such as the Arduino IDE.</li>
+          </ul>
+          <details class="faq-details">
+            <summary class="faq-summary">The board won't connect</summary>
+            <p class="hint">Put it into download mode: hold <code>PRG</code> (or <code>BOOT</code>), tap <code>RST</code>, release <code>PRG</code>, then try again.</p>
+          </details>
+        </section>
+        <section class="panel app-card" id="get-app" aria-labelledby="app-title">
+          <div>
+            <h3 id="app-title">AetherMesh for Android<span id="apk-version"></span></h3>
+            <p style="margin-top: 6px;">Chat, see your nodes on a map, and update firmware over Bluetooth.</p>
+          </div>
+          <a class="primary" href="./aethermesh-app.apk" style="text-decoration: none;">Download the app</a>
+        </section>
       </div>
+    </div>
+  </main>
 
-      <div style="height: 18px;"></div>
-
-      <h2>Quick checks</h2>
-      <ul class="compact-list" style="margin-top: 12px;">
-        <li><span class="dot">1</span><span>Use Chrome, Edge, or Opera on desktop.</span></li>
-        <li><span class="dot">2</span><span>Use a USB cable that carries data.</span></li>
-        <li><span class="dot">3</span><span>Close other serial monitors (e.g. Arduino IDE) before flashing.</span></li>
-      </ul>
-      <details class="faq-details">
-        <summary class="faq-summary">Connection trouble?</summary>
-        <p class="hint">Put the board in download mode only if connection fails: hold <code>PRG</code>, tap <code>RST</code>, release <code>PRG</code>, then try again.</p>
-      </details>
-    </aside>
-  </div>
-</main>
+  <footer>
+    AetherMesh is open source under the MIT licence ·
+    <a href="https://github.com/SilentWolf75/AetherMesh" target="_blank" rel="noopener">Source on GitHub</a>
+  </footer>
+</div>
 
 <script type="module" src="./flasher.js"></script>
 </body>
