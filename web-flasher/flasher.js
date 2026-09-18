@@ -379,14 +379,16 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
         : (val === "rak3401-1w" ? "RAK3401/NORDIC"
         : (val === "rak19026" ? "RAK19026/NORDIC" : "RAK4631/NORDIC")));
       
-      document.querySelector("#uf2-guide h3").textContent = `${boardName} Bootloader Flow`;
-      document.querySelector("#uf2-guide p").innerHTML = 
-        `The ${boardName} uses a USB Mass Storage bootloader. Double-tap <code>RST</code> to enter bootloader mode, then drag and drop the firmware:`;
-      document.querySelector("#uf2-guide ol li:nth-child(2)").innerHTML = 
-        `A USB folder named <strong>${driveName}</strong> will mount on your computer.`;
-      
-      $("download-uf2-btn").innerHTML = `<span>⬇</span> Download ${boardName} UF2 Firmware`;
-      setStatus(`${boardName} selected. Follow the UF2 guide below.`, "info");
+      document.querySelector("#uf2-guide h3").textContent = `Install on the ${boardName} by USB drive`;
+      const driveStep = document.querySelector("#uf2-guide ol li:nth-child(2) span");
+      const driveLabel = document.createElement("strong");
+      driveLabel.textContent = driveName;
+      driveStep.replaceChildren(
+        document.createTextNode("A drive named "), driveLabel,
+        document.createTextNode(" appears on your computer."));
+
+      $("download-uf2-btn").textContent = `Download ${boardName} firmware`;
+      setStatus(`${boardName} selected. Follow the steps in step 2.`, "info");
     } else {
       card2.style.display = "block";
       card3.style.display = "block";
@@ -407,12 +409,33 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   };
 
   // Visual Hardware Card Selector click binding
-  document.querySelectorAll(".hardware-card").forEach(card => {
+  const hardwareCards = Array.from(document.querySelectorAll(".hardware-card"));
+  hardwareCards.forEach((card, index) => {
     card.onclick = () => {
-      document.querySelectorAll(".hardware-card").forEach(c => c.classList.remove("selected"));
+      hardwareCards.forEach(c => {
+        c.classList.remove("selected");
+        c.setAttribute("aria-checked", "false");
+        c.tabIndex = -1;
+      });
       card.classList.add("selected");
+      card.setAttribute("aria-checked", "true");
+      card.tabIndex = 0;
       targetSelect.value = card.getAttribute("data-val");
       targetSelect.onchange(); // trigger logic directly
+    };
+    // Radio-group keyboard behaviour: Space/Enter pick, arrows move.
+    card.onkeydown = (e) => {
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        card.click();
+        return;
+      }
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const next = hardwareCards[(index + step + hardwareCards.length) % hardwareCards.length];
+      next.focus();
+      next.click();
     };
   });
 
@@ -505,6 +528,12 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
 
   // Drag & drop handlers
   dropzone.onclick = () => fileInput.click();
+  dropzone.onkeydown = (e) => {
+    if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      fileInput.click();
+    }
+  };
 
   dropzone.ondragover = (e) => {
     e.preventDefault();
