@@ -36,6 +36,19 @@ static void setHeltecV4TransmitEnable(bool txOn) {
 #define setHeltecV4TransmitEnable(txOn) ((void)0)
 #endif
 
+// The external power amplifier on this board, if any.
+#if defined(HELTEC_V4)
+static const txpower::Amplifier& kAmplifier = txpower::HELTEC_V4_AMP;
+#elif defined(RAK3401_1W)
+static const txpower::Amplifier& kAmplifier = txpower::RAK13302_AMP;
+#else
+static const txpower::Amplifier& kAmplifier = txpower::NO_AMPLIFIER;
+#endif
+
+const txpower::Amplifier& RadioManager::amplifier() const {
+    return kAmplifier;
+}
+
 #if defined(ESP32) || defined(ESP8266)
 void IRAM_ATTR RadioManager::setFlag(void) {
 #else
@@ -205,16 +218,18 @@ bool RadioManager::init() {
     // (32 symbols at SF≤8, 16 otherwise) — RadioLib's 8-symbol default
     // missed CAD/preamble detect at short SF.
     const uint16_t preamble = meshmath::preambleLengthForSf(spreadingFactor);
+    // txPower is antenna dBm; begin() takes the chip setting.
+    chipPower = txpower::chipDbmFor(kAmplifier, txPower);
 #if defined(SEEED_T1000_E)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.6);
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, chipPower, preamble, 1.6);
 #elif defined(HELTEC_V4) || defined(HELTEC_V3) || defined(LILYGO_T_DECK)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.8, false);
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, chipPower, preamble, 1.8, false);
 #elif defined(ELECROW_CROWPANEL_35)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 3.3, false);
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, chipPower, preamble, 3.3, false);
 #elif defined(RAK4631) || defined(RAK3401_1W) || defined(LILYGO_T_ECHO)
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.6, false);
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, chipPower, preamble, 1.6, false);
 #else
-    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, txPower, preamble, 1.8, false);
+    int state = radio->begin(frequency, bandwidth, spreadingFactor, codingRate, 0x12, chipPower, preamble, 1.8, false);
 #endif
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Radio initialization failed, code: ");
@@ -623,9 +638,12 @@ void RadioManager::setCodingRate(uint8_t cr) {
 
 void RadioManager::setTxPower(int8_t power) {
     txPower = power;
+    chipPower = txpower::chipDbmFor(kAmplifier, power);
     if (radio) {
-        radio->setOutputPower(power);
+        radio->setOutputPower(chipPower);
     }
+    Serial.printf("TX power: %d dBm at the antenna (radio chip %d dBm).\n",
+                  txpower::outputFor(kAmplifier, chipPower), chipPower);
 }
 
 bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
@@ -645,13 +663,12 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
         Serial.printf("Invalid bandwidth %.1f from settings; clamping to 125.0.\n", bw);
         bw = 125.0f;
     }
-    if (power > 22) {
-        // SX1262 die limit; RadioLib rejects anything above 22 dBm.
-        Serial.printf("TX power %d exceeds SX1262 limit; clamping to 22.\n", power);
-        power = 22;
-    } else if (power < -9) {
-        Serial.printf("TX power %d below SX1262 limit; clamping to -9.\n", power);
-        power = -9;
+    // power is antenna dBm; the chip setting below never exceeds the die
+    // limit RadioLib accepts, whatever the board's amplifier.
+    const int boardMax = txpower::boardMaxDbm(kAmplifier);
+    if (power > boardMax) {
+        Serial.printf("TX power %d dBm is above this board's %d dBm; using %d.\n", power, boardMax, boardMax);
+        power = (int8_t)boardMax;
     }
 
     // Put radio in standby to apply configuration changes
@@ -661,6 +678,7 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
     bandwidth = bw;
     spreadingFactor = sf;
     txPower = power;
+    chipPower = txpower::chipDbmFor(kAmplifier, power);
 
     // Apply everything and keep going on individual failures — the radio MUST
     // end up back in receive mode no matter what.
@@ -693,7 +711,7 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
         allApplied = false;
     }
 
-    state = radio->setOutputPower(txPower);
+    state = radio->setOutputPower(chipPower);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to set output power, code: ");
         Serial.println(state);

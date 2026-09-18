@@ -5,6 +5,7 @@
 #define RADIOLIB_LOW_LEVEL 1
 #include <RadioLib.h>
 #include "MeshRadio.h"
+#include "TxPower.h"
 
 class RadioManager : public MeshRadio {
 public:
@@ -34,7 +35,12 @@ public:
     void setSpreadingFactor(uint8_t sf);
     void setBandwidth(float bw);
     void setCodingRate(uint8_t cr);
+    // dBm at the antenna. Boards with an external amplifier get the chip
+    // setting that produces it (see TxPower.h).
     void setTxPower(int8_t power);
+    const txpower::Amplifier& amplifier() const;
+    int8_t getTxPower() const { return txPower; }
+    int8_t getChipPower() const { return chipPower; }
     bool reinit(float freq, float bw, uint8_t sf, int8_t power);
     
     // Diagnostics
@@ -101,7 +107,8 @@ private:
     uint8_t spreadingFactor;
     float bandwidth;
     uint8_t codingRate;
-    int8_t txPower;
+    int8_t txPower;    // dBm at the antenna
+    int8_t chipPower;  // what the radio chip is set to
     
     // Callback pointer
     void (*receiveCallback)(uint8_t* data, size_t len, float rssi, float snr);
