@@ -1983,14 +1983,14 @@ class AetherMeshRepository(private val context: Context) {
                 val title = BatteryAlertPolicy.title(name, action.critical, spanish)
                 val body = BatteryAlertPolicy.body(level, action.critical, spanish)
 
-                val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
-                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    // Pin to this app explicitly. The class above already makes it
-                    // explicit, but a notification's PendingIntent is handed to the
-                    // system, and nothing else should ever be able to receive it.
-                    setPackage(context.packageName)
-                    putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
-                }
+                // Pinned to this app on the variable itself, not inside a scope
+                // function: a notification's PendingIntent is handed to the
+                // system, and static analysis cannot follow a call made through
+                // an apply { } receiver, so it would read this as implicit.
+                val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java)
+                tapIntent.setPackage(context.packageName)
+                tapIntent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                tapIntent.putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_NODE_ID, nodeId)
                 val notifyId = BatteryAlertPolicy.notifyId(nodeId)
                 val pi = android.app.PendingIntent.getActivity(
                     context, notifyId, tapIntent,
@@ -2069,15 +2069,14 @@ class AetherMeshRepository(private val context: Context) {
         val title = IncomingMessageAlertPolicy.title(senderName, channel, isBroadcast)
         val notifyId = IncomingMessageAlertPolicy.notifyId(chatIdentifier)
 
-        val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java).apply {
-            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
-            // Pin to this app explicitly; see the battery alert above.
-            setPackage(context.packageName)
-            if (isBroadcast) {
-                putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_CHANNEL, channel)
-            } else {
-                putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_DM_PEER, senderId)
-            }
+        // Pinned on the variable itself; see the battery alert above.
+        val tapIntent = android.content.Intent(context, com.silentwolf75.aethermesh.MainActivity::class.java)
+        tapIntent.setPackage(context.packageName)
+        tapIntent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+        if (isBroadcast) {
+            tapIntent.putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_CHANNEL, channel)
+        } else {
+            tapIntent.putExtra(com.silentwolf75.aethermesh.MainActivity.EXTRA_OPEN_DM_PEER, senderId)
         }
         val pendingIntent = android.app.PendingIntent.getActivity(
             context, notifyId, tapIntent,
