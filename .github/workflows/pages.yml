@@ -13,6 +13,12 @@ on:
       - 'VERSION'
       - '.github/workflows/ci.yml'
       - '.github/workflows/pages.yml'
+  # A release published by hand (the stable flow ends in a draft someone
+  # publishes) redeploys so the flasher mirrors it. Releases created by a
+  # workflow's own token do not fire this, which is why beta-release.yml
+  # dispatches this workflow explicitly instead.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -46,22 +52,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install PlatformIO + esptool
-        run: pip install --upgrade platformio esptool
-
-      - name: Build supported firmware targets
-        working-directory: firmware
-        run: |
-          pio run -e heltec_v4
-          pio run -e heltec_v3
-          pio run -e rak4631
-          pio run -e rak3401_1w
-          pio run -e rak19026
-          pio run -e lilygo_t_echo
-          pio run -e lilygo_t_deck
-          pio run -e elecrow_crowpanel_35
-          pio run -e seeed_t1000_e
-
       - name: Build Android app
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -83,17 +73,13 @@ jobs:
             echo "debug" > "$RUNNER_TEMP/android-build-type"
           fi
 
-      - name: Merge complete USB images + write manifest
-        run: |
-          set -e
-          HASH=$(git rev-parse --short=7 HEAD)
-          # Keep Pages OTA labels aligned with firmware/src/Version.h base.
-          FW_VERSION=$(grep '^firmware_version=' VERSION | cut -d= -f2)
-          FW_VERSION=${FW_VERSION:-$(sed -n 's/^#define AETHERMESH_FW_BASE "\([^"]*\)".*/\1/p' firmware/src/Version.h | head -n1)}
-          BOOT_APP0=$(find ~/.platformio/packages -path '*tools/partitions/boot_app0.bin' | head -n1)
-          curl -fsSL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2conv.py -o /tmp/uf2conv.py
-          curl -fsSL https://raw.githubusercontent.com/microsoft/uf2/90e9741f217f5a40c98ba74d663e408041037578/utils/uf2families.json -o /tmp/uf2families.json
-          python tools/package_firmware.py --hash "$HASH" --version "$FW_VERSION" --converter /tmp/uf2conv.py --boot-app0 "$BOOT_APP0"
+      - name: Mirror the Release and Beta channels onto the site
+        # The flasher can only download same-origin files: GitHub Release
+        # assets redirect to a host with no CORS headers. This copies each
+        # channel's newest published build, with its own manifest, next to it.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/mirror_release_channels.py --repo "${{ github.repository }}"
 
       - name: Copy Android APK to web-flasher
         run: |
@@ -113,14 +99,14 @@ jobs:
           printf '{"version":"%s","versionCode":%s,"commit":"%s"}\n' \
             "$APP_VERSION" "$APP_CODE" "$HASH" > web-flasher/app-version.json
           cd web-flasher
-          sha256sum aethermesh-app.apk firmware/* > SHA256SUMS.txt
+          { sha256sum aethermesh-app.apk; find firmware -type f ! -name .gitignore -exec sha256sum {} +; } > SHA256SUMS.txt
 
       - name: Attest published builds
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             web-flasher/aethermesh-app.apk
-            web-flasher/firmware/*
+            web-flasher/firmware/**
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

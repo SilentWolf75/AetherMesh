@@ -114,7 +114,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
 
   function populateFirmwareDropdown() {
     if (manifest.length === 0) {
-      fwSelect.innerHTML = '<option value="">No bundled builds found - drag a file below</option>';
+      fwSelect.innerHTML = '<option value="">Nothing published on this channel yet - drag a file below</option>';
       return;
     }
     const target = targetSelect.value;
@@ -131,8 +131,6 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     }
   }
 
-  const GITHUB_RELEASES_API =
-    "https://api.github.com/repos/SilentWolf75/AetherMesh/releases?per_page=30";
   const GITHUB_RELEASES_WEB = "https://github.com/SilentWolf75/AetherMesh/releases";
 
   function setChannelNote(text, isError) {
@@ -141,38 +139,32 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     channelNote.style.color = isError ? "#f0999b" : "";
   }
 
-  // A release channel is only usable if its release published manifest.json:
-  // without it there is no SHA-256 to check the download against, and this tool
-  // does not write unverified bytes to a board.
-  async function loadReleaseChannel(wantPrerelease) {
-    const resp = await fetch(GITHUB_RELEASES_API, {
-      headers: { "Accept": "application/vnd.github+json" }
-    });
-    if (!resp.ok) throw new Error("GitHub Releases returned HTTP " + resp.status);
-    const releases = await resp.json();
-    const match = (Array.isArray(releases) ? releases : [])
-      .filter((r) => !r.draft && !!r.prerelease === wantPrerelease)
-      .find((r) => (r.assets || []).some((a) => a.name === "manifest.json"));
-    if (!match) {
-      throw new Error(wantPrerelease
-        ? "No beta published yet."
-        : "No release published yet.");
+  // Each channel's published build is mirrored onto this site by the Pages
+  // deploy (tools/mirror_release_channels.py). Browsers cannot download GitHub
+  // Release assets from another origin — the download links redirect to a host
+  // that sends no CORS headers — so the flasher reads same-origin copies. The
+  // manifest is the release's own, so every download is still verified against
+  // the SHA-256 that release published.
+  async function loadReleaseChannel(channel) {
+    const base = "./firmware/" + channel + "/";
+    const manifestResp = await fetch(base + "manifest.json?t=" + Date.now());
+    if (!manifestResp.ok) {
+      throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
     }
-    const manifestAsset = match.assets.find((a) => a.name === "manifest.json");
-    const manifestResp = await fetch(manifestAsset.browser_download_url);
-    if (!manifestResp.ok) throw new Error("Could not read that release's manifest.");
     const list = await manifestResp.json();
-    const byName = new Map((match.assets || []).map((a) => [a.name, a.browser_download_url]));
-    // Keep only entries whose binary is actually attached to this release.
+    let tag = "";
+    try {
+      const info = await (await fetch(base + "release.json?t=" + Date.now())).json();
+      tag = info && info.tag ? info.tag : "";
+    } catch (_) {}
     return (Array.isArray(list) ? list : [])
-      .filter((entry) => byName.has(entry.file))
-      .map((entry) => ({ ...entry, url: byName.get(entry.file), releaseTag: match.tag_name }));
+      .map((entry) => ({ ...entry, url: base + entry.file, releaseTag: tag }));
   }
 
   async function loadChannel(channel) {
     fwSelect.innerHTML = '<option value="">Loading builds...</option>';
     try {
-      manifest = await loadReleaseChannel(channel === "beta");
+      manifest = await loadReleaseChannel(channel);
       const tag = manifest.length ? manifest[0].releaseTag : "";
       setChannelNote(
         (channel === "beta" ? "Beta " : "Release ") + tag +
@@ -383,7 +375,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
         : (val === "seeed-t1000-e" ? "T1000-E"
         : (val === "rak3401-1w" ? "RAK3401 1W"
         : (val === "rak19026" ? "RAK19026" : "RAK4631")));
-      setStatus("No " + boardName + " UF2 build is available on this site yet.", "err");
+      const which = channelSelect && channelSelect.value === "beta" ? "Beta" : "Release";
+      setStatus("No " + boardName + " UF2 build on the " + which + " channel yet. Try the other channel.", "err");
     }
   };
 

@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Run simulator regression tests
-        run: python -m unittest -v tools.test_mesh_simulator tools.test_write_firmware_manifest tools.test_hardware_qualification tools.test_database_migrations tools.test_control_auth_vectors tools.test_package_firmware
+        run: python -m unittest -v tools.test_mesh_simulator tools.test_write_firmware_manifest tools.test_hardware_qualification tools.test_database_migrations tools.test_control_auth_vectors tools.test_package_firmware tools.test_mirror_release_channels
       - name: Produce benchmark report
         run: python tools/mesh_simulator.py --messages 1000
       - name: Verify release target parity

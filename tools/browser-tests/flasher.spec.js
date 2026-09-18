@@ -7,22 +7,14 @@ const manifest = [
   { name: "Heltec V3", file: "heltec-v3.bin", size: 4, sha256: hash },
   { name: "RAK4631", file: "rak4631.uf2", size: 4, sha256: hash },
 ];
-// The flasher reads the newest GitHub Release on the chosen channel, then that
-// release's own manifest.json, and downloads binaries from the release assets.
-// Mock that whole chain so every test exercises the real path: a test that only
-// passes because no catalog loaded proves nothing about verification.
-const ASSETS = "https://github.com/SilentWolf75/AetherMesh/releases/download/";
-function release(tag, prerelease, entries) {
-  const base = ASSETS + tag + "/";
-  return {
-    tag_name: tag, draft: false, prerelease,
-    assets: [
-      { name: "manifest.json", browser_download_url: base + "manifest.json" },
-      ...entries.filter(e => e.file).map(e => ({ name: e.file, browser_download_url: base + e.file })),
-    ],
-  };
-}
-async function setup(page, entries = manifest, releases = null) {
+
+// The Pages deploy mirrors each channel's published build next to the flasher
+// (firmware/release/ and firmware/beta/), because browsers cannot fetch GitHub
+// Release assets cross-origin. Mock those same-origin paths so every test runs
+// the real download-and-verify path: a test that only passes because no catalog
+// loaded proves nothing about verification.
+async function setup(page, entries = manifest, channels = null) {
+  const published = channels || { release: { tag: "v9.9.9", entries } };
   await page.addInitScript(() => {
     window.serialRequests = 0;
     window.writtenFirmware = null;
@@ -40,18 +32,20 @@ async function setup(page, entries = manifest, releases = null) {
         async after() {}
       }`
   }));
-  const published = releases || [{ release: release("v9.9.9", false, entries), entries }];
-  await page.route("https://api.github.com/repos/SilentWolf75/AetherMesh/releases*",
-    route => route.fulfill({ json: published.map(p => p.release) }));
-  await page.route(ASSETS + "**", route => {
-    const url = route.request().url();
-    const owner = published.find(p => url.startsWith(ASSETS + p.release.tag_name + "/"));
-    if (url.endsWith("/manifest.json")) return route.fulfill({ json: owner ? owner.entries : [] });
-    return route.fulfill({ body: bytes });
-  });
+  for (const channel of ["release", "beta"]) {
+    await page.route(`**/firmware/${channel}/**`, route => {
+      const name = new URL(route.request().url()).pathname.split("/").pop();
+      const ch = published[channel];
+      if (!ch) return route.fulfill({ status: 404, body: "" });
+      if (name === "manifest.json") return route.fulfill({ json: ch.entries });
+      if (name === "release.json") return route.fulfill({ json: { tag: ch.tag } });
+      return route.fulfill({ body: bytes });
+    });
+  }
   await page.goto("/");
   await expect(page.locator("#fw")).not.toContainText("Loading");
 }
+
 test("board selection switches between filtered ESP builds and UF2 instructions", async ({ page }) => {
   await setup(page);
   await page.locator('[data-val="heltec-v3"]').click();
@@ -64,14 +58,16 @@ test("board selection switches between filtered ESP builds and UF2 instructions"
   await page.locator("#download-uf2-btn").click();
   expect((await download).suggestedFilename()).toBe("rak4631.uf2");
 });
+
 test("missing catalog keeps local upload usable and rejects invalid input", async ({ page }) => {
   await setup(page, []);
-  await expect(page.locator("#fw")).toContainText("No bundled");
+  await expect(page.locator("#fw")).toContainText("Nothing published");
   await page.locator("#file").setInputFiles({ name: "wrong.zip", mimeType: "application/zip", buffer: bytes });
   await expect(page.locator("#status")).toContainText("must be a .bin");
   await page.locator("#flash").click();
   expect(await page.evaluate(() => window.serialRequests)).toBe(0);
 });
+
 test("dragged file is the exact firmware flashed and can be removed", async ({ page }) => {
   await setup(page, []);
   const data = await page.evaluateHandle(() => {
@@ -87,6 +83,7 @@ test("dragged file is the exact firmware flashed and can be removed", async ({ p
   await page.locator("#file-chip-remove").click();
   await expect(page.locator("#dropzone")).toBeVisible();
 });
+
 for (const [name, entry] of [
   ["digest mismatch", { ...manifest[0], sha256: "0".repeat(64) }],
   ["size mismatch", { ...manifest[0], size: 5 }],
@@ -100,7 +97,6 @@ for (const [name, entry] of [
     expect(await page.evaluate(() => window.writtenFirmware)).toBeNull();
   });
 }
-
 
 for (const [target, file] of [
   ["lilygo-t-echo", "aethermesh-t-echo-abcdef0.uf2"],
@@ -121,20 +117,39 @@ for (const [target, file] of [
 }
 
 test("release channel never offers a pre-release", async ({ page }) => {
-  // Only a beta exists. Asking for Release must come back empty rather than
-  // quietly handing over the beta.
-  await setup(page, [], [{ release: release("v9.9.9-beta.1", true, manifest), entries: manifest }]);
-  await expect(page.locator("#fw")).toContainText("No bundled");
+  // Only a beta is mirrored. Asking for Release must come back empty rather
+  // than quietly handing over the beta.
+  await setup(page, [], { beta: { tag: "v9.9.9-beta.1", entries: manifest } });
+  await expect(page.locator("#fw")).toContainText("Nothing published");
   await expect(page.locator("#channel-note")).toContainText("No release published yet");
 });
 
 test("beta channel lists only the pre-release", async ({ page }) => {
   const betaOnly = [{ name: "Heltec V4 beta", file: "heltec-v4-beta.bin", size: 4, sha256: hash }];
-  await setup(page, [], [
-    { release: release("v9.9.9", false, manifest), entries: manifest },
-    { release: release("v9.9.10-beta.1", true, betaOnly), entries: betaOnly },
-  ]);
+  await setup(page, [], {
+    release: { tag: "v9.9.9", entries: manifest },
+    beta: { tag: "v9.9.10-beta.1", entries: betaOnly },
+  });
   await page.locator("#channel").selectOption("beta");
   await expect(page.locator("#fw")).toContainText("Heltec V4 beta");
   await expect(page.locator("#channel-note")).toContainText("v9.9.10-beta.1");
+});
+
+test("UF2 boards can choose a channel and download that channel's build", async ({ page }) => {
+  // nRF52 boards hide the serial firmware step, so the channel control must
+  // live outside it, or those boards silently get whatever channel loaded first.
+  await setup(page, [], {
+    release: { tag: "v9.9.9", entries: [
+      { name: "RAK release", board: "rak4631", file: "rak-release.uf2", size: 4, sha256: hash }] },
+    beta: { tag: "v9.9.10-beta.1", entries: [
+      { name: "RAK beta", board: "rak4631", file: "rak-beta.uf2", size: 4, sha256: hash }] },
+  });
+  await page.locator('[data-val="rak4631"]').click();
+  await expect(page.locator("#uf2-guide")).toBeVisible();
+  await expect(page.locator("#channel")).toBeVisible();
+  await page.locator("#channel").selectOption("beta");
+  await expect(page.locator("#channel-note")).toContainText("v9.9.10-beta.1");
+  const download = page.waitForEvent("download");
+  await page.locator("#download-uf2-btn").click();
+  expect((await download).suggestedFilename()).toBe("rak-beta.uf2");
 });

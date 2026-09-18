@@ -34,6 +34,7 @@ jobs:
       contents: write
       attestations: write
       id-token: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -116,3 +117,10 @@ jobs:
             --prerelease \
             --title "Beta $RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Redeploy the flasher so it mirrors this beta
+        # A release created with this workflow's own token does not trigger
+        # other workflows, so the Pages deploy is dispatched explicitly.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main

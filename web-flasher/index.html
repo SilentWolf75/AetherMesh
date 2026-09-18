@@ -1253,6 +1253,18 @@
 
       <div class="layout">
         <section aria-label="Flashing workflow" style="display: flex; flex-direction: column; gap: 26px;">
+          <!-- Channel applies to every board: serial-flashed ESP32 builds and
+               UF2 drag-and-drop nRF52 builds alike, so it sits above both flows. -->
+          <div class="panel" id="channel-card" style="margin-bottom: 0;">
+            <div class="field">
+              <label for="channel">Release channel</label>
+              <select id="channel">
+                <option value="release" selected>Release — hardware-qualified</option>
+                <option value="beta">Beta — published to test, not yet qualified</option>
+              </select>
+              <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
+            </div>
+          </div>
           <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
           <div class="panel uf2-guide-card" id="uf2-guide" style="display: none; background: rgba(122, 212, 255, 0.04); border: 1px dashed rgba(122, 212, 255, 0.25); margin-bottom: 0;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
@@ -1280,14 +1292,6 @@
           <h2>Select firmware</h2>
         </div>
         
-        <div class="field">
-          <label for="channel">Release channel</label>
-          <select id="channel">
-            <option value="release" selected>Release — hardware-qualified</option>
-            <option value="beta">Beta — published to test, not yet qualified</option>
-          </select>
-          <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
-        </div>
 
         <div class="field" style="display: flex; gap: 10px; align-items: flex-end;">
           <div style="flex: 1;">
