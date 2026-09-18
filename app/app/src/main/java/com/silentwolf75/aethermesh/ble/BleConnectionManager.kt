@@ -341,12 +341,40 @@ class BleConnectionManager(private val context: Context) {
         armConnectWatchdog(macAddress)
     }
 
+    /**
+     * Wait for the node with a system-managed (autoConnect) GATT connection.
+     * It has no timeout, so no watchdog is armed; a later [connect] or
+     * [disconnect] replaces or closes it.
+     */
+    private fun startBackgroundReconnect(macAddress: String) {
+        if (bluetoothAdapter == null || !hasBleConnectPermission()) {
+            pendingAutoConnectMac = macAddress
+            return
+        }
+        connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        connectionTimeoutRunnable = null
+        bluetoothGatt?.let { stale ->
+            try {
+                stale.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing GATT before background reconnect: ${e.message}")
+            }
+        }
+        reconnectGaveUp = false
+        setPhase(BleConnectionPhase.Reconnecting)
+        Log.i(TAG, "Waiting in the background for $macAddress to come back in range")
+        val device = bluetoothAdapter.getRemoteDevice(macAddress)
+        bluetoothGatt = device.connectGatt(context, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
     private fun scheduleReconnect(macAddress: String, delayOverrideMs: Long? = null) {
         if (userWantsDisconnect || suppressReconnect) return
         if (reconnectAttempt >= BleConnectPolicy.MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Giving up auto-reconnect after $reconnectAttempt attempts")
-            reconnectGaveUp = true
-            setPhase(BleConnectionPhase.Disconnected)
+            // Quick retries are spent (the node is probably out of range or
+            // off). Hand over to the Bluetooth stack's own background connect,
+            // which costs almost nothing and completes whenever the node is
+            // next in range, instead of leaving the user to reconnect by hand.
+            startBackgroundReconnect(macAddress)
             return
         }
         reconnectRunnable?.let { handler.removeCallbacks(it) }

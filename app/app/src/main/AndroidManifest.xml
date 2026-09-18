@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Soft-require BLE so Play can still list on tablets that include BLE radios.
          Devices without BLE will still install from sideload but scanning will fail gracefully. -->
@@ -67,6 +68,16 @@
             android:name=".ble.AetherMeshService"
             android:foregroundServiceType="connectedDevice|location"
             android:exported="false" />
+
+        <!-- Reconnects to the saved node after a phone restart or app update -->
+        <receiver
+            android:name=".ble.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Nordic DFU transfer service for RAK/nRF52 bootloader firmware updates -->
         <service
