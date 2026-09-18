@@ -430,7 +430,7 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
     private val _githubDownloadProgress = MutableStateFlow(0)
     val githubDownloadProgress = _githubDownloadProgress.asStateFlow()
     private val _firmwareChannel =
-        MutableStateFlow(com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.STABLE)
+        MutableStateFlow(com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.RELEASE)
     val firmwareChannel = _firmwareChannel.asStateFlow()
 
     fun setFirmwareChannel(channel: com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel) {
@@ -450,12 +450,10 @@ class MainScreenViewModel(private val repository: AetherMeshRepository) : ViewMo
             }
             val channel = _firmwareChannel.value
             _githubFirmwareStatus.value = when (channel) {
-                com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.STABLE ->
+                com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.RELEASE ->
                     com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_RELEASES
                 com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.BETA ->
                     com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_BETA
-                com.silentwolf75.aethermesh.data.FirmwareCatalog.Channel.LATEST ->
-                    com.silentwolf75.aethermesh.data.GithubFirmwareStatusPolicy.CHECKING_PAGES
             }
             try {
                 val result = com.silentwolf75.aethermesh.data.FirmwareCatalog.fetchForModel(

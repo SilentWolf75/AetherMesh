@@ -207,18 +207,20 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
 
 ## Release Channels
 
-Three channels, from most to least vetted. Every one of them verifies a
-published SHA-256 before anything is written to a board.
+Two channels, both deliberate publications. Each verifies a published SHA-256
+before anything is written to a board.
 
 | Channel | What it is | Where it comes from |
 | --- | --- | --- |
-| Stable | Hardware-qualified releases | GitHub Releases, not pre-release |
+| Release | Hardware-qualified | GitHub Releases, not pre-release |
 | Beta | Published on purpose to be tested, not yet qualified | GitHub pre-releases |
-| Latest | Every change on `main`, untested | GitHub Pages, continuous deploy |
 
 Pick a channel in the app under firmware updates, or in the browser flasher.
-Stable never serves a beta build and beta never serves a stable one: a channel
-that quietly falls back to another is worse than an empty channel.
+There is no continuous "tip" channel: an automatic build of whatever last landed
+is not something to hand a radio in the field. Release never serves a beta and
+beta never serves a release, and neither falls back to the other — an empty
+channel reports itself empty, which is better than quietly installing something
+you did not choose. A local `.bin` or `.zip` can always be flashed directly.
 
 Maintainers publish a beta with the `Publish beta pre-release` workflow (CI must
 pass; the tag must contain `-beta.`) and a stable release with

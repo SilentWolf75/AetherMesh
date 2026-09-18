@@ -5,16 +5,15 @@ package com.silentwolf75.aethermesh.data
  * Network fetch stays in [FirmwareCatalog] / [com.silentwolf75.aethermesh.ui.main.MainScreenViewModel].
  */
 object GithubFirmwareStatusPolicy {
-    const val CHECKING_RELEASES = "Checking GitHub Releases (stable)…"
+    const val CHECKING_RELEASES = "Checking GitHub Releases (release)…"
     const val CHECKING_BETA = "Checking GitHub Releases (beta)…"
     const val CHECKING_PAGES = "Checking GitHub Pages (latest)…"
     const val CATALOG_NOT_ON_PAGES =
         "OTA catalog not on GitHub Pages yet. Use a local .bin for now, or retry after the site redeploys."
 
     fun checking(channel: FirmwareCatalog.Channel): String = when (channel) {
-        FirmwareCatalog.Channel.STABLE -> CHECKING_RELEASES
+        FirmwareCatalog.Channel.RELEASE -> CHECKING_RELEASES
         FirmwareCatalog.Channel.BETA -> CHECKING_BETA
-        FirmwareCatalog.Channel.LATEST -> CHECKING_PAGES
     }
 
     fun downloadingFile(fileName: String): String = "Downloading $fileName…"

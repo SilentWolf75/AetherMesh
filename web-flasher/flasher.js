@@ -155,8 +155,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
       .find((r) => (r.assets || []).some((a) => a.name === "manifest.json"));
     if (!match) {
       throw new Error(wantPrerelease
-        ? "No beta release published yet."
-        : "No stable release published yet.");
+        ? "No beta published yet."
+        : "No release published yet.");
     }
     const manifestAsset = match.assets.find((a) => a.name === "manifest.json");
     const manifestResp = await fetch(manifestAsset.browser_download_url);
@@ -172,17 +172,11 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   async function loadChannel(channel) {
     fwSelect.innerHTML = '<option value="">Loading builds...</option>';
     try {
-      if (channel === "latest") {
-        const r = await fetch("./firmware/manifest.json?t=" + Date.now());
-        manifest = r.ok ? await r.json() : [];
-        setChannelNote("Latest build of main. Verified against the SHA-256 published beside it.", false);
-      } else {
-        manifest = await loadReleaseChannel(channel === "beta");
-        const tag = manifest.length ? manifest[0].releaseTag : "";
-        setChannelNote(
-          (channel === "beta" ? "Beta " : "Stable ") + tag +
-          ". Verified against the SHA-256 published in that release.", false);
-      }
+      manifest = await loadReleaseChannel(channel === "beta");
+      const tag = manifest.length ? manifest[0].releaseTag : "";
+      setChannelNote(
+        (channel === "beta" ? "Beta " : "Release ") + tag +
+        ". Verified against the SHA-256 published in that release.", false);
     } catch (error) {
       manifest = [];
       setChannelNote(
@@ -197,12 +191,9 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     channelSelect.addEventListener("change", () => loadChannel(channelSelect.value));
   }
 
-  // Load manifest firmware
-  fetch("./firmware/manifest.json?t=" + Date.now())
-    .then((r) => r.ok ? r.json() : [])
-    .then((list) => {
-      manifest = Array.isArray(list) ? list : [];
-      populateFirmwareDropdown();
+  // Load the selected channel's published builds.
+  loadChannel(channelSelect ? channelSelect.value : "release")
+    .then(() => {
 
       // Stamp app version next to the APK download (app-version.json from Pages deploy).
       fetch("./app-version.json?t=" + Date.now())
