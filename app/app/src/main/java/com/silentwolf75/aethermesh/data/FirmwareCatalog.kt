@@ -78,13 +78,17 @@ object FirmwareCatalog {
         return false
     }
 
+    /**
+     * Two channels, both deliberate publications. There is no continuous "tip"
+     * channel: an automatic build of whatever last landed is not something to
+     * hand a radio in the field, and a hidden third source could serve a build
+     * the user did not choose.
+     */
     enum class Channel {
-        /** Published GitHub Releases only — never a pre-release. */
-        STABLE,
-        /** GitHub pre-releases: shipped on purpose, not yet field-qualified. */
-        BETA,
-        /** GitHub Pages ota-manifest (continuous deploy of the tip). */
-        LATEST
+        /** Published GitHub Releases — never a pre-release. */
+        RELEASE,
+        /** GitHub pre-releases: published on purpose, not yet field-qualified. */
+        BETA
     }
 
     data class Artifact(
@@ -96,7 +100,7 @@ object FirmwareCatalog {
         val board: String,
         /** Absolute download URL when not under [BASE_URL] (Releases). */
         val absoluteUrl: String? = null,
-        val channel: Channel = Channel.LATEST,
+        val channel: Channel = Channel.RELEASE,
         val releaseTag: String? = null,
         /** Semver base from Pages manifest or parsed from a Release tag (e.g. 1.3.0). */
         val version: String? = null
@@ -178,48 +182,13 @@ object FirmwareCatalog {
 
     suspend fun fetchForModel(
         model: String?,
-        channel: Channel = Channel.STABLE
+        channel: Channel = Channel.RELEASE
     ): CatalogResult = withContext(Dispatchers.IO) {
         val boardId = boardIdForModel(model)
         when (channel) {
             Channel.BETA -> fetchReleases(boardId, model, wantPrerelease = true)
-            Channel.STABLE -> fetchReleases(boardId, model, wantPrerelease = false)
-            Channel.LATEST -> fetchLatest(boardId, model)
+            Channel.RELEASE -> fetchReleases(boardId, model, wantPrerelease = false)
         }
-    }
-
-    private fun fetchLatest(boardId: String?, model: String?): CatalogResult {
-        val list = try {
-            fetchOtaManifestSync()
-        } catch (e: Exception) {
-            if (isOfflineNetworkError(e)) {
-                return CatalogResult(
-                    artifact = null,
-                    channel = Channel.LATEST,
-                    status = OFFLINE_CATALOG_STATUS
-                )
-            }
-            val msg = e.message.orEmpty()
-            if (msg.contains("HTTP 404") || msg.contains("not published", ignoreCase = true)) {
-                return CatalogResult(
-                    artifact = null,
-                    channel = Channel.LATEST,
-                    status = "OTA catalog not published yet (404). It appears after the next GitHub Pages deploy — or pick a local .bin/.zip for now."
-                )
-            }
-            throw e
-        }
-        val match = pickForModel(list, model)
-        val status = when {
-            match != null -> {
-                val ver = match.displayVersion?.let { " $it" }.orEmpty()
-                "Found ${match.name} (latest$ver / Pages)"
-            }
-            list.isEmpty() -> "No OTA builds published yet."
-            boardId == null -> "Connect a known board to auto-pick, or choose a local file."
-            else -> "No OTA package matches this node model."
-        }
-        return CatalogResult(match, Channel.LATEST, status, list)
     }
 
     private fun fetchReleases(
@@ -227,8 +196,8 @@ object FirmwareCatalog {
         model: String?,
         wantPrerelease: Boolean
     ): CatalogResult {
-        val wanted = if (wantPrerelease) Channel.BETA else Channel.STABLE
-        val label = if (wantPrerelease) "beta" else "stable"
+        val wanted = if (wantPrerelease) Channel.BETA else Channel.RELEASE
+        val label = if (wantPrerelease) "beta" else "release"
         return try {
             val releases = fetchGithubReleases()
             // Stable must never serve a pre-release, and beta must never serve a
@@ -256,20 +225,13 @@ object FirmwareCatalog {
                     status = "Found ${match.name} ($label ${match.displayVersion ?: match.releaseTag ?: "release"})",
                     candidates = assets
                 )
-                assets.isEmpty() -> {
-                    // Nothing published on this channel yet. Offer the tip, but
-                    // say plainly that it is a different channel than the one asked for.
-                    val tip = fetchLatest(boardId, model)
-                    CatalogResult(
-                        artifact = tip.artifact,
-                        channel = Channel.LATEST,
-                        status = if (tip.artifact != null)
-                            "No $label release assets yet — using latest Pages build: ${tip.artifact.name}"
-                        else
-                            "No $label GitHub Release for this board yet. ${tip.status}",
-                        candidates = tip.candidates
-                    )
-                }
+                assets.isEmpty() -> CatalogResult(
+                    artifact = null,
+                    channel = wanted,
+                    status = "Nothing published on the $label channel yet. " +
+                        "Pick a local .bin/.zip, or see $GITHUB_RELEASES_WEB",
+                    candidates = emptyList()
+                )
                 boardId == null -> CatalogResult(
                     artifact = null,
                     channel = wanted,
@@ -292,28 +254,10 @@ object FirmwareCatalog {
                     status = OFFLINE_CATALOG_STATUS
                 )
             }
-            val tip = try {
-                fetchLatest(boardId, model)
-            } catch (e2: Exception) {
-                return CatalogResult(
-                    artifact = null,
-                    channel = wanted,
-                    status = if (isOfflineNetworkError(e2)) OFFLINE_CATALOG_STATUS
-                    else "Could not reach GitHub Releases: ${e.message}"
-                )
-            }
-            if (tip.status == OFFLINE_CATALOG_STATUS) {
-                return CatalogResult(
-                    artifact = null,
-                    channel = wanted,
-                    status = OFFLINE_CATALOG_STATUS
-                )
-            }
             CatalogResult(
-                artifact = tip.artifact,
-                channel = Channel.LATEST,
-                status = "Releases unavailable (${e.message}). ${tip.status}",
-                candidates = tip.candidates
+                artifact = null,
+                channel = wanted,
+                status = "Could not reach GitHub Releases: ${e.message}"
             )
         }
     }
@@ -473,7 +417,7 @@ object FirmwareCatalog {
                 kind = "ota",
                 board = board,
                 absoluteUrl = a.downloadUrl,
-                channel = if (prerelease) Channel.BETA else Channel.STABLE,
+                channel = if (prerelease) Channel.BETA else Channel.RELEASE,
                 releaseTag = tag,
                 version = ver
             )
@@ -517,7 +461,7 @@ object FirmwareCatalog {
                     sha256 = obj.optString("sha256"),
                     kind = obj.optString("kind", "ota"),
                     board = obj.optString("board", ""),
-                    channel = Channel.LATEST,
+                    channel = Channel.RELEASE,
                     version = ver
                 )
             )

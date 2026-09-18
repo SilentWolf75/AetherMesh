@@ -62,9 +62,12 @@ signing keys in-tree:
 
 | Channel | Workflow | Gate |
 | --- | --- | --- |
-| Stable | `stable-release.yml` | Hardware qualification evidence for the exact commit, plus CI |
+| Release | `stable-release.yml` | Hardware qualification evidence for the exact commit, plus CI |
 | Beta | `beta-release.yml` | CI only — that is what makes it a beta |
-| Latest | `pages.yml` | CI on every push to `main` |
+
+`pages.yml` still deploys the flasher itself and the Android APK, but the
+firmware a client installs always comes from one of the two published channels
+above.
 
 Both release workflows attach `manifest.json` (USB images) and
 `ota-manifest.json` (over-the-air images) alongside the binaries. Those manifests

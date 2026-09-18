@@ -347,9 +347,9 @@ fun FirmwareUpdateSettings(
                         )
                         Text(
                             text = if (appLanguage == "Spanish")
-                                "Estable: probado en hardware. Beta: publicado a propósito, aún sin calificar. Latest: cada cambio en main, sin probar."
+                                "Publicado: probado en hardware. Beta: publicado a propósito para probar, aún sin calificar."
                             else
-                                "Stable: hardware-qualified releases. Beta: published on purpose, not yet field-qualified. Latest: every change on main, untested.",
+                                "Release: hardware-qualified. Beta: published on purpose to be tested, not yet qualified.",
                             color = TextMuted,
                             fontSize = 10.sp
                         )
@@ -358,12 +358,11 @@ fun FirmwareUpdateSettings(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val stableSelected = firmwareChannel == FirmwareCatalog.Channel.STABLE
+                            val releaseSelected = firmwareChannel == FirmwareCatalog.Channel.RELEASE
                             val betaSelected = firmwareChannel == FirmwareCatalog.Channel.BETA
-                            val latestSelected = firmwareChannel == FirmwareCatalog.Channel.LATEST
                             OutlinedButton(
                                 onClick = {
-                                    viewModel.setFirmwareChannel(FirmwareCatalog.Channel.STABLE)
+                                    viewModel.setFirmwareChannel(FirmwareCatalog.Channel.RELEASE)
                                     viewModel.refreshGithubFirmware(
                                         otaModelHint,
                                         networkAvailable = FirmwareCatalog.isPhoneDataAvailable(context)
@@ -373,18 +372,18 @@ fun FirmwareUpdateSettings(
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (stableSelected) AccentCyan.copy(alpha = 0.18f) else DarkBackground,
+                                    containerColor = if (releaseSelected) AccentCyan.copy(alpha = 0.18f) else DarkBackground,
                                     contentColor = TextLight
                                 ),
                                 border = BorderStroke(
                                     1.dp,
-                                    if (stableSelected) AccentCyan else BorderDark
+                                    if (releaseSelected) AccentCyan else BorderDark
                                 )
                             ) {
                                 Text(
-                                    if (appLanguage == "Spanish") "Estable" else "Stable",
+                                    if (appLanguage == "Spanish") "Publicado" else "Release",
                                     fontSize = 12.sp,
-                                    fontWeight = if (stableSelected) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (releaseSelected) FontWeight.Bold else FontWeight.Normal
                                 )
                             }
                             OutlinedButton(
@@ -413,32 +412,6 @@ fun FirmwareUpdateSettings(
                                     fontWeight = if (betaSelected) FontWeight.Bold else FontWeight.Normal
                                 )
                             }
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.setFirmwareChannel(FirmwareCatalog.Channel.LATEST)
-                                    viewModel.refreshGithubFirmware(
-                                        otaModelHint,
-                                        networkAvailable = FirmwareCatalog.isPhoneDataAvailable(context)
-                                    )
-                                },
-                                enabled = !githubBusy && !otaState.active,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (latestSelected) AccentMint.copy(alpha = 0.18f) else DarkBackground,
-                                    contentColor = TextLight
-                                ),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (latestSelected) AccentMint else BorderDark
-                                )
-                            ) {
-                                Text(
-                                    if (appLanguage == "Spanish") "Último" else "Latest",
-                                    fontSize = 12.sp,
-                                    fontWeight = if (latestSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
@@ -464,14 +437,8 @@ fun FirmwareUpdateSettings(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                if (firmwareChannel == FirmwareCatalog.Channel.STABLE ||
-                                    firmwareChannel == FirmwareCatalog.Channel.BETA) {
-                                    if (appLanguage == "Spanish") "Buscar Releases (necesita datos)"
-                                    else "Check Releases (needs phone data)"
-                                } else {
-                                    if (appLanguage == "Spanish") "Buscar Pages (necesita datos)"
-                                    else "Check Pages (needs phone data)"
-                                },
+                                if (appLanguage == "Spanish") "Buscar Releases (necesita datos)"
+                                else "Check Releases (needs phone data)",
                                 fontSize = 12.sp
                             )
                         }

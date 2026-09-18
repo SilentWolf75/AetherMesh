@@ -15,27 +15,24 @@ import org.junit.Test
 class FirmwareChannelTest {
 
     @Test
-    fun everyChannelIsDistinctAndOrdered() {
+    fun thereAreExactlyTwoDeliberateChannels() {
         val channels = FirmwareCatalog.Channel.entries
-        assertEquals(3, channels.size)
-        assertTrue(channels.contains(FirmwareCatalog.Channel.STABLE))
-        assertTrue(channels.contains(FirmwareCatalog.Channel.BETA))
-        assertTrue(channels.contains(FirmwareCatalog.Channel.LATEST))
-        // Listed from most to least vetted, which is the order the buttons use.
-        assertEquals(FirmwareCatalog.Channel.STABLE, channels[0])
+        // No continuous "tip" channel: every installable build is one someone
+        // chose to publish, and there is no hidden third source to fall back to.
+        assertEquals(2, channels.size)
+        assertEquals(FirmwareCatalog.Channel.RELEASE, channels[0])
         assertEquals(FirmwareCatalog.Channel.BETA, channels[1])
-        assertEquals(FirmwareCatalog.Channel.LATEST, channels[2])
     }
 
     @Test
     fun artifactsCarryTheChannelTheyCameFrom() {
-        val stable = FirmwareCatalog.Artifact(
+        val release = FirmwareCatalog.Artifact(
             name = "heltec-v4", file = "aethermesh-heltec-v4-ota.bin", size = 100,
             sha256 = "", kind = "ota", board = "heltec-v4",
-            channel = FirmwareCatalog.Channel.STABLE, releaseTag = "v1.3.3", version = "1.3.3"
+            channel = FirmwareCatalog.Channel.RELEASE, releaseTag = "v1.3.3", version = "1.3.3"
         )
-        val beta = stable.copy(channel = FirmwareCatalog.Channel.BETA, releaseTag = "v1.3.4-beta.1")
-        assertFalse(stable.channel == beta.channel)
+        val beta = release.copy(channel = FirmwareCatalog.Channel.BETA, releaseTag = "v1.3.4-beta.1")
+        assertFalse(release.channel == beta.channel)
         // A beta tag must not read as a stable version in the OTA screen.
         assertNotNull(beta.displayVersion)
         assertTrue(beta.displayVersion!!.contains("beta"))
