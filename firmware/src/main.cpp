@@ -5533,6 +5533,12 @@ void setup() {
 void loop() {
     watchdog::feed();
     storagerecovery::service(millis());
+    // Give the CPU a moment to sleep on every pass. Without it the loop task
+    // never blocks, so the nRF52 never reaches its low-power idle and the
+    // ESP32 spins at full clock; radio and Bluetooth events wait in flags and
+    // queues, so 2 ms costs nothing in responsiveness. Firmware updates run
+    // flat out.
+    if (!otaActive) delay(2);
     // Advance the control-key PBKDF2 a slice per pass (~15 ms ESP32-S3, ~55 ms
     // nRF52840). Paused during OTA so flash writes keep their throughput.
     if (!otaActive && packetauth::controlKeyPending() &&
