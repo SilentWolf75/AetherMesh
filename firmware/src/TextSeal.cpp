@@ -6,30 +6,11 @@
 #include <ChaChaPoly.h>
 #include <SHA256.h>
 
+#include "HardwareRandom.h"
 #include "NodeIdentity.h"
-
-#ifdef ESP32
-#include <esp_system.h>
-#endif
 
 namespace textseal {
 namespace {
-
-void randomBytes(uint8_t* out, size_t len) {
-#ifdef ESP32
-    esp_fill_random(out, len);
-#else
-    NRF_RNG->CONFIG = RNG_CONFIG_DERCEN_Msk;
-    NRF_RNG->TASKS_START = 1;
-    for (size_t i = 0; i < len; i++) {
-        NRF_RNG->EVENTS_VALRDY = 0;
-        while (NRF_RNG->EVENTS_VALRDY == 0) {
-        }
-        out[i] = (uint8_t)NRF_RNG->VALUE;
-    }
-    NRF_RNG->TASKS_STOP = 1;
-#endif
-}
 
 // Message key from the X25519 shared secret. The raw secret is never used as a
 // key directly: it is hashed with a label and the two node ids in a fixed order,
@@ -81,7 +62,10 @@ bool seal(const uint8_t* peerX25519Public, uint32_t senderId, uint32_t recipient
     // A repeated nonce under the same key would leak the plaintext difference,
     // so it comes from the hardware RNG and travels with the message.
     uint8_t* nonce = out;
-    randomBytes(nonce, sealedtext::NONCE_BYTES);
+    if (!hwrandom::fill(nonce, sealedtext::NONCE_BYTES)) {
+        memset(key, 0, sizeof(key));
+        return false;
+    }
 
     ChaChaPoly cipher;
     bool ok = cipher.setKey(key, sizeof(key)) && cipher.setIV(nonce, sealedtext::NONCE_BYTES);
