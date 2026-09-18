@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include "RadioManager.h"
+#include "TxPower.h"
 #include "MeshRouter.h"
 #include "NodeIdentity.h"
 #include "PacketAuth.h"
@@ -1137,7 +1138,8 @@ static void gpsDutyResetSchedule(uint32_t delayMs = 0) {
 }
 
 static void applyEffectiveTxPower() {
-    int32_t want = loraTxPower;
+    // The setting is antenna dBm; keep it inside the board and the region.
+    int32_t want = txpower::effectiveDbm(radioMgr.amplifier(), loraTxPower, nodeRegion);
     if (lowVoltageSafeMode && want > (int32_t)LV_SAFE_TX_CAP_DBM) {
         want = LV_SAFE_TX_CAP_DBM;
     }
@@ -1795,6 +1797,41 @@ void loadSettings() {
     nodeRole = 0;
     powerSaveMode = false;
 #endif
+}
+
+// Firmware before 1.3.4-beta.3 sent the saved power straight to the radio
+// chip, so on boards with an amplifier the real output was 7-13 dB higher
+// than the number shown. The setting now means dBm at the antenna; convert a
+// saved value once into the output it really produced, so nobody loses range.
+static void migrateTxPowerToAntennaDbm() {
+    const txpower::Amplifier& amp = radioMgr.amplifier();
+    if (!txpower::hasAmplifier(amp)) return;
+#ifdef ESP32
+    preferences.begin("aethermesh", true);
+    bool done = preferences.getBool("tx_ant_dbm", false);
+    preferences.end();
+#else
+    InternalFS.begin();
+    bool done = InternalFS.exists("/txant.flag");
+#endif
+    if (done) return;
+    int32_t before = loraTxPower;
+    loraTxPower = txpower::migrateChipSetting(amp, loraTxPower);
+    saveSettings(nodeCustomName, loraSF, loraBW, loraTxPower, nodeRegion, nodePassword, nodeRole,
+                 telemetryIntervalSec, screenTimeoutSecs, powerSaveMode);
+#ifdef ESP32
+    preferences.begin("aethermesh", false);
+    preferences.putBool("tx_ant_dbm", true);
+    preferences.end();
+#else
+    File flag = InternalFS.open("/txant.flag", FILE_O_WRITE);
+    if (flag) {
+        flag.write((const uint8_t*)"1", 1);
+        flag.close();
+    }
+#endif
+    Serial.printf("TX power setting now means antenna dBm: %ld -> %ld dBm.\n",
+                  (long)before, (long)loraTxPower);
 }
 
 void saveSettings(const char* name, uint32_t sf, float bw, int32_t txPower, uint32_t region, const char* password, uint32_t role, uint32_t telemetryInterval, uint32_t screenTimeout, bool powerSave) {
@@ -5275,6 +5312,7 @@ void setup() {
 
     // Load Settings from NVS
     loadSettings();
+    migrateTxPowerToAntennaDbm();
     loadPositionPrivacy();
     // The 120k-iteration PBKDF2 runs in slices from loop() (~27 s on nRF52840,
     // ~7 s on ESP32-S3) instead of holding up radio and BLE bring-up.
@@ -5428,7 +5466,8 @@ void setup() {
     
     // Apply NVS radio parameters
     float freq = (nodeRegion == 1) ? 869.525f : 906.875f;
-    radioMgr.reinit(freq, loraBW, (uint8_t)loraSF, (int8_t)loraTxPower);
+    radioMgr.reinit(freq, loraBW, (uint8_t)loraSF,
+                    (int8_t)txpower::effectiveDbm(radioMgr.amplifier(), loraTxPower, nodeRegion));
     lvAppliedTxDbm = -128;
     applyEffectiveTxPower();
     if (lowVoltageSafeMode) {
