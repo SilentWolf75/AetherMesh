@@ -2190,7 +2190,7 @@ class AetherMeshRepository(private val context: Context) {
         refreshData()
     }
 
-    // AES-256-GCM v2; decrypt also accepts v1 GCM and legacy ECB.
+    // AES-256-GCM v2; decrypt also accepts v1 GCM. There is no ECB path.
     // Returns null on encrypt failure — callers must refuse to send, never
     // fall back to plaintext.
     fun encryptAES(plainText: String, passcode: String, chatIdentifier: String = ""): String? {
