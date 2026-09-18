@@ -865,4 +865,49 @@ inline bool isHopLimitInflation(uint32_t firstHopLimit, uint32_t newHopLimit,
     return newHopLimit > firstHopLimit;
 }
 
+// --- Busy channel ------------------------------------------------------------
+
+// How long to hold off after channel-activity detection finds someone on the
+// air. The radio keeps listening meanwhile, so the packet that made the
+// channel busy is still received. Grows with consecutive busy results (a long
+// exchange in progress) and is randomised so waiting nodes do not all retry
+// together. randomValue is any uniformly distributed number.
+constexpr uint32_t CHANNEL_BUSY_BACKOFF_CAP_MS = 2000;
+
+inline uint32_t channelBusyBackoffMs(uint32_t airtimeMs, uint32_t busyStreak, uint32_t randomValue) {
+    uint32_t base = 80u + airtimeMs / 4u;
+    uint32_t shift = busyStreak > 3u ? 3u : busyStreak;
+    uint32_t scaled = base << shift;
+    if (scaled > CHANNEL_BUSY_BACKOFF_CAP_MS) scaled = CHANNEL_BUSY_BACKOFF_CAP_MS;
+    uint32_t half = scaled / 2u;
+    return half + randomValue % (scaled - half + 1u);
+}
+
+// --- Unicast flood relay order ------------------------------------------------
+
+// When a unicast has no known route it is flooded, and every relay that hears
+// it waits before repeating it; the first repeat cancels the rest. The node
+// that heard the sender weakest is usually the farthest from it, so it goes
+// first and its repeat reaches the most new ground. (Directed relays keep
+// rebroadcastDelayMs: only the named next hop repeats those.)
+inline uint32_t floodRelayDelayMs(float snr, uint32_t txdelayX100 = 100) {
+    float s = clampf(snr, -20.0f, 10.0f);
+    float base = 500.0f + (s + 20.0f) * (1500.0f / 30.0f);
+    uint32_t factor = txdelayX100 == 0 ? 100 : txdelayX100;
+    if (factor < 50) factor = 50;
+    if (factor > 200) factor = 200;
+    return (uint32_t)(base * (float)factor / 100.0f);
+}
+
+// Whether hearing another node repeat a packet cancels our own queued repeat.
+// Ordinary relays (role 1, Router) cancel, which is what keeps a flood from
+// multiplying. Dedicated repeaters (role 2) are placed to extend coverage, so
+// they always repeat, the way Meshtastic's ROUTER role does. Clients (role 0)
+// do not relay, so the answer does not matter for them.
+constexpr uint32_t NODE_ROLE_REPEATER = 2;
+
+inline bool cancelRelayOnDuplicate(uint32_t nodeRole) {
+    return nodeRole != NODE_ROLE_REPEATER;
+}
+
 } // namespace meshmath

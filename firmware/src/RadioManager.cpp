@@ -53,6 +53,9 @@ RadioManager::RadioManager() {
     txBlocked = false;
     otaSuppressed = false;
     isTransmitting = false;
+    channelBusyUntil = 0;
+    channelBusyStreak = 0;
+    headerSeenAt = 0;
     txTimeoutMs = 2500;
     recentAirtimeMs = 0;
     recentAirtimeWindowStart = 0;
@@ -252,7 +255,7 @@ bool RadioManager::init() {
     radio->setPacketSentAction(setFlag);
     
     // 7. Start listening
-    state = radio->startReceive();
+    state = startListening();
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to start receive mode, code: ");
         Serial.println(state);
@@ -297,7 +300,7 @@ void RadioManager::loop() {
 #if defined(HELTEC_V4)
         setHeltecV4TransmitEnable(false);
 #endif
-        radio->startReceive();
+        startListening();
         lastRxActivityTime = millis();
     }
 
@@ -345,7 +348,7 @@ void RadioManager::loop() {
             }
             
             // Go back to listening
-            radio->startReceive();
+            startListening();
         } else if (millis() - txStartTime > txTimeoutMs + 1000) {
             // Hard timeout fallback: clear transmit lock if stuck
             Serial.println("Radio: Transmit timed out. Forcing state reset.");
@@ -354,7 +357,7 @@ void RadioManager::loop() {
 #if defined(HELTEC_V4)
             setHeltecV4TransmitEnable(false);
 #endif
-            radio->startReceive();
+            startListening();
         } else {
             // This is a false interrupt/glitch during transmission.
             // Do NOT abort the transmission! Just log it and keep waiting.
@@ -398,7 +401,7 @@ void RadioManager::loop() {
 #if defined(HELTEC_V4)
                 setHeltecV4TransmitEnable(false);
 #endif
-                radio->startReceive();
+                startListening();
             }
         } else if (irq & (RADIO_IRQ_CRC_ERR | RADIO_IRQ_HEADER_ERR)) {
             lastRxActivityTime = millis();
@@ -407,7 +410,7 @@ void RadioManager::loop() {
             Serial.printf("LoRa RX Error interrupt! IRQ: 0x%04X | RSSI: %.1f dBm | SNR: %.1f dB\n", irq, rssi, snr);
             
             // Clear interrupt flags and resume listening
-            radio->startReceive();
+            startListening();
         } else {
             // This is a false interrupt/glitch during RX.
             // Do NOT re-initialize RX, just log it. The radio is still receiving.
@@ -470,35 +473,39 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
 
     uint32_t airtimeMs = radio->getTimeOnAir(len) / 1000;
     if (!skipCad) {
-        bool channelFree = false;
-        for (uint8_t attempt = 0; attempt < 3; attempt++) {
-            Serial.printf("Performing CAD check (attempt %u/3)...\n", attempt + 1);
-            int cadState = radio->scanChannel();
-            // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag.
-            operationDone = false;
-            if (cadState == RADIOLIB_CHANNEL_FREE) {
-                channelFree = true;
-                break;
-            }
-            if (cadState != RADIOLIB_LORA_DETECTED) {
-                Serial.printf("CAD failed with code %d; returning to receive mode.\n", cadState);
-                radio->startReceive();
-                txFailures++;
-                return false;
-            }
-            cadBusyEvents++;
-            uint32_t baseBackoff = 80 + airtimeMs / 4;
-            uint32_t scaledBackoff = baseBackoff << attempt;
-            if (scaledBackoff > 2000) scaledBackoff = 2000;
-            Serial.printf("Channel busy; backing off up to %lu ms.\n", (unsigned long)scaledBackoff);
-            delay(random(scaledBackoff / 2 + 1, scaledBackoff + 1));
+        // Never block here: the radio must keep listening while we wait,
+        // and the caller's queue retries on its next pass.
+        const uint32_t now = millis();
+        if (channelBusyUntil != 0 && (int32_t)(now - channelBusyUntil) < 0) {
+            return false;
         }
-        if (!channelFree) {
-            Serial.println("Channel remained busy after 3 CAD attempts; deferring packet.");
-            radio->startReceive();
+        channelBusyUntil = 0;
+        if (isActivelyReceiving()) {
+            // A packet is arriving right now; a channel scan would abort it.
+            cadBusyEvents++;
+            channelBusyUntil = now + meshmath::channelBusyBackoffMs(
+                airtimeMs, channelBusyStreak++, (uint32_t)random(0, 0x7FFFFFFF));
+            return false;
+        }
+        int cadState = radio->scanChannel();
+        // scanChannel fires DIO1 (CAD_DONE), leaving a stale operationDone flag.
+        operationDone = false;
+        if (cadState == RADIOLIB_LORA_DETECTED) {
+            cadBusyEvents++;
+            uint32_t backoff = meshmath::channelBusyBackoffMs(
+                airtimeMs, channelBusyStreak++, (uint32_t)random(0, 0x7FFFFFFF));
+            channelBusyUntil = now + backoff;
+            Serial.printf("Channel busy; listening and retrying in %lu ms.\n", (unsigned long)backoff);
+            startListening();   // hear the packet that made the channel busy
+            return false;
+        }
+        if (cadState != RADIOLIB_CHANNEL_FREE) {
+            Serial.printf("CAD failed with code %d; returning to receive mode.\n", cadState);
+            startListening();
             txFailures++;
             return false;
         }
+        channelBusyStreak = 0;
     }
     
     Serial.print("Sending LoRa Packet. Length: ");
@@ -520,7 +527,7 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
 #if defined(HELTEC_V4)
         setHeltecV4TransmitEnable(false);
 #endif
-        radio->startReceive();
+        startListening();
         txFailures++;
         return false;
     }
@@ -529,6 +536,40 @@ bool RadioManager::sendPacket(uint8_t* payload, size_t len, bool skipCad) {
     airtimeMsTotal += airtimeMs;
     noteRecentAirtime(airtimeMs);
     return true;
+}
+
+int16_t RadioManager::startListening() {
+    headerSeenAt = 0;
+#if defined(SEEED_T1000_E)
+    // The LR1110 routes every enabled event to DIO1, so the header event would
+    // interrupt reception; it keeps the library's receive defaults.
+    return radio->startReceive();
+#else
+    return radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF,
+                               RADIOLIB_SX126X_IRQ_RX_DEFAULT | RADIOLIB_SX126X_IRQ_HEADER_VALID,
+                               RADIOLIB_SX126X_IRQ_RX_DONE);
+#endif
+}
+
+bool RadioManager::isActivelyReceiving() {
+#if defined(SEEED_T1000_E)
+    return false;
+#else
+    if (!(radio->getIrqStatus() & RADIOLIB_SX126X_IRQ_HEADER_VALID)) {
+        headerSeenAt = 0;
+        return false;
+    }
+    const uint32_t now = millis();
+    if (headerSeenAt == 0) headerSeenAt = now;
+    // A header with no packet end after the longest possible packet means the
+    // reception was lost; listen afresh rather than holding off forever.
+    const uint32_t longestPacketMs = radio->getTimeOnAir(255) / 1000u + 500u;
+    if ((uint32_t)(now - headerSeenAt) > longestPacketMs) {
+        startListening();
+        return false;
+    }
+    return true;
+#endif
 }
 
 void RadioManager::noteRecentAirtime(uint32_t ms) {
@@ -664,7 +705,7 @@ bool RadioManager::reinit(float freq, float bw, uint8_t sf, int8_t power) {
     uint8_t patchVal = 0x01;
     radio->writeRegister(0x08B5, &patchVal, 1);
 #endif
-    state = radio->startReceive();
+    state = startListening();
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("Failed to restart receive mode, code: ");
         Serial.println(state);
