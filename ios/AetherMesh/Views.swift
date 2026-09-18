@@ -213,7 +213,12 @@ struct NodesView: View {
                     }
                 }
                 Section("Heard nodes") {
-                    ForEach(model.nodes.values.sorted { $0.lastHeard > $1.lastHeard }, id: \.nodeId) { node in
+                    // Sorted into a typed local first: inside a ForEach argument
+                    // the compiler resolves this against the Binding overload and
+                    // reports the failure as unrelated errors in the row body.
+                    let heard: [MeshNodeInfo] =
+                        model.nodes.values.sorted { $0.lastHeard > $1.lastHeard }
+                    ForEach(heard, id: \MeshNodeInfo.nodeId) { (node: MeshNodeInfo) in
                         VStack(alignment: .leading) {
                             Text(node.name.isEmpty ? MeshNodeId.hex(node.nodeId) : node.name)
                             Text(verbatim: String(format: "Battery %u%% · SNR %.1f dB · %@",

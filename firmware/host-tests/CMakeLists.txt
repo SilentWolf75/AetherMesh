@@ -5,6 +5,7 @@ if(NOT EXISTS "${NANOPB_DIR}/pb_encode.c")
     message(FATAL_ERROR "Set NANOPB_DIR to the installed PlatformIO Nanopb directory")
 endif()
 add_executable(router_tests router_tests.cpp ../src/MeshRouter.cpp ../src/mesh.pb.c
+    stubs/identity_stubs.cpp
     "${NANOPB_DIR}/pb_encode.c" "${NANOPB_DIR}/pb_decode.c" "${NANOPB_DIR}/pb_common.c")
 target_include_directories(router_tests PRIVATE stubs ../src "${NANOPB_DIR}")
 target_compile_features(router_tests PRIVATE cxx_std_17)
