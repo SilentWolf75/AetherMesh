@@ -807,6 +807,7 @@ fun SettingsView(
                 telemetryIntervalSecsState = telemetryIntervalSecsState,
                 screenTimeoutSecsState = screenTimeoutSecsState,
                 powerSaveModeEnabledState = powerSaveModeEnabledState,
+                connectedModel = connectedNode?.model,
                 onApply = { saveConfigAndNotify() },
                 onRequestRepeaterConfirm = { showRepeaterConfirmDialog = true },
                 onRequestDeployConfirm = { profile ->
