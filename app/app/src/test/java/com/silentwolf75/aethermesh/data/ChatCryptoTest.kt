@@ -85,16 +85,18 @@ class ChatCryptoTest {
         assertEquals("old gcm", ChatCrypto.decrypt(encoded, "legacy"))
     }
 
+    /**
+     * AES-ECB was only ever used to encrypt on the first day of the project and
+     * never shipped in a release, so the decrypt fallback for it is gone. This
+     * is "old ecb" under that format, captured once as a literal so no ECB call
+     * remains anywhere in the codebase: it must now be refused, not decrypted.
+     */
     @Test
-    fun decryptsLegacyEcb() {
-        val key = ChatCrypto.deriveLegacyKey("legacy")
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        val encoded = Base64.encodeToString(
-            cipher.doFinal("old ecb".toByteArray(Charsets.UTF_8)),
-            Base64.NO_WRAP
-        )
-        assertEquals("old ecb", ChatCrypto.decrypt(encoded, "legacy"))
+    fun legacyEcbCiphertextIsRefused() {
+        val ecbOldEcb = "dIKIsns8pb6CBntAxYGHJg=="
+        val result = ChatCrypto.decrypt(ecbOldEcb, "legacy")
+        assertNotEquals("old ecb", result)
+        assertTrue(IncomingChatPolicy.isDecryptFailure(result))
     }
 
     @Test

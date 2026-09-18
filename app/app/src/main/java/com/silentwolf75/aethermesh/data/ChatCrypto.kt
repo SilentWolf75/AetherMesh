@@ -9,7 +9,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Chat payload crypto. v2 is AES-256-GCM with PBKDF2 salt + IV prepended.
- * Decrypt also accepts v1 GCM (SHA-256 key, IV prepended) and legacy ECB.
+ * Decrypt also accepts v1 GCM (SHA-256 key, IV prepended). There is no ECB path.
  * Callers must refuse to send when [encrypt] returns null — never fall back
  * to plaintext.
  */
@@ -67,13 +67,12 @@ object ChatCrypto {
         } catch (_: Exception) {
             // fall through to the legacy format
         }
-        return try {
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec)
-            String(cipher.doFinal(Base64.decode(cipherText, Base64.NO_WRAP)), Charsets.UTF_8)
-        } catch (_: Exception) {
-            ERROR_BAD_KEY
-        }
+        // There is deliberately no AES-ECB fallback. ECB was only used to
+        // encrypt on the project's first day and never shipped in a release,
+        // and a fallback that tries ECB on anything GCM rejects would turn
+        // roughly 1 in 256 corrupt messages into scrambled "plaintext" instead
+        // of an error, since that is how often random bytes pass PKCS#5 padding.
+        return ERROR_BAD_KEY
     }
 
     internal fun deriveLegacyKey(passcode: String): SecretKeySpec {
