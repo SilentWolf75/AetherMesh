@@ -79,6 +79,8 @@ jobs:
         run: python tools/check_hardware_gitignore.py
       - name: Verify web flasher JavaScript
         run: node tools/check_web_flasher.js
+      - name: Verify the flash plan never writes over a node's settings
+        run: node tools/test_flashplan.mjs
 
   android:
     name: Android build + unit tests

@@ -1263,6 +1263,14 @@
                 <option value="beta">Beta — published to test, not yet qualified</option>
               </select>
               <p class="hint" id="channel-note">Every build is verified against a published SHA-256 before it is written to your board.</p>
+              <label for="version" style="margin-top: 12px;">Version</label>
+              <select id="version" disabled>
+                <option value="">Loading...</option>
+              </select>
+              <details id="release-notes" style="margin-top: 10px; display: none;">
+                <summary style="cursor: pointer; font-size: 13px; color: var(--cyan);">What's in this version</summary>
+                <pre id="release-notes-text" style="white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--muted); margin: 8px 0 0; max-height: 260px; overflow-y: auto;"></pre>
+              </details>
             </div>
           </div>
           <!-- nRF52 Guide Card (Hidden by default, shown for RAK4631) -->
@@ -1274,12 +1282,17 @@
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.45;">
           The RAK4631 uses a USB Mass Storage bootloader. Double-tap <code>RST</code> to enter bootloader mode, then drag and drop the firmware:
         </p>
+        <button class="secondary" id="enter-bootloader-btn" style="width: 100%; min-height: 42px; font-size: 13px; margin: 0 0 12px;">
+          Put the board into its bootloader
+        </button>
+        <p class="hint" id="bootloader-hint" style="margin: 0 0 12px;">Pick the board's port when asked. It reboots into a USB drive, with no button pressing. If nothing happens, the firmware on it is too old for this; double-tap <strong>RST</strong> instead.</p>
         <ol style="font-size: 13px; color: var(--text); padding-left: 20px; margin: 0 0 16px; display: grid; gap: 8px;">
-          <li>Double-tap the board's <strong>RST</strong> button quickly.</li>
+          <li>Use the button above, or double-tap the board's <strong>RST</strong> button quickly.</li>
           <li>A USB folder named <strong>RAK4631</strong> or <strong>NORDIC</strong> will mount on your computer.</li>
-          <li>Download the latest firmware binary using the link below.</li>
+          <li>Download the firmware using the button below.</li>
           <li>Drag and drop the downloaded <code>.uf2</code> file onto the mounted folder.</li>
         </ol>
+        <p class="hint" style="margin: 0 0 12px;">The board reboots itself as soon as the copy finishes, so your computer may report that the drive was ejected or that the copy failed. That is expected, and means it worked.</p>
         <button class="secondary" id="download-uf2-btn" style="width: 100%; min-height: 42px; font-size: 13px;">
           <span>⬇</span> Download RAK4631 UF2 Firmware
         </button>
@@ -1344,13 +1357,22 @@
               <input type="text" id="offset" value="0x0" placeholder="0x0" />
             </div>
           </div>
-          
-          <!-- Wipe toggle added here -->
-          <label class="checkbox-label" for="erase-flash">
-            <input type="checkbox" id="erase-flash" />
-            <span>Erase Flash (Full Wipe before install)</span>
-          </label>
         </details>
+
+        <!-- Update keeps the node's settings and identity key; the published
+             image would otherwise overwrite them, because it covers the
+             settings partition with blank bytes. -->
+        <fieldset class="field" id="flash-mode" style="border: 0; padding: 0; margin: 14px 0 0;">
+          <legend style="font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px;">Install mode</legend>
+          <label class="checkbox-label" for="mode-update">
+            <input type="radio" name="flash-mode" id="mode-update" value="update" checked />
+            <span><strong>Update</strong> &mdash; keeps this node's settings, channels and identity key</span>
+          </label>
+          <label class="checkbox-label" for="mode-full">
+            <input type="radio" name="flash-mode" id="mode-full" value="full" />
+            <span><strong>Full erase and install</strong> &mdash; resets everything, including the node's identity key. Other nodes will see its key change.</span>
+          </label>
+        </fieldset>
       </div>
 
       <!-- STEP 3 -->

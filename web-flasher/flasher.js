@@ -1,4 +1,5 @@
 import { boards } from "./boards.js";
+import { planUpdate, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE } from "./flashplan.js";
 import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.js";
 
   const $ = (id) => document.getElementById(id);
@@ -17,6 +18,9 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   const fwSelect = $("fw");
   const channelSelect = $("channel");
   const channelNote = $("channel-note");
+  const versionSelect = $("version");
+  const notesBox = $("release-notes");
+  const notesText = $("release-notes-text");
   const targetSelect = $("target");
   const baudrateSelect = $("baudrate");
   const offsetInput = $("offset");
@@ -42,7 +46,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   const consoleInput = $("consoleInput");
   const consoleSendBtn = $("consoleSendBtn");
   const downloadFwBtn = $("download-fw");
-  const eraseFlashChk = $("erase-flash");
+  const flashMode = () => (document.querySelector('input[name="flash-mode"]:checked') || {}).value || "update";
   const autoscrollChk = $("autoscroll-chk");
 
   let manifest = [];
@@ -145,38 +149,75 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   // that sends no CORS headers — so the flasher reads same-origin copies. The
   // manifest is the release's own, so every download is still verified against
   // the SHA-256 that release published.
-  async function loadReleaseChannel(channel) {
-    const base = "./firmware/" + channel + "/";
-    const manifestResp = await fetch(base + "manifest.json?t=" + Date.now());
-    if (!manifestResp.ok) {
-      throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
-    }
-    const list = await manifestResp.json();
-    let tag = "";
-    try {
-      const info = await (await fetch(base + "release.json?t=" + Date.now())).json();
-      tag = info && info.tag ? info.tag : "";
-    } catch (_) {}
-    return (Array.isArray(list) ? list : [])
-      .map((entry) => ({ ...entry, url: base + entry.file, releaseTag: tag }));
+  let channelIndex = [];
+
+  // Notes come from the release page, which anyone with write access to the
+  // repository can edit, so they are shown as text, never as HTML.
+  function showNotes(entry) {
+    if (!notesBox || !notesText) return;
+    const notes = entry && entry.notes ? String(entry.notes) : "";
+    notesText.textContent = notes;
+    notesBox.style.display = notes ? "block" : "none";
+  }
+
+  async function loadVersion(channel, tag) {
+    const entry = channelIndex.find((e) => e.tag === tag);
+    const base = "./firmware/" + channel + "/" + tag + "/";
+    const resp = await fetch(base + "manifest.json?t=" + Date.now());
+    if (!resp.ok) throw new Error("That version's files are missing from this site.");
+    const list = await resp.json();
+    manifest = (Array.isArray(list) ? list : []).map((item) => ({ ...item, url: base + item.file, releaseTag: tag }));
+    const label = channel === "beta" ? "Beta " : "Release ";
+    const older = channelIndex.length && channelIndex[0].tag !== tag ? " (an older version)" : "";
+    setChannelNote(label + tag + older + ". Verified against the SHA-256 published in that release.", false);
+    showNotes(entry);
+    populateFirmwareDropdown();
   }
 
   async function loadChannel(channel) {
     fwSelect.innerHTML = '<option value="">Loading builds...</option>';
+    versionSelect.innerHTML = "";
+    versionSelect.disabled = true;
+    showNotes(null);
+    manifest = [];
     try {
-      manifest = await loadReleaseChannel(channel);
-      const tag = manifest.length ? manifest[0].releaseTag : "";
-      setChannelNote(
-        (channel === "beta" ? "Beta " : "Release ") + tag +
-        ". Verified against the SHA-256 published in that release.", false);
+      const resp = await fetch("./firmware/" + channel + "/index.json?t=" + Date.now());
+      if (!resp.ok) throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
+      const list = await resp.json();
+      channelIndex = Array.isArray(list) ? list.filter((e) => e && e.tag) : [];
+      if (!channelIndex.length) throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
+      for (const [i, entry] of channelIndex.entries()) {
+        const option = document.createElement("option");
+        option.value = entry.tag;
+        const date = entry.published ? " · " + String(entry.published).slice(0, 10) : "";
+        option.textContent = entry.tag + date + (i === 0 ? " (newest)" : "");
+        versionSelect.appendChild(option);
+      }
+      versionSelect.disabled = channelIndex.length < 2;
+      await loadVersion(channel, channelIndex[0].tag);
     } catch (error) {
+      channelIndex = [];
       manifest = [];
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "None";
+      versionSelect.appendChild(option);
       setChannelNote(
         (error && error.message ? error.message : "Could not load that channel.") +
         " Open " + GITHUB_RELEASES_WEB + " to download it manually, or switch channel.", true);
+      populateFirmwareDropdown();
     }
-    if (!Array.isArray(manifest)) manifest = [];
-    populateFirmwareDropdown();
+  }
+
+  if (versionSelect) {
+    versionSelect.addEventListener("change", () => {
+      const channel = channelSelect ? channelSelect.value : "release";
+      loadVersion(channel, versionSelect.value).catch((error) => {
+        manifest = [];
+        setChannelNote(error.message || "Could not load that version.", true);
+        populateFirmwareDropdown();
+      });
+    });
   }
 
   if (channelSelect) {
@@ -351,6 +392,31 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
       targetSelect.onchange(); // trigger logic directly
     };
   });
+
+  // Reboot an nRF52 board into its UF2 bootloader. The Adafruit bootloader
+  // these boards use treats opening the USB serial port at 1200 baud and then
+  // closing it as a request to enter the bootloader, so no button is needed.
+  // Firmware that predates USB serial handling ignores it, hence the hint.
+  $("enter-bootloader-btn").onclick = async () => {
+    if (!("serial" in navigator)) {
+      setStatus("This browser cannot open serial ports. Use Chrome or Edge, or double-tap RST.", "err");
+      return;
+    }
+    let port;
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 1200 });
+      try { await port.setSignals({ dataTerminalReady: false }); } catch (_) {}
+      await port.close();
+      setStatus("Sent. The board should reappear as a USB drive in a few seconds.", "ok");
+    } catch (error) {
+      try { if (port) await port.close(); } catch (_) {}
+      const msg = error && error.message ? error.message : String(error);
+      // Choosing no port is a cancel, not a failure.
+      if (/No port selected|cancel/i.test(msg)) { setStatus("No port chosen.", "info"); return; }
+      setStatus("Could not reach the board (" + msg + "). Double-tap RST instead.", "err");
+    }
+  };
 
   // Download nRF52 UF2 firmware.
   $("download-uf2-btn").onclick = async () => {
@@ -548,7 +614,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     if (selectedLocalFile) {
       const file = selectedLocalFile;
       const buf = await file.arrayBuffer();
-      return { name: file.name, data: toBinaryString(new Uint8Array(buf)) };
+      return { name: file.name, bytes: new Uint8Array(buf), data: toBinaryString(new Uint8Array(buf)) };
     }
 
     const idx = fwSelect.value;
@@ -557,7 +623,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     }
 
     const buf = await fetchVerifiedArtifact(manifest[idx]);
-    return { name: manifest[idx].file, data: toBinaryString(new Uint8Array(buf)) };
+    return { name: manifest[idx].file, bytes: new Uint8Array(buf), data: toBinaryString(new Uint8Array(buf)) };
   }
 
   function toBinaryString(bytes) {
@@ -588,7 +654,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
 
       const targetBaudrate = parseInt(baudrateSelect.value) || 921600;
       const targetOffset = parseInt(offsetInput.value, 16) || 0;
-      const shouldErase = eraseFlashChk.checked;
+      const mode = flashMode();
 
       const esploader = new ESPLoader({
         transport,
@@ -601,14 +667,36 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
       const chip = await esploader.main();
       log("Detected Target: " + chip, "ok");
 
+      // Update writes around the settings partition so the node keeps its
+      // name, channels and identity key; anything that would land on them is
+      // refused before a byte is written. Full erase is the deliberate reset.
+      let fileArray = [{ data: fw.data, address: targetOffset }];
+      if (mode === "update") {
+        setStatus("Reading the board's partition table...");
+        let deviceTable = null;
+        try {
+          deviceTable = await esploader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE);
+        } catch (e) {
+          log("Could not read partition table: " + (e && e.message ? e.message : e), "warn");
+        }
+        const plan = planUpdate(fw.bytes, targetOffset, deviceTable);
+        if (!plan.ok) throw new Error(plan.reason);
+        fileArray = plan.segments.map((seg) => ({ data: fw.data.substring(seg.start, seg.end), address: seg.address }));
+        if (plan.keeps) {
+          log("Keeping settings at 0x" + plan.keeps.offset.toString(16) + " (" + plan.keeps.size + " bytes).", "ok");
+        }
+      } else {
+        log("Full erase: this node's settings and identity key will be reset.", "warn");
+      }
+
       barWrap.style.display = "block";
       setStatus("Flashing device, do not unplug...");
       await esploader.writeFlash({
-        fileArray: [{ data: fw.data, address: targetOffset }],
+        fileArray,
         flashSize: "keep",
         flashMode: "keep",
         flashFreq: "keep",
-        eraseAll: shouldErase,
+        eraseAll: mode === "full",
         compress: true,
         reportProgress: (_fileIndex, written, total) => {
           const pct = Math.round((written / total) * 100);
