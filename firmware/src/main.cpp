@@ -3,6 +3,7 @@
 #include "RadioManager.h"
 #include "TxPower.h"
 #include "Watchdog.h"
+#include "StorageRecovery.h"
 #include "MeshRouter.h"
 #include "NodeIdentity.h"
 #include "PacketAuth.h"
@@ -5268,6 +5269,8 @@ void setup() {
     // anything slow, so a hang anywhere from here on resets the board.
     watchdog::begin();
     watchdog::feed();
+    // Before anything opens a file: repair storage a previous run found damaged.
+    const bool storageFormatted = storagerecovery::checkAtBoot();
     Serial.begin(115200);
     // Wait up to 3 seconds for Serial port to open on PC, but don't block forever if running on battery
     uint32_t startWait = millis();
@@ -5275,6 +5278,9 @@ void setup() {
         delay(10);
     }
     Serial.printf("Last reset: %s\n", watchdog::lastResetReason());
+    if (storageFormatted) {
+        Serial.println("Internal storage was damaged and has been formatted; settings are back to defaults.");
+    }
     
     delay(4000);
     Serial.println("\n=== AETHERMESH NODE STARTING ===");
@@ -5524,6 +5530,7 @@ void setup() {
 
 void loop() {
     watchdog::feed();
+    storagerecovery::service(millis());
     // Advance the control-key PBKDF2 a slice per pass (~15 ms ESP32-S3, ~55 ms
     // nRF52840). Paused during OTA so flash writes keep their throughput.
     if (!otaActive && packetauth::controlKeyPending() &&
