@@ -58,8 +58,12 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   let monitorPort = null;
   let monitorReader = null;
   let isMonitorConnected = false;
-  let logBufferLogs = "";
-  let logBufferMonitor = "";
+  // Kept as { msg, cls } lines and always rendered as text. The serial monitor
+  // shows whatever the node prints, including chat received from other nodes,
+  // so none of it may ever be interpreted as HTML.
+  const LOG_BUFFER_LIMIT = 5000;
+  let logBufferLogs = [];
+  let logBufferMonitor = [];
 
   // Set initial step highlights
   function setStepActive(stepNum) {
@@ -129,9 +133,12 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     if (filtered.length === 0) {
       fwSelect.innerHTML = '<option value="">No matching builds found for target - upload a local file below</option>';
     } else {
-      fwSelect.innerHTML = filtered
-        .map((m) => `<option value="${m.index}">${m.name || m.file}</option>`)
-        .join("");
+      fwSelect.replaceChildren(...filtered.map((m) => {
+        const option = document.createElement("option");
+        option.value = String(m.index);
+        option.textContent = m.name || m.file;
+        return option;
+      }));
     }
   }
 
@@ -267,21 +274,37 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     }
 
     // Buffer logs depending on active mode
-    if (activeTab === 'logs') {
-      logBufferLogs += msg + "\n";
-    } else {
-      logBufferMonitor += msg + "\n";
-    }
+    const buffer = activeTab === 'logs' ? logBufferLogs : logBufferMonitor;
+    buffer.push({ msg: String(msg), cls: cls || "" });
+    if (buffer.length > LOG_BUFFER_LIMIT) buffer.splice(0, buffer.length - LOG_BUFFER_LIMIT);
 
     // Parse device telemetry output as it is logged
     parseTelemetry(msg);
   }
 
+  // Rebuilds a log view from buffered lines, as text.
+  function renderLog(lines) {
+    logEl.replaceChildren();
+    for (const line of lines) {
+      const div = document.createElement("div");
+      if (line.cls) div.className = line.cls;
+      div.textContent = line.msg;
+      logEl.appendChild(div);
+    }
+  }
+
+  // Status text often carries file names and error messages from downloads, so
+  // it is set as text rather than markup.
   function setStatus(msg, cls) {
     let icon = "⚙";
     if (cls === "ok") icon = "✓";
     if (cls === "err") icon = "⚠";
-    statusEl.innerHTML = `<span class="${cls || ''}">${icon}</span> <span>${msg}</span>`;
+    const iconEl = document.createElement("span");
+    if (cls) iconEl.className = cls;
+    iconEl.textContent = icon;
+    const msgEl = document.createElement("span");
+    msgEl.textContent = msg == null ? "" : String(msg);
+    statusEl.replaceChildren(iconEl, document.createTextNode(" "), msgEl);
   }
 
   function resetProgress() {
@@ -451,12 +474,12 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     logEl.innerHTML = "";
     logEl.style.display = "none";
     if (activeTab === 'logs') {
-      logBufferLogs = "";
+      logBufferLogs = [];
       setStatus("");
       resetProgress();
       resetTelemetry();
     } else {
-      logBufferMonitor = "";
+      logBufferMonitor = [];
     }
   };
 
@@ -789,8 +812,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     }
     
     // Restore logs view
-    logEl.style.display = logBufferLogs ? "block" : "none";
-    logEl.innerHTML = logBufferLogs;
+    logEl.style.display = logBufferLogs.length ? "block" : "none";
+    renderLog(logBufferLogs);
     logEl.scrollTop = logEl.scrollHeight;
     
     setStatus("Ready.", "info");
@@ -807,7 +830,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     
     // Set view to monitor buffers
     logEl.style.display = "block";
-    logEl.innerHTML = logBufferMonitor || '<div class="info">[Serial Monitor Mode. Select baud rate in Step 2, then click "Connect Monitor" above.]</div>';
+    renderLog(logBufferMonitor.length ? logBufferMonitor : [{
+      msg: '[Serial Monitor Mode. Select baud rate in Step 2, then click "Connect Monitor" above.]', cls: "info" }]);
     logEl.scrollTop = logEl.scrollHeight;
   };
 
@@ -838,8 +862,8 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
       monitorConnectBtn.classList.add("connected");
       consoleInputBar.style.display = "flex";
       
-      logEl.innerHTML = "";
-      logBufferMonitor = "";
+      logEl.replaceChildren();
+      logBufferMonitor = [];
       log(`--- Serial Monitor Connected at ${baudRate} baud ---\n`, "ok");
       setStatus("Connected to device console.", "ok");
       
