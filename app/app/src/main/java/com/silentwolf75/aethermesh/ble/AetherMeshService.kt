@@ -45,9 +45,20 @@ class AetherMeshService : Service() {
         ) {
             types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
-        androidx.core.app.ServiceCompat.startForeground(
-            this, NOTIFICATION_ID, buildNotification(statusText(initializing = true)), types
-        )
+        try {
+            androidx.core.app.ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, buildNotification(statusText(initializing = true)), types
+            )
+        } catch (e: SecurityException) {
+            // Started from the background (after a reboot), Android refuses the
+            // location type without background location access. The Bluetooth
+            // link is what matters here; location resumes once the app opens.
+            Log.w(TAG, "Starting without the location type: ${e.message}")
+            androidx.core.app.ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, buildNotification(statusText(initializing = true)),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            )
+        }
 
         val app = application as AetherMeshApplication
         serviceScope.launch {
