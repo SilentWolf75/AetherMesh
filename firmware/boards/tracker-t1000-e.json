@@ -1,12 +1,17 @@
 {
+  "name": "Seeed SenseCAP T1000-E",
+  "vendor": "Seeed Studio",
+  "url": "https://www.seeedstudio.com/SenseCAP-Card-Tracker-T1000-E-for-Meshtastic-p-5913.html",
+  "frameworks": ["arduino"],
+  "connectivity": ["bluetooth"],
   "build": {
-    "arduino": {
-      "ldscript": "nrf52840_s140_v7.ld"
-    },
-    "core": "nRF5",
+    "mcu": "nrf52840",
     "cpu": "cortex-m4",
-    "extra_flags": "-DARDUINO_SEEED_T1000_E -DNRF52840_XXAA",
     "f_cpu": "64000000L",
+    "core": "nRF5",
+    "variant": "Seeed_T1000-E",
+    "extra_flags": "-DARDUINO_SEEED_T1000_E -DNRF52840_XXAA",
+    "usb_product": "T1000-E",
     "hwids": [
       ["0x2886", "0x0057"],
       ["0x239A", "0x8029"],
@@ -14,46 +19,29 @@
       ["0x239A", "0x002A"],
       ["0x239A", "0x802A"]
     ],
-    "usb_product": "T1000-E",
-    "mcu": "nrf52840",
-    "variant": "Seeed_T1000-E",
-    "bsp": {
-      "name": "adafruit"
-    },
+    "bsp": { "name": "adafruit" },
+    "arduino": { "ldscript": "nrf52840_s140_v7.ld" },
     "softdevice": {
-      "sd_flags": "-DS140",
       "sd_name": "s140",
       "sd_version": "7.3.0",
+      "sd_flags": "-DS140",
       "sd_fwid": "0x0123"
     },
-    "bootloader": {
-      "settings_addr": "0xFF000"
-    }
+    "bootloader": { "settings_addr": "0xFF000" }
   },
-  "connectivity": ["bluetooth"],
-  "debug": {
-    "jlink_device": "nRF52840_xxAA",
-    "svd_path": "nrf52840.svd",
-    "openocd_target": "nrf52.cfg"
-  },
-  "frameworks": ["arduino"],
-  "name": "Seeed SenseCAP T1000-E",
   "upload": {
-    "maximum_ram_size": 248832,
-    "maximum_size": 815104,
-    "speed": 115200,
     "protocol": "nrfutil",
-    "protocols": [
-      "jlink",
-      "nrfjprog",
-      "nrfutil",
-      "cmsis-dap",
-      "blackmagic"
-    ],
+    "protocols": ["nrfutil", "jlink", "nrfjprog", "cmsis-dap", "blackmagic"],
+    "speed": 115200,
+    "maximum_size": 815104,
+    "maximum_ram_size": 248832,
     "use_1200bps_touch": true,
     "require_upload_port": true,
     "wait_for_upload_port": true
   },
-  "url": "https://www.seeedstudio.com/SenseCAP-Card-Tracker-T1000-E-for-Meshtastic-p-5913.html",
-  "vendor": "Seeed Studio"
+  "debug": {
+    "jlink_device": "nRF52840_xxAA",
+    "openocd_target": "nrf52.cfg",
+    "svd_path": "nrf52840.svd"
+  }
 }
