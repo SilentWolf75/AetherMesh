@@ -1021,6 +1021,31 @@ bool displayIsOn = false;
 
 // Board-specific GNSS rail / UART bring-up. RAK shares WB_IO2 with the OLED
 // slot rail — never cut power while the display is supposed to be on.
+#if defined(SEEED_T1000_E)
+// The T1000-E's Airoha AG3335 remembers its NMEA configuration across power
+// cycles, so it keeps whatever the previous firmware set. Meshtastic turns GSV
+// off and saves that into the chip, which left satellites-in-view reading 0
+// after switching to AetherMesh. Configure the sentences this firmware parses
+// on every power-up instead of inheriting them. Not saved to the chip: another
+// firmware installed later can configure it its own way.
+static void configureAg3335Output() {
+    delay(250);  // the chip ignores commands for a moment after reset
+    static const char* const kSentences[] = {
+        "$PAIR062,0,1*3F\r\n",  // GGA on: fix, satellites used, HDOP
+        "$PAIR062,1,0*3F\r\n",  // GLL off
+        "$PAIR062,2,1*3D\r\n",  // GSA on
+        "$PAIR062,3,1*3C\r\n",  // GSV on: satellites in view
+        "$PAIR062,4,1*3B\r\n",  // RMC on: time and position
+        "$PAIR062,5,0*3B\r\n",  // VTG off
+        "$PAIR062,6,0*38\r\n",  // ZDA off
+    };
+    for (const char* sentence : kSentences) {
+        Serial1.print(sentence);
+        delay(30);
+    }
+}
+#endif
+
 static void setOnboardGpsPowered(bool on) {
     if (!hasOnboardGps) return;
 #if defined(HELTEC_V4) || defined(HELTEC_V3)
@@ -1070,6 +1095,7 @@ static void setOnboardGpsPowered(bool on) {
             delay(50);
             Serial1.setPins(PIN_SERIAL1_RX, PIN_SERIAL1_TX);
             Serial1.begin(115200);
+            configureAg3335Output();
         }
     } else {
         digitalWrite(PIN_GPS_EN, !GPS_EN_ACTIVE);
@@ -5994,6 +6020,22 @@ void loop() {
         lastPrint = millis();
         // Print routing table to serial for monitoring/debug
         router.printRoutingTable();
+
+        // How close the loop task has come to overflowing its stack. On nRF52
+        // the core's loop stack is fixed at 4 KB, and an overflow there does not
+        // crash cleanly: it overwrites the heap and resets later, sometimes in
+        // the middle of a flash write. This is the number that decides whether
+        // those boards need a larger stack.
+        {
+            const UBaseType_t lowWater = uxTaskGetStackHighWaterMark(nullptr);
+#ifdef ESP32
+            const uint32_t headroomBytes = (uint32_t)lowWater;  // ESP-IDF reports bytes
+#else
+            const uint32_t headroomBytes = (uint32_t)lowWater * 4u;  // FreeRTOS words
+#endif
+            Serial.printf("Loop stack headroom: %u bytes (lowest since boot)\n",
+                          (unsigned)headroomBytes);
+        }
 
 #if defined(RAK4631) || defined(RAK3401_1W)
         Serial.printf(
