@@ -7,7 +7,22 @@ const manifest = [
   { name: "Heltec V3", file: "heltec-v3.bin", size: 4, sha256: hash },
   { name: "RAK4631", file: "rak4631.uf2", size: 4, sha256: hash },
 ];
-async function setup(page, entries = manifest) {
+// The flasher reads the newest GitHub Release on the chosen channel, then that
+// release's own manifest.json, and downloads binaries from the release assets.
+// Mock that whole chain so every test exercises the real path: a test that only
+// passes because no catalog loaded proves nothing about verification.
+const ASSETS = "https://github.com/SilentWolf75/AetherMesh/releases/download/";
+function release(tag, prerelease, entries) {
+  const base = ASSETS + tag + "/";
+  return {
+    tag_name: tag, draft: false, prerelease,
+    assets: [
+      { name: "manifest.json", browser_download_url: base + "manifest.json" },
+      ...entries.filter(e => e.file).map(e => ({ name: e.file, browser_download_url: base + e.file })),
+    ],
+  };
+}
+async function setup(page, entries = manifest, releases = null) {
   await page.addInitScript(() => {
     window.serialRequests = 0;
     window.writtenFirmware = null;
@@ -25,9 +40,15 @@ async function setup(page, entries = manifest) {
         async after() {}
       }`
   }));
-  await page.route("**/firmware/manifest.json?*", route => route.fulfill({ json: entries }));
-  await page.route("**/firmware/*.bin", route => route.fulfill({ body: bytes }));
-  await page.route("**/firmware/*.uf2", route => route.fulfill({ body: bytes }));
+  const published = releases || [{ release: release("v9.9.9", false, entries), entries }];
+  await page.route("https://api.github.com/repos/SilentWolf75/AetherMesh/releases*",
+    route => route.fulfill({ json: published.map(p => p.release) }));
+  await page.route(ASSETS + "**", route => {
+    const url = route.request().url();
+    const owner = published.find(p => url.startsWith(ASSETS + p.release.tag_name + "/"));
+    if (url.endsWith("/manifest.json")) return route.fulfill({ json: owner ? owner.entries : [] });
+    return route.fulfill({ body: bytes });
+  });
   await page.goto("/");
   await expect(page.locator("#fw")).not.toContainText("Loading");
 }
@@ -98,3 +119,22 @@ for (const [target, file] of [
     expect(await page.evaluate(() => window.serialRequests)).toBe(0);
   });
 }
+
+test("release channel never offers a pre-release", async ({ page }) => {
+  // Only a beta exists. Asking for Release must come back empty rather than
+  // quietly handing over the beta.
+  await setup(page, [], [{ release: release("v9.9.9-beta.1", true, manifest), entries: manifest }]);
+  await expect(page.locator("#fw")).toContainText("No bundled");
+  await expect(page.locator("#channel-note")).toContainText("No release published yet");
+});
+
+test("beta channel lists only the pre-release", async ({ page }) => {
+  const betaOnly = [{ name: "Heltec V4 beta", file: "heltec-v4-beta.bin", size: 4, sha256: hash }];
+  await setup(page, [], [
+    { release: release("v9.9.9", false, manifest), entries: manifest },
+    { release: release("v9.9.10-beta.1", true, betaOnly), entries: betaOnly },
+  ]);
+  await page.locator("#channel").selectOption("beta");
+  await expect(page.locator("#fw")).toContainText("Heltec V4 beta");
+  await expect(page.locator("#channel-note")).toContainText("v9.9.10-beta.1");
+});
