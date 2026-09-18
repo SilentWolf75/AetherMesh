@@ -1140,6 +1140,8 @@ static void gpsDutyResetSchedule(uint32_t delayMs = 0) {
 }
 
 static void applyEffectiveTxPower() {
+    // EU868 (869.4-869.65 MHz) allows transmitting 10% of each hour.
+    radioMgr.setDutyCycleLimitPercent(nodeRegion == 1 ? 10 : 100);
     // The setting is antenna dBm; keep it inside the board and the region.
     int32_t want = txpower::effectiveDbm(radioMgr.amplifier(), loraTxPower, nodeRegion);
     if (lowVoltageSafeMode && want > (int32_t)LV_SAFE_TX_CAP_DBM) {
@@ -6165,7 +6167,9 @@ void loop() {
             if (!firstAnnounceSent) {
                 announceDueMs = 40000UL + (localNodeId % 20000UL);
             }
-            if (millis() - lastIdentityAnnounce > announceDueMs) {
+            const bool channelBusy =
+                meshmath::channelTooBusyForRoutineTraffic(radioMgr.getChannelUtilPercent());
+            if (millis() - lastIdentityAnnounce > announceDueMs && !channelBusy) {
                 lastIdentityAnnounce = millis();
                 firstAnnounceSent = true;
                 router.sendIdentityAnnouncement();
@@ -6222,7 +6226,12 @@ void loop() {
             // with direct PING/PONG airtime. LV cutoff also skips LoRa telem
             // (RadioManager refuses TX); BLE loopback below still refreshes the
             // phone so Low-V safe is visible from battery_voltage.
-            if (!router.isQuietMode() && !lowVoltageCutoff) {
+            const uint8_t channelUtil = radioMgr.getChannelUtilPercent();
+            if (meshmath::channelTooBusyForRoutineTraffic(channelUtil) && !lowVoltageCutoff &&
+                !router.isQuietMode()) {
+                // Skip this beacon; the next interval tries again.
+                Serial.printf("Channel %u%% busy: skipping this telemetry beacon.\n", (unsigned)channelUtil);
+            } else if (!router.isQuietMode() && !lowVoltageCutoff) {
                 aethermesh_Telemetry gpsFields = aethermesh_Telemetry_init_zero;
                 fillGpsTelemetry(gpsFields);
                 router.sendTelemetry(0xFFFFFFFF, battery, lat, lon, nodeCustomName, batteryCharging, batteryVoltage, positionPrecisionM, loraSF, nodeRegion, &gpsFields);

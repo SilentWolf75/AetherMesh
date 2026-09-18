@@ -6,6 +6,7 @@
 #include <RadioLib.h>
 #include "MeshRadio.h"
 #include "TxPower.h"
+#include "AirtimeWindow.h"
 
 class RadioManager : public MeshRadio {
 public:
@@ -57,6 +58,14 @@ public:
     // Phase 6: TX airtime accumulated in the current ~10s window (for
     // congestion gates on STORED wake / repair floods).
     uint32_t getRecentAirtimeMs() const;
+
+    // Regulatory transmit duty cycle over the last hour, in percent; 100
+    // means no limit. EU868's 869.4-869.65 MHz sub-band allows 10%.
+    void setDutyCycleLimitPercent(uint8_t percent) { dutyLimitPercent = percent; }
+    uint8_t getTxDutyPercent() { return txHour.percent(millis()); }
+    uint32_t getDutyCycleRefusals() const { return dutyRefusals; }
+    // How busy the channel was over the last minute (every packet heard or sent).
+    uint8_t getChannelUtilPercent() override { return channelMinute.percent(millis()); }
     
 private:
     void noteRecentAirtime(uint32_t airtimeMs);
@@ -96,6 +105,10 @@ private:
     // Busy-channel hold-off: sends are refused until this time while the
     // radio keeps listening. 0 = not holding off.
     uint32_t channelBusyUntil;
+    AirtimeWindow<60, 60000> txHour;        // our own transmissions, last hour
+    AirtimeWindow<6, 10000> channelMinute;  // everything on the channel, last minute
+    uint8_t dutyLimitPercent = 100;
+    uint32_t dutyRefusals = 0;
     uint32_t channelBusyStreak;
     uint32_t headerSeenAt;
     uint32_t airtimeMsTotal;
