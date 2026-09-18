@@ -1,5 +1,7 @@
 #include "NodeIdentity.h"
 
+#include "HardwareRandom.h"
+
 #include <Arduino.h>
 #include <string.h>
 
@@ -10,7 +12,6 @@
 
 #ifdef ESP32
 #include <Preferences.h>
-#include <esp_system.h>
 #else
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
@@ -34,23 +35,6 @@ uint8_t gEdPublic[identity::PUBLIC_KEY_BYTES] = {0};
 uint8_t gEdPrivate[identity::PUBLIC_KEY_BYTES] = {0};
 uint32_t gNodeId = 0;
 bool gReady = false;
-
-void hardwareRandom(uint8_t* out, size_t len) {
-#ifdef ESP32
-    esp_fill_random(out, len);
-#else
-    // nRF52 hardware RNG. Bias correction is on so the bytes are uniform.
-    NRF_RNG->CONFIG = RNG_CONFIG_DERCEN_Msk;
-    NRF_RNG->TASKS_START = 1;
-    for (size_t i = 0; i < len; i++) {
-        NRF_RNG->EVENTS_VALRDY = 0;
-        while (NRF_RNG->EVENTS_VALRDY == 0) {
-        }
-        out[i] = (uint8_t)NRF_RNG->VALUE;
-    }
-    NRF_RNG->TASKS_STOP = 1;
-#endif
-}
 
 // Separate labels so the two private keys are independent even though one seed
 // produces both: learning one must not reveal the other.
@@ -137,7 +121,10 @@ bool begin(uint32_t nodeId) {
 
     StoredIdentity stored = {};
     if (!loadStored(stored) || seedLooksUnset(stored)) {
-        hardwareRandom(stored.seed, sizeof(stored.seed));
+        if (!hwrandom::fill(stored.seed, sizeof(stored.seed))) {
+            Serial.println("Identity: hardware RNG unavailable; node has no identity.");
+            return false;
+        }
         stored.epoch = 1;
         if (seedLooksUnset(stored)) {
             Serial.println("Identity: hardware RNG returned nothing; node has no identity.");
@@ -228,7 +215,7 @@ bool sharedSecret(const uint8_t* peerX25519Public, uint8_t* out32) {
 
 bool rotate(uint32_t nodeId) {
     StoredIdentity next = {};
-    hardwareRandom(next.seed, sizeof(next.seed));
+    if (!hwrandom::fill(next.seed, sizeof(next.seed))) return false;
     if (seedLooksUnset(next)) return false;
     next.epoch = gStored.epoch + 1;
     if (!saveStored(next)) return false;
