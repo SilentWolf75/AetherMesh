@@ -226,6 +226,11 @@ struct NodesView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             // SwiftProtobuf strips the GPS_STATE_ prefix, so the
                             // cases are .unknown/.absent/.fix, not .gpsStateUnknown.
+                            if let identity = model.identities[node.nodeId] {
+                                Text(verbatim: NodeIdentityPolicy.label(identity.state) + " · " + identity.fingerprint)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(identity.needsAttention ? Color.orange : Color.secondary)
+                            }
                             if node.gpsState != .unknown && node.gpsState != .absent {
                                 Text(verbatim: "GPS \(node.gpsState == .fix ? "locked" : "no fix") · " +
                                     "\(node.satellitesUsed) used · \(node.satellitesInView) in view")

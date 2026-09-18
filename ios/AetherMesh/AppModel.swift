@@ -65,6 +65,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var messages: [String: [MeshChatMessage]] = [:]
     @Published private(set) var deliveryStates: [UInt32: Aethermesh_DeliveryStatus.State] = [:]
     @Published private(set) var lastTrace: TraceRouteResult?
+    /// Our radio's verdict on each node's identity keys, keyed by node id.
+    @Published private(set) var identities: [UInt32: NodeIdentityReport] = [:]
     @Published private(set) var nodeConfig: Aethermesh_NodeConfig?
     @Published var showUnlock = false
     @Published var lastError: String?
@@ -179,6 +181,8 @@ final class AppModel: ObservableObject {
             deliveryStates[packetId] = state
         case .traceRoute(let result):
             lastTrace = result
+        case .identity(let report):
+            identities[report.nodeId] = report
         }
     }
 
