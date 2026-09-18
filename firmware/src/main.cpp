@@ -2,6 +2,7 @@
 #include <string.h>
 #include "RadioManager.h"
 #include "TxPower.h"
+#include "Watchdog.h"
 #include "MeshRouter.h"
 #include "NodeIdentity.h"
 #include "PacketAuth.h"
@@ -5263,12 +5264,17 @@ void setup() {
     pinMode(6, OUTPUT);
     digitalWrite(6, HIGH); // Release screen reset pin
 #endif
+    // Start (or, on nRF52 after a soft reset, keep feeding) the watchdog before
+    // anything slow, so a hang anywhere from here on resets the board.
+    watchdog::begin();
+    watchdog::feed();
     Serial.begin(115200);
     // Wait up to 3 seconds for Serial port to open on PC, but don't block forever if running on battery
     uint32_t startWait = millis();
     while (!Serial && (millis() - startWait < 3000)) {
         delay(10);
     }
+    Serial.printf("Last reset: %s\n", watchdog::lastResetReason());
     
     delay(4000);
     Serial.println("\n=== AETHERMESH NODE STARTING ===");
@@ -5517,6 +5523,7 @@ void setup() {
 }
 
 void loop() {
+    watchdog::feed();
     // Advance the control-key PBKDF2 a slice per pass (~15 ms ESP32-S3, ~55 ms
     // nRF52840). Paused during OTA so flash writes keep their throughput.
     if (!otaActive && packetauth::controlKeyPending() &&
