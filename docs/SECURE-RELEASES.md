@@ -58,11 +58,11 @@ signing keys in-tree:
 - Firmware-side reject of images that fail signature / board-id header checks.
 - Attestation verify from the phone (optional; Pages already attests in CI).
 
-## Release Channels
+## Firmware Channels
 
 | Channel | Workflow | Gate |
 | --- | --- | --- |
-| Release | `stable-release.yml` | Hardware qualification evidence for the exact commit, plus CI |
+| Stable | `stable-release.yml` | Hardware qualification evidence for the exact commit, plus CI |
 | Beta | `beta-release.yml` | CI only — that is what makes it a beta |
 
 `pages.yml` still deploys the flasher itself and the Android APK, but the

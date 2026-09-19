@@ -162,7 +162,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     releases.rel = "noopener";
     releases.textContent = "all releases";
     if (channel === "release") {
-      text.textContent = message + " Release builds appear here once a version has been qualified on hardware. ";
+      text.textContent = message + " Stable versions appear here once one has been tested on hardware. ";
       const useBeta = document.createElement("button");
       useBeta.type = "button";
       useBeta.className = "secondary compact";
@@ -204,7 +204,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     if (!resp.ok) throw new Error("That version's files are missing from this site.");
     const list = await resp.json();
     manifest = (Array.isArray(list) ? list : []).map((item) => ({ ...item, url: base + item.file, releaseTag: tag }));
-    const label = channel === "beta" ? "Beta " : "Release ";
+    const label = channel === "beta" ? "Beta " : "Stable ";
     const older = channelIndex.length && channelIndex[0].tag !== tag ? " (an older version)" : "";
     setChannelNote(label + tag + older + ". Verified against the SHA-256 published in that release.", false);
     showNotes(entry);
@@ -219,10 +219,10 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
     manifest = [];
     try {
       const resp = await fetch("./firmware/" + channel + "/index.json?t=" + Date.now());
-      if (!resp.ok) throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
+      if (!resp.ok) throw new Error(channel === "beta" ? "No beta published yet." : "No stable version published yet.");
       const list = await resp.json();
       channelIndex = Array.isArray(list) ? list.filter((e) => e && e.tag) : [];
-      if (!channelIndex.length) throw new Error(channel === "beta" ? "No beta published yet." : "No release published yet.");
+      if (!channelIndex.length) throw new Error(channel === "beta" ? "No beta published yet." : "No stable version published yet.");
       for (const [i, entry] of channelIndex.entries()) {
         const option = document.createElement("option");
         option.value = entry.tag;
@@ -520,7 +520,7 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
         : (val === "seeed-t1000-e" ? "T1000-E"
         : (val === "rak3401-1w" ? "RAK3401 1W"
         : (val === "rak19026" ? "RAK19026" : "RAK4631")));
-      const which = channelSelect && channelSelect.value === "beta" ? "Beta" : "Release";
+      const which = channelSelect && channelSelect.value === "beta" ? "Beta" : "Stable";
       setStatus("No " + boardName + " UF2 build on the " + which + " channel yet. Try the other channel.", "err");
     }
   };

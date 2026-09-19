@@ -161,15 +161,15 @@ for (const [target, file] of [
   });
 }
 
-test("release channel never offers a pre-release", async ({ page }) => {
-  // Only a beta is mirrored. Asking for Release must come back empty rather
+test("stable channel never offers a pre-release", async ({ page }) => {
+  // Only a beta is mirrored. Asking for Stable must come back empty rather
   // than quietly handing over the beta.
   await setup(page, [], { beta: [{ tag: "v9.9.9-beta.1", entries: manifest }] });
   await expect(page.locator("#fw")).toContainText("Nothing published");
-  await expect(page.locator("#channel-note")).toContainText("No release published yet");
+  await expect(page.locator("#channel-note")).toContainText("No stable version published yet");
 });
 
-test("an empty Release channel offers Beta instead of a dead end", async ({ page }) => {
+test("an empty Stable channel offers Beta instead of a dead end", async ({ page }) => {
   const betaOnly = [{ name: "Heltec V4 beta", file: "heltec-v4-beta.bin", size: 4, sha256: hash }];
   await setup(page, [], { beta: [{ tag: "v9.9.10-beta.1", entries: betaOnly }] });
   await expect(page.locator("#channel")).toHaveValue("release");

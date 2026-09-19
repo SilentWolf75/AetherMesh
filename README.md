@@ -205,20 +205,20 @@ That writes `firmware/src/mesh.pb.c` and `firmware/src/mesh.pb.h`.
 - Verify published files against `SHA256SUMS.txt`; the web flasher performs the
   same size and SHA-256 validation automatically.
 
-## Release Channels
+## Firmware Channels
 
 Two channels, both deliberate publications. Each verifies a published SHA-256
 before anything is written to a board.
 
 | Channel | What it is | Where it comes from |
 | --- | --- | --- |
-| Release | Hardware-qualified | GitHub Releases, not pre-release |
+| Stable | Tested on hardware | GitHub releases that are not pre-releases |
 | Beta | Published on purpose to be tested, not yet qualified | GitHub pre-releases |
 
 Pick a channel in the app under firmware updates, or in the browser flasher.
 There is no continuous "tip" channel: an automatic build of whatever last landed
-is not something to hand a radio in the field. Release never serves a beta and
-beta never serves a release, and neither falls back to the other — an empty
+is not something to hand a radio in the field. Stable never serves a beta and
+beta never serves a stable version, and neither falls back to the other — an empty
 channel reports itself empty, which is better than quietly installing something
 you did not choose. A local `.bin` or `.zip` can always be flashed directly.
 
