@@ -72,6 +72,20 @@ final class MeshSessionTests: XCTestCase {
         XCTAssertEqual(s.localNodeId, node)
     }
 
+    func testAlreadyUnlockedConnectionIsConfirmedWithoutAProof() {
+        let s = session()
+        s.unlock(password: "admin")
+        let writesAfterQuery = writes.count
+        // Node kept trusting the link across an app restart and just confirms.
+        s.handleIncoming(authResponse(success: true, message: "Authenticated successfully"))
+        XCTAssertEqual(s.authState, .authenticated)
+        XCTAssertEqual(writes.count, writesAfterQuery)
+        // A later challenge is not answered with a stale password.
+        s.handleIncoming(authResponse(success: false, message: "Password required",
+                                      challenge: Data(repeating: 1, count: 16)))
+        XCTAssertEqual(writes.count, writesAfterQuery)
+    }
+
     func testOlderFirmwareWithoutChallengeGetsThePassword() throws {
         let s = session()
         s.unlock(password: "admin")

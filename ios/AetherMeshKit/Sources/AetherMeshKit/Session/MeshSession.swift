@@ -243,7 +243,13 @@ public final class MeshSession {
 
     /// Second half of `unlock`. True when the reply was the challenge and has been answered.
     private func answerChallenge(_ response: Aethermesh_AuthResponse) -> Bool {
-        guard let password = passwordAwaitingChallenge, !response.success else { return false }
+        guard let password = passwordAwaitingChallenge else { return false }
+        if response.success {
+            // The node still trusts this connection (the link survived an app
+            // restart) and confirmed without a challenge.
+            passwordAwaitingChallenge = nil
+            return false
+        }
         passwordAwaitingChallenge = nil
         if !response.passwordNotSet && AuthProof.isUsable(response.challenge) {
             let proof = AuthProof.compute(password: password, challenge: response.challenge)

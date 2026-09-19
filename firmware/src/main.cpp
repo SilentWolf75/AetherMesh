@@ -4634,6 +4634,20 @@ void onBlePacketReceived(uint8_t* data, size_t len) {
             return;
         }
 
+        // An unlock request on a connection that is already unlocked. Android
+        // can keep the Bluetooth link up across an app restart or reinstall,
+        // so the app starts over while the node still trusts this connection.
+        // Staying silent left the app waiting and asking for the password;
+        // confirm instead. It is the same encrypted connection that already
+        // proved the password.
+        if (packet.which_payload == aethermesh_MeshPacket_auth_request_tag) {
+            Serial.println("Unlock request on an already unlocked connection; confirming.");
+            sendAuthResponse(true, "Authenticated successfully", false);
+            sendNodeConfigReportToPhone();
+            sendBleTelemetryLoopbackToPhone();
+            return;
+        }
+
         if (packet.which_payload == aethermesh_MeshPacket_position_privacy_tag) {
             uint32_t policy = positionprivacy::record(
                 packet.payload.position_privacy.position_disabled,
