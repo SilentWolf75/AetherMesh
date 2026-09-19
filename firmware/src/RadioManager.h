@@ -62,6 +62,7 @@ public:
     // Regulatory transmit duty cycle over the last hour, in percent; 100
     // means no limit. EU868's 869.4-869.65 MHz sub-band allows 10%.
     void setDutyCycleLimitPercent(uint8_t percent) { dutyLimitPercent = percent; }
+    uint8_t getDutyCycleLimitPercent() const { return dutyLimitPercent; }
     uint8_t getTxDutyPercent() { return txHour.percent(millis()); }
     uint32_t getDutyCycleRefusals() const { return dutyRefusals; }
     // How busy the channel was over the last minute (every packet heard or sent).

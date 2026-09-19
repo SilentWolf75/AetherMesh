@@ -439,6 +439,30 @@ public nonisolated struct Aethermesh_MeshDiagnostics: @unchecked Sendable {
     set {_uniqueStorage()._earlyRepairs = newValue}
   }
 
+  /// Share of the last minute the channel carried anyone's packets, 0-100.
+  public var channelUtilPercent: UInt32 {
+    get {_storage._channelUtilPercent}
+    set {_uniqueStorage()._channelUtilPercent = newValue}
+  }
+
+  /// Our own transmissions over the last hour, as a share of it, 0-100.
+  public var txDutyPercent: UInt32 {
+    get {_storage._txDutyPercent}
+    set {_uniqueStorage()._txDutyPercent = newValue}
+  }
+
+  /// Hourly transmit limit in force: 10 on EU868, 100 where there is none.
+  public var dutyLimitPercent: UInt32 {
+    get {_storage._dutyLimitPercent}
+    set {_uniqueStorage()._dutyLimitPercent = newValue}
+  }
+
+  /// Transmissions held back by that limit since boot.
+  public var dutyCycleRefusals: UInt32 {
+    get {_storage._dutyCycleRefusals}
+    set {_uniqueStorage()._dutyCycleRefusals = newValue}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -2097,7 +2121,7 @@ nonisolated extension Aethermesh_MeshPacket: SwiftProtobuf.Message, SwiftProtobu
 
 nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".MeshDiagnostics"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}tx_packets\0\u{3}tx_failures\0\u{3}rx_packets\0\u{3}relayed_packets\0\u{1}retries\0\u{3}acked_packets\0\u{3}ack_timeouts\0\u{3}duplicate_packets\0\u{3}cad_busy_events\0\u{3}queue_drops\0\u{3}route_changes\0\u{3}active_routes\0\u{3}rebroadcast_queue_depth\0\u{3}pending_ack_depth\0\u{3}airtime_ms\0\u{3}uptime_seconds\0\u{3}protocol_version\0\u{3}range_pings_rx\0\u{3}range_pongs_queued\0\u{3}range_pongs_sent\0\u{3}range_pong_tx_failures\0\u{3}quiet_mode\0\u{3}directed_relays\0\u{3}suppress_relays\0\u{3}flood_unicasts\0\u{3}rreq_sent\0\u{3}early_repairs\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}tx_packets\0\u{3}tx_failures\0\u{3}rx_packets\0\u{3}relayed_packets\0\u{1}retries\0\u{3}acked_packets\0\u{3}ack_timeouts\0\u{3}duplicate_packets\0\u{3}cad_busy_events\0\u{3}queue_drops\0\u{3}route_changes\0\u{3}active_routes\0\u{3}rebroadcast_queue_depth\0\u{3}pending_ack_depth\0\u{3}airtime_ms\0\u{3}uptime_seconds\0\u{3}protocol_version\0\u{3}range_pings_rx\0\u{3}range_pongs_queued\0\u{3}range_pongs_sent\0\u{3}range_pong_tx_failures\0\u{3}quiet_mode\0\u{3}directed_relays\0\u{3}suppress_relays\0\u{3}flood_unicasts\0\u{3}rreq_sent\0\u{3}early_repairs\0\u{3}channel_util_percent\0\u{3}tx_duty_percent\0\u{3}duty_limit_percent\0\u{3}duty_cycle_refusals\0")
 
   fileprivate class _StorageClass {
     var _txPackets: UInt32 = 0
@@ -2127,6 +2151,10 @@ nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftPr
     var _floodUnicasts: UInt32 = 0
     var _rreqSent: UInt32 = 0
     var _earlyRepairs: UInt32 = 0
+    var _channelUtilPercent: UInt32 = 0
+    var _txDutyPercent: UInt32 = 0
+    var _dutyLimitPercent: UInt32 = 0
+    var _dutyCycleRefusals: UInt32 = 0
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -2164,6 +2192,10 @@ nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftPr
       _floodUnicasts = source._floodUnicasts
       _rreqSent = source._rreqSent
       _earlyRepairs = source._earlyRepairs
+      _channelUtilPercent = source._channelUtilPercent
+      _txDutyPercent = source._txDutyPercent
+      _dutyLimitPercent = source._dutyLimitPercent
+      _dutyCycleRefusals = source._dutyCycleRefusals
     }
   }
 
@@ -2209,6 +2241,10 @@ nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftPr
         case 25: try { try decoder.decodeSingularUInt32Field(value: &_storage._floodUnicasts) }()
         case 26: try { try decoder.decodeSingularUInt32Field(value: &_storage._rreqSent) }()
         case 27: try { try decoder.decodeSingularUInt32Field(value: &_storage._earlyRepairs) }()
+        case 28: try { try decoder.decodeSingularUInt32Field(value: &_storage._channelUtilPercent) }()
+        case 29: try { try decoder.decodeSingularUInt32Field(value: &_storage._txDutyPercent) }()
+        case 30: try { try decoder.decodeSingularUInt32Field(value: &_storage._dutyLimitPercent) }()
+        case 31: try { try decoder.decodeSingularUInt32Field(value: &_storage._dutyCycleRefusals) }()
         default: break
         }
       }
@@ -2298,6 +2334,18 @@ nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftPr
       if _storage._earlyRepairs != 0 {
         try visitor.visitSingularUInt32Field(value: _storage._earlyRepairs, fieldNumber: 27)
       }
+      if _storage._channelUtilPercent != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._channelUtilPercent, fieldNumber: 28)
+      }
+      if _storage._txDutyPercent != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._txDutyPercent, fieldNumber: 29)
+      }
+      if _storage._dutyLimitPercent != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._dutyLimitPercent, fieldNumber: 30)
+      }
+      if _storage._dutyCycleRefusals != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._dutyCycleRefusals, fieldNumber: 31)
+      }
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -2334,6 +2382,10 @@ nonisolated extension Aethermesh_MeshDiagnostics: SwiftProtobuf.Message, SwiftPr
         if _storage._floodUnicasts != rhs_storage._floodUnicasts {return false}
         if _storage._rreqSent != rhs_storage._rreqSent {return false}
         if _storage._earlyRepairs != rhs_storage._earlyRepairs {return false}
+        if _storage._channelUtilPercent != rhs_storage._channelUtilPercent {return false}
+        if _storage._txDutyPercent != rhs_storage._txDutyPercent {return false}
+        if _storage._dutyLimitPercent != rhs_storage._dutyLimitPercent {return false}
+        if _storage._dutyCycleRefusals != rhs_storage._dutyCycleRefusals {return false}
         return true
       }
       if !storagesAreEqual {return false}
