@@ -147,7 +147,37 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
   function setChannelNote(text, isError) {
     if (!channelNote) return;
     channelNote.textContent = text;
-    channelNote.style.color = isError ? "#f0999b" : "";
+    channelNote.className = isError ? "hint note-error" : "hint";
+  }
+
+  // A channel with nothing on it yet. Say so plainly and offer the way
+  // forward, rather than leaving an error and a bare URL.
+  function setEmptyChannelNote(channel, message) {
+    if (!channelNote) return;
+    channelNote.className = "hint note-empty";
+    const text = document.createElement("span");
+    const releases = document.createElement("a");
+    releases.href = GITHUB_RELEASES_WEB;
+    releases.target = "_blank";
+    releases.rel = "noopener";
+    releases.textContent = "all releases";
+    if (channel === "release") {
+      text.textContent = message + " Release builds appear here once a version has been qualified on hardware. ";
+      const useBeta = document.createElement("button");
+      useBeta.type = "button";
+      useBeta.className = "secondary compact";
+      useBeta.id = "use-beta-btn";
+      useBeta.textContent = "Use Beta instead";
+      useBeta.onclick = () => {
+        if (!channelSelect) return;
+        channelSelect.value = "beta";
+        channelSelect.dispatchEvent(new Event("change"));
+      };
+      channelNote.replaceChildren(text, useBeta, document.createTextNode(" or see "), releases, document.createTextNode("."));
+    } else {
+      text.textContent = message + " See ";
+      channelNote.replaceChildren(text, releases, document.createTextNode("."));
+    }
   }
 
   // Each channel's published build is mirrored onto this site by the Pages
@@ -209,9 +239,12 @@ import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.5.4/bundle.
       option.value = "";
       option.textContent = "None";
       versionSelect.appendChild(option);
-      setChannelNote(
-        (error && error.message ? error.message : "Could not load that channel.") +
-        " Open " + GITHUB_RELEASES_WEB + " to download it manually, or switch channel.", true);
+      const message = error && error.message ? error.message : "Could not load that channel.";
+      if (/published yet/.test(message)) {
+        setEmptyChannelNote(channel, message);
+      } else {
+        setChannelNote(message + " Try again, or download from " + GITHUB_RELEASES_WEB + ".", true);
+      }
       populateFirmwareDropdown();
     }
   }

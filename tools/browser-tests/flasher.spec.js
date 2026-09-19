@@ -169,6 +169,16 @@ test("release channel never offers a pre-release", async ({ page }) => {
   await expect(page.locator("#channel-note")).toContainText("No release published yet");
 });
 
+test("an empty Release channel offers Beta instead of a dead end", async ({ page }) => {
+  const betaOnly = [{ name: "Heltec V4 beta", file: "heltec-v4-beta.bin", size: 4, sha256: hash }];
+  await setup(page, [], { beta: [{ tag: "v9.9.10-beta.1", entries: betaOnly }] });
+  await expect(page.locator("#channel")).toHaveValue("release");
+  await page.locator("#use-beta-btn").click();
+  await expect(page.locator("#channel")).toHaveValue("beta");
+  await expect(page.locator("#fw")).toContainText("Heltec V4 beta");
+  await expect(page.locator("#channel-note")).toContainText("v9.9.10-beta.1");
+});
+
 test("beta channel lists only the pre-release", async ({ page }) => {
   const betaOnly = [{ name: "Heltec V4 beta", file: "heltec-v4-beta.bin", size: 4, sha256: hash }];
   await setup(page, [], {
