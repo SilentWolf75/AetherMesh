@@ -81,6 +81,14 @@ message MeshDiagnostics {
   uint32 flood_unicasts = 25;
   uint32 rreq_sent = 26;
   uint32 early_repairs = 27;
+  // Share of the last minute the channel carried anyone's packets, 0-100.
+  uint32 channel_util_percent = 28;
+  // Our own transmissions over the last hour, as a share of it, 0-100.
+  uint32 tx_duty_percent = 29;
+  // Hourly transmit limit in force: 10 on EU868, 100 where there is none.
+  uint32 duty_limit_percent = 30;
+  // Transmissions held back by that limit since boot.
+  uint32 duty_cycle_refusals = 31;
 }
 
 // BLE-only: phone signals the connected node to quiet mesh traffic during a

@@ -151,6 +151,6 @@ class OutboundDeliveryTest {
         store = OutboundDeliveryStore(db)
         assertEquals("preserved", db.getAllMessages().single().content)
         assertTrue(store.candidates(20, 10, now).isEmpty())
-        assertEquals(26, db.readableDatabase.version)
+        assertEquals(27, db.readableDatabase.version)
     }
 }

@@ -100,7 +100,7 @@ class PendingDecryptionTest {
         old.close()
 
         db = DatabaseHelper(context)
-        assertEquals(26, db.readableDatabase.version)
+        assertEquals(27, db.readableDatabase.version)
         assertEquals(IncomingChatPolicy.ERROR_NO_KEY, db.getAllMessages().single().content)
         // Messages lost before this version have no ciphertext to recover.
         assertTrue(db.getPendingDecryptions(chatId).isEmpty())

@@ -9,7 +9,7 @@ class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : 
 
     companion object {
         private const val DATABASE_NAME = "aethermesh.db"
-        private const val DATABASE_VERSION = 26
+        private const val DATABASE_VERSION = 27
 
         const val TABLE_MESH_DIAGNOSTICS = "mesh_diagnostics"
 
@@ -514,6 +514,16 @@ class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : 
                 android.util.Log.e("DatabaseHelper", "Failed to add identity columns: ${e.message}")
             }
         }
+        if (oldVersion < 27) {
+            try {
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN channel_util_percent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN tx_duty_percent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN duty_limit_percent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE $TABLE_MESH_DIAGNOSTICS ADD COLUMN duty_cycle_refusals INTEGER NOT NULL DEFAULT 0")
+            } catch (e: Exception) {
+                android.util.Log.e("DatabaseHelper", "Failed to add channel use columns: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -572,7 +582,11 @@ class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : 
             suppress_relays INTEGER NOT NULL DEFAULT 0,
             flood_unicasts INTEGER NOT NULL DEFAULT 0,
             rreq_sent INTEGER NOT NULL DEFAULT 0,
-            early_repairs INTEGER NOT NULL DEFAULT 0
+            early_repairs INTEGER NOT NULL DEFAULT 0,
+            channel_util_percent INTEGER NOT NULL DEFAULT 0,
+            tx_duty_percent INTEGER NOT NULL DEFAULT 0,
+            duty_limit_percent INTEGER NOT NULL DEFAULT 0,
+            duty_cycle_refusals INTEGER NOT NULL DEFAULT 0
         )
     """.trimIndent()
 
@@ -606,6 +620,10 @@ class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : 
             put("flood_unicasts", snapshot.floodUnicasts)
             put("rreq_sent", snapshot.rreqSent)
             put("early_repairs", snapshot.earlyRepairs)
+            put("channel_util_percent", snapshot.channelUtilPercent)
+            put("tx_duty_percent", snapshot.txDutyPercent)
+            put("duty_limit_percent", snapshot.dutyLimitPercent)
+            put("duty_cycle_refusals", snapshot.dutyCycleRefusals)
         }
         writableDatabase.insert(TABLE_MESH_DIAGNOSTICS, null, values)
         writableDatabase.execSQL(
@@ -661,7 +679,11 @@ class DatabaseHelper(context: Context, databaseName: String? = DATABASE_NAME) : 
                     suppressRelays = longOrZero("suppress_relays"),
                     floodUnicasts = longOrZero("flood_unicasts"),
                     rreqSent = longOrZero("rreq_sent"),
-                    earlyRepairs = longOrZero("early_repairs")
+                    earlyRepairs = longOrZero("early_repairs"),
+                    channelUtilPercent = intOrZero("channel_util_percent"),
+                    txDutyPercent = intOrZero("tx_duty_percent"),
+                    dutyLimitPercent = intOrZero("duty_limit_percent"),
+                    dutyCycleRefusals = longOrZero("duty_cycle_refusals")
                 )
             }
         }

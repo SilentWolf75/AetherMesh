@@ -4227,8 +4227,13 @@ void sendMeshDiagnosticsToPhone() {
     packet.protocol_version = AETHERMESH_PROTOCOL_VERSION;
     packet.which_payload = aethermesh_MeshPacket_diagnostics_tag;
     router.getDiagnostics(packet.payload.diagnostics);
+    aethermesh_MeshDiagnostics& diag = packet.payload.diagnostics;
+    diag.channel_util_percent = radioMgr.getChannelUtilPercent();
+    diag.tx_duty_percent = radioMgr.getTxDutyPercent();
+    diag.duty_limit_percent = radioMgr.getDutyCycleLimitPercent();
+    diag.duty_cycle_refusals = radioMgr.getDutyCycleRefusals();
 
-    uint8_t buffer[192];
+    uint8_t buffer[256];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     if (pb_encode(&stream, aethermesh_MeshPacket_fields, &packet)) {
         bleMgr.sendToPhone(buffer, stream.bytes_written);

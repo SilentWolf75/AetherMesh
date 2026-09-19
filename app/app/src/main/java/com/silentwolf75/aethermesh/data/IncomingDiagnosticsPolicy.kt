@@ -30,7 +30,14 @@ data class MeshDiagnosticsSnapshot(
     val suppressRelays: Long = 0,
     val floodUnicasts: Long = 0,
     val rreqSent: Long = 0,
-    val earlyRepairs: Long = 0
+    val earlyRepairs: Long = 0,
+    /** Share of the last minute the channel carried anyone's packets (0-100). */
+    val channelUtilPercent: Int = 0,
+    /** Our own transmissions over the last hour as a share of it (0-100). */
+    val txDutyPercent: Int = 0,
+    /** Hourly transmit limit in force; 100 means none. 0 = older firmware. */
+    val dutyLimitPercent: Int = 0,
+    val dutyCycleRefusals: Long = 0
 )
 
 /**
@@ -71,6 +78,10 @@ object IncomingDiagnosticsPolicy {
         suppressRelays = unsigned32(value.suppressRelays),
         floodUnicasts = unsigned32(value.floodUnicasts),
         rreqSent = unsigned32(value.rreqSent),
-        earlyRepairs = unsigned32(value.earlyRepairs)
+        earlyRepairs = unsigned32(value.earlyRepairs),
+        channelUtilPercent = value.channelUtilPercent.coerceIn(0, 100),
+        txDutyPercent = value.txDutyPercent.coerceIn(0, 100),
+        dutyLimitPercent = value.dutyLimitPercent.coerceIn(0, 100),
+        dutyCycleRefusals = unsigned32(value.dutyCycleRefusals)
     )
 }

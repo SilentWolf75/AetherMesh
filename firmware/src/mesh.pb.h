@@ -133,6 +133,14 @@ typedef struct _aethermesh_MeshDiagnostics {
     uint32_t flood_unicasts;
     uint32_t rreq_sent;
     uint32_t early_repairs;
+    /* Share of the last minute the channel carried anyone's packets, 0-100. */
+    uint32_t channel_util_percent;
+    /* Our own transmissions over the last hour, as a share of it, 0-100. */
+    uint32_t tx_duty_percent;
+    /* Hourly transmit limit in force: 10 on EU868, 100 where there is none. */
+    uint32_t duty_limit_percent;
+    /* Transmissions held back by that limit since boot. */
+    uint32_t duty_cycle_refusals;
 } aethermesh_MeshDiagnostics;
 
 /* BLE-only: phone signals the connected node to quiet mesh traffic during a
@@ -493,7 +501,7 @@ extern "C" {
 
 /* Initializer values for message structs */
 #define aethermesh_MeshPacket_init_default       {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_default}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, 0}
-#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshDiagnostics_init_default  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_default {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_default       {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_default          {0, {0, {0}}}
@@ -511,7 +519,7 @@ extern "C" {
 #define aethermesh_AuthRequest_init_default      {"", 0, "", {0, {0}}}
 #define aethermesh_AuthResponse_init_default     {0, "", 0, {0, {0}}}
 #define aethermesh_MeshPacket_init_zero          {0, 0, 0, 0, 0, 0, {aethermesh_TextMessage_init_zero}, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, 0}
-#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define aethermesh_MeshDiagnostics_init_zero     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define aethermesh_RangeTestControl_init_zero    {_aethermesh_RangeTestControl_Op_MIN}
 #define aethermesh_OtaControl_init_zero          {_aethermesh_OtaControl_Op_MIN, 0, "", ""}
 #define aethermesh_OtaData_init_zero             {0, {0, {0}}}
@@ -557,6 +565,10 @@ extern "C" {
 #define aethermesh_MeshDiagnostics_flood_unicasts_tag 25
 #define aethermesh_MeshDiagnostics_rreq_sent_tag 26
 #define aethermesh_MeshDiagnostics_early_repairs_tag 27
+#define aethermesh_MeshDiagnostics_channel_util_percent_tag 28
+#define aethermesh_MeshDiagnostics_tx_duty_percent_tag 29
+#define aethermesh_MeshDiagnostics_duty_limit_percent_tag 30
+#define aethermesh_MeshDiagnostics_duty_cycle_refusals_tag 31
 #define aethermesh_RangeTestControl_op_tag       1
 #define aethermesh_OtaControl_op_tag             1
 #define aethermesh_OtaControl_total_size_tag     2
@@ -778,7 +790,11 @@ X(a, STATIC,   SINGULAR, UINT32,   directed_relays,  23) \
 X(a, STATIC,   SINGULAR, UINT32,   suppress_relays,  24) \
 X(a, STATIC,   SINGULAR, UINT32,   flood_unicasts,   25) \
 X(a, STATIC,   SINGULAR, UINT32,   rreq_sent,        26) \
-X(a, STATIC,   SINGULAR, UINT32,   early_repairs,    27)
+X(a, STATIC,   SINGULAR, UINT32,   early_repairs,    27) \
+X(a, STATIC,   SINGULAR, UINT32,   channel_util_percent,  28) \
+X(a, STATIC,   SINGULAR, UINT32,   tx_duty_percent,  29) \
+X(a, STATIC,   SINGULAR, UINT32,   duty_limit_percent,  30) \
+X(a, STATIC,   SINGULAR, UINT32,   duty_cycle_refusals,  31)
 #define aethermesh_MeshDiagnostics_CALLBACK NULL
 #define aethermesh_MeshDiagnostics_DEFAULT NULL
 
@@ -999,7 +1015,7 @@ extern const pb_msgdesc_t aethermesh_AuthResponse_msg;
 #define aethermesh_AuthResponse_size             55
 #define aethermesh_ConfigResult_size             49
 #define aethermesh_DeliveryStatus_size           34
-#define aethermesh_MeshDiagnostics_size          170
+#define aethermesh_MeshDiagnostics_size          198
 #define aethermesh_MeshPacket_size               589
 #define aethermesh_NodeConfig_size               203
 #define aethermesh_NodeIdentity_size             142
