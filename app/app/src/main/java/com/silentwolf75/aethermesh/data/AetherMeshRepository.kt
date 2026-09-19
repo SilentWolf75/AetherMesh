@@ -571,7 +571,12 @@ class AetherMeshRepository(private val context: Context) {
      */
     private fun answerAuthChallenge(challenge: ByteArray, passwordNotSet: Boolean, success: Boolean): Boolean {
         val password = passwordAwaitingChallenge ?: return false
-        if (success) return false
+        if (success) {
+            // The node still trusts this connection (Android kept the link up
+            // across an app restart) and confirmed without a challenge.
+            passwordAwaitingChallenge = null
+            return false
+        }
         passwordAwaitingChallenge = null
         val packet = if (!passwordNotSet && AuthProof.isUsableChallenge(challenge)) {
             AuthRequestApply.buildProof(
