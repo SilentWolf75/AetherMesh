@@ -347,9 +347,9 @@ fun FirmwareUpdateSettings(
                         )
                         Text(
                             text = if (appLanguage == "Spanish")
-                                "Publicado: probado en hardware. Beta: publicado a propósito para probar, aún sin calificar."
+                                "Estable: probado en hardware. Beta: las correcciones más nuevas, aún en pruebas."
                             else
-                                "Release: hardware-qualified. Beta: published on purpose to be tested, not yet qualified.",
+                                "Stable: tested on hardware. Beta: the newest fixes, still being tested.",
                             color = TextMuted,
                             fontSize = 10.sp
                         )
@@ -381,7 +381,7 @@ fun FirmwareUpdateSettings(
                                 )
                             ) {
                                 Text(
-                                    if (appLanguage == "Spanish") "Publicado" else "Release",
+                                    if (appLanguage == "Spanish") "Estable" else "Stable",
                                     fontSize = 12.sp,
                                     fontWeight = if (releaseSelected) FontWeight.Bold else FontWeight.Normal
                                 )
@@ -437,8 +437,8 @@ fun FirmwareUpdateSettings(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                if (appLanguage == "Spanish") "Buscar Releases (necesita datos)"
-                                else "Check Releases (needs phone data)",
+                                if (appLanguage == "Spanish") "Buscar actualizaciones (necesita datos)"
+                                else "Check for updates (needs phone data)",
                                 fontSize = 12.sp
                             )
                         }
@@ -665,9 +665,9 @@ fun FirmwareUpdateSettings(
 
             Text(
                 text = if (appLanguage == "Spanish")
-                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin (nunca .zip DFU); RAK usa el paquete .zip (nunca .bin ESP). Canal Estable = GitHub Releases; Último = Pages — ambos son opcionales y necesitan datos del teléfono; en modo avión usa un archivo local. Se rechazan placas/archivos cruzados y se verifica tamaño/SHA-256 cuando hay catálogo."
+                    "El primer firmware con OTA debe instalarse por USB; después es inalámbrico. Heltec/T-Deck/CrowPanel usan .bin (nunca .zip DFU); RAK usa el paquete .zip (nunca .bin ESP). Estable y Beta vienen de GitHub y necesitan datos del teléfono; en modo avión usa un archivo local. Se rechazan placas/archivos cruzados y se verifica tamaño/SHA-256 cuando hay catálogo."
                 else
-                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin (never a Nordic DFU .zip); RAK takes the .zip DFU package (never an ESP .bin). Stable = GitHub Releases; Latest = Pages — both are optional and need phone data; in airplane mode use a local file. Cross-board/wrong-format packages are refused; size/SHA-256 are checked when the catalog provides them.",
+                    "The first OTA-capable firmware must be flashed over USB; after that, updates are wireless. Heltec/T-Deck/CrowPanel take the .bin (never a Nordic DFU .zip); RAK takes the .zip DFU package (never an ESP .bin). Stable and Beta both come from GitHub and need phone data; in airplane mode use a local file. Cross-board/wrong-format packages are refused; size/SHA-256 are checked when the catalog provides them.",
                 color = TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
