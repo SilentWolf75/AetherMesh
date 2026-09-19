@@ -74,6 +74,9 @@ jobs:
       - name: Verify release target parity
         run: python tools/validate_release_targets.py
       - name: Verify pinned Actions SHAs are 40 hex
+        # Authenticated calls: shared runners hit GitHub's anonymous API limit.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python tools/check_action_pins.py
       - name: Verify hardware/ ignore leaves zero untracked files
         run: python tools/check_hardware_gitignore.py
