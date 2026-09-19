@@ -390,7 +390,7 @@ fun t(text: String, lang: String): String {
         "Region, spreading factor and power" -> "Región, factor de propagación y potencia"
         "GPS schedule and position sharing" -> "Horario del GPS y posición compartida"
         "Hop limit and route health" -> "Límite de saltos y salud de rutas"
-        "Release and Beta firmware" -> "Firmware Release y Beta"
+        "Stable and Beta firmware" -> "Firmware Estable y Beta"
         "Password and node keys" -> "Contraseña y claves del nodo"
         "Language, theme, units and alerts" -> "Idioma, tema, unidades y alertas"
         "Logs, exports and database reset" -> "Registros, exportaciones y reinicio de datos"

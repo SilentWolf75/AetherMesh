@@ -512,7 +512,7 @@ fun SettingsView(
             Triple(SettingsCategory.RADIO, "LoRa Radio Configuration", "Region, spreading factor and power"),
             Triple(SettingsCategory.POSITION, "GPS & Position Settings", "GPS schedule and position sharing"),
             Triple(SettingsCategory.ROUTING, "Mesh Routing", "Hop limit and route health"),
-            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Release and Beta firmware"),
+            Triple(SettingsCategory.FIRMWARE, "Firmware Update", "Stable and Beta firmware"),
             Triple(SettingsCategory.SECURITY, "Security & Keys", "Password and node keys")
         )
         val appCategories = listOf(
