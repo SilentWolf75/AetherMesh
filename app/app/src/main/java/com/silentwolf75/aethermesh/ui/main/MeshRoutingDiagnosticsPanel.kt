@@ -1,5 +1,6 @@
 package com.silentwolf75.aethermesh.ui.main
 
+import com.silentwolf75.aethermesh.data.ChannelUsePolicy
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -488,45 +489,6 @@ fun MeshRoutingDiagnosticsPanel(
                         compact = true
                     )
                 }
-                if (com.silentwolf75.aethermesh.data.ChannelUsePolicy.isReported(diagnostics.dutyLimitPercent)) {
-                    val use = com.silentwolf75.aethermesh.data.ChannelUsePolicy
-                    fun levelColor(level: com.silentwolf75.aethermesh.data.ChannelUsePolicy.Level) = when (level) {
-                        com.silentwolf75.aethermesh.data.ChannelUsePolicy.Level.CALM -> AccentMint
-                        com.silentwolf75.aethermesh.data.ChannelUsePolicy.Level.BUSY -> AccentAmber
-                        com.silentwolf75.aethermesh.data.ChannelUsePolicy.Level.CONGESTED -> AccentRed
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        DiagnosticCard(
-                            if (spanish) "Canal ocupado" else "Channel busy",
-                            "${diagnostics.channelUtilPercent}%",
-                            levelColor(use.channelLevel(diagnostics.channelUtilPercent)),
-                            Modifier.weight(1f),
-                            compact = true
-                        )
-                        DiagnosticCard(
-                            if (spanish) "Tu tiempo al aire (1 h)" else "Your airtime (1 h)",
-                            use.airtimeLabel(diagnostics.txDutyPercent, diagnostics.dutyLimitPercent),
-                            levelColor(use.airtimeLevel(diagnostics.txDutyPercent, diagnostics.dutyLimitPercent)),
-                            Modifier.weight(1f),
-                            compact = true
-                        )
-                    }
-                    if (diagnostics.dutyCycleRefusals > 0L) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            if (spanish)
-                                "${diagnostics.dutyCycleRefusals} transmisiones esperaron por el límite horario de la región."
-                            else
-                                "${diagnostics.dutyCycleRefusals} transmissions waited for the region's hourly limit.",
-                            color = AccentAmber,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
                 if (deliveryAttempts == 0L) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
@@ -547,6 +509,44 @@ fun MeshRoutingDiagnosticsPanel(
                         color = TextMuted,
                         fontSize = 10.sp
                     )
+                }
+                if (ChannelUsePolicy.isReported(diagnostics.dutyLimitPercent)) {
+                    fun levelColor(level: ChannelUsePolicy.Level) = when (level) {
+                        ChannelUsePolicy.Level.CALM -> AccentMint
+                        ChannelUsePolicy.Level.BUSY -> AccentAmber
+                        ChannelUsePolicy.Level.CONGESTED -> AccentRed
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DiagnosticCard(
+                            if (spanish) "Canal ocupado" else "Channel busy",
+                            "${diagnostics.channelUtilPercent}%",
+                            levelColor(ChannelUsePolicy.channelLevel(diagnostics.channelUtilPercent)),
+                            Modifier.weight(1f),
+                            compact = true
+                        )
+                        DiagnosticCard(
+                            if (spanish) "Tu tiempo al aire (1 h)" else "Your airtime (1 h)",
+                            ChannelUsePolicy.airtimeLabel(diagnostics.txDutyPercent, diagnostics.dutyLimitPercent),
+                            levelColor(ChannelUsePolicy.airtimeLevel(diagnostics.txDutyPercent, diagnostics.dutyLimitPercent)),
+                            Modifier.weight(1f),
+                            compact = true
+                        )
+                    }
+                    if (diagnostics.dutyCycleRefusals > 0L) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            if (spanish)
+                                "${diagnostics.dutyCycleRefusals} transmisiones esperaron por el límite horario de la región."
+                            else
+                                "${diagnostics.dutyCycleRefusals} transmissions waited for the region's hourly limit.",
+                            color = AccentAmber,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
